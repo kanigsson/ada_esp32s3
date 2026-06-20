@@ -39,7 +39,8 @@ It is built in three layers:
 - **Single-precision FPU** state preserved across context switches.
 - **ACATS 4.2 conformance** on hardware — **0 genuine failures on every profile**
   (`full`: 1,286+ PASS one-test-per-image; see below).
-- **25+ peripheral drivers** and a **pure-Ada ext4 filesystem**, all HW-verified.
+- **25+ peripheral drivers** and a **pure-Ada ext4 filesystem** (most drivers
+  ship with a hardware self-test; see [Testing status](#testing-status)).
 
 ## Quick start
 
@@ -131,7 +132,8 @@ ADC, capacitive touch, RTC + RTC-IO, LCD (i80), TWAI/CAN, hardware crypto
 (SHA/AES), RNG, and SD (SPI + native SDHOST). Each is a thin private register
 "Engine" hidden behind a task-safe gateway (protected object or a
 limited-controlled RAII handle), so concurrent access from multiple tasks is safe
-by construction. Every driver has a HW-verified self-test under `examples/`.
+by construction. Most drivers ship with a self-test under `examples/`; see
+[Testing status](#testing-status) for what has actually been run on silicon.
 
 ## The pure-Ada ext4 filesystem
 
@@ -140,9 +142,31 @@ ext2/3/4 implementation in Ada (a reimplementation in the spirit of lwext4):
 read **and** write (create/write/truncate/mkdir/rmdir/unlink/rename/link),
 metadata checksums, and JBD2 journal replay + commit. It is developed against a
 rootless host test harness that checks every operation against
-`mke2fs`/`debugfs`/`e2fsck`, and runs on-device over the SD driver
-(`examples/esp32s3_ext4`). (That host test harness lives in the development
-repository.)
+`mke2fs`/`debugfs`/`e2fsck` (that harness lives in the development repository).
+It is **host-verified only** — the on-device path (`examples/esp32s3_ext4`, over
+the SD driver) has not yet been validated on hardware.
+
+## Testing status
+
+**Important:** the table below reflects what was exercised *during development*;
+nothing here has been re-verified as it ships in this distribution. Treat every
+driver as **needing verification on your own board** before you rely on it.
+
+Drivers that **have a hardware self-test** (loopback or self-test run on an
+ESP32-S3 during development — re-verify on your hardware):
+
+> GPIO (+ level-3 interrupts), RNG, SPI, I2C, UART, GDMA, I2S, LEDC, RMT, PCNT,
+> SDM, MCPWM, GP Timer (TIMG), ADC, capacitive Touch, RTC, RTC-IO, LCD (i80),
+> TWAI/CAN, SHA, AES.
+
+Drivers and components that are **not hardware-verified** and need testing:
+
+| Component | State | What's needed |
+|---|---|---|
+| `SD_SPI` (SD card over SPI) | compiles; no-card smoke test only | test against a real card |
+| `SDMMC` (native SDHOST) | compiles; no-card smoke test only | test against a real card |
+| Temperature sensor | compiles | run on hardware |
+| ext4 filesystem | host-verified vs `e2fsck` only | validate on-device over SD |
 
 ## ACATS conformance
 
@@ -206,7 +230,10 @@ trampolines require; there is no `sdkconfig`/`idf.py` involved.
 
 ## Status
 
-The runtime, HAL, filesystem, and 31 examples are all HW-verified.
+The runtime and all three profiles build and run on hardware (the examples flash
+and boot). The HAL drivers and the filesystem have varying levels of
+verification — see [Testing status](#testing-status); several need testing on
+hardware and nothing has been re-verified as it ships here.
 The `full` profile is functionally complete for the common cases; its remaining
 edges (an RM-permitted abort case, a couple of toolchain-bound constructs, and
 post-2099 `Ada.Calendar`) are catalogued in the book's *Full-Profile Limitations*
