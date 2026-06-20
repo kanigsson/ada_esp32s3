@@ -1,0 +1,17 @@
+{
+  // This is an Ada (Alire) project, not an ESP-IDF one. Use the Ada Language
+  // Server for code intelligence and the repo-root tasks/launch (which drive the
+  // ./x dispatcher). See .vscode/README.md.
+  "recommendations": [
+    "adacore.ada",          // Ada & SPARK -- language server (required)
+    "webfreak.debug"        // Native Debug -- GDB frontend for F5 (cppdbg can't
+                            //   walk the Xtensa stack; Native Debug relays GDB's)
+  ],
+  // The ESP-IDF extension tries to IDF-ify the examples (sdkconfig, its own
+  // openocd task sourcing export.sh) and conflicts with the no-idf flow.
+  // Marked unwanted so VS Code stops recommending it; also disable it for this
+  // workspace: Extensions view -> ESP-IDF -> gear -> "Disable (Workspace)".
+  "unwantedRecommendations": [
+    "espressif.esp-idf-extension"
+  ]
+}

@@ -1,0 +1,231 @@
+\chapter{Debugging on the Chip}
+\label{ch:debug}
+
+When something misbehaves on the silicon there are three complementary tools: an
+interactive debugger over JTAG, the post-mortem backtrace, and the runtime's own
+fault diagnostics. Each works against the bare application image directly, using
+only the pinned cross-toolchain.
+
+\section{Interactive debugging: OpenOCD + GDB}
+
+The ESP32-S3's built-in USB-Serial-JTAG port is both the console \emph{and} a JTAG
+debug interface, so a single USB cable is enough. The project pins its own copies
+of the debug tools; one command fetches them:
+
+\begin{lstlisting}[style=sh]
+./x get-debug-tools      # downloads OpenOCD + xtensa-esp32s3-elf-gdb into tools/
+./x debug blink          # build, flash, start OpenOCD, attach GDB, rest at Main
+\end{lstlisting}
+
+One subtlety is worth knowing: the S3 needs the \emph{S3-specific}
+\texttt{xtensa-esp32s3-elf-gdb}; the Alire crate's esp32 (LX6) GDB silently fails
+on it. \texttt{./x debug} selects the right one. From there it is ordinary GDB on
+\texttt{app.elf} --- breakpoints, \texttt{step}, \texttt{print},
+\texttt{backtrace}. Two options matter on this target:
+
+\begin{itemize}
+  \item \texttt{--smp} exposes \emph{both} LX7 cores as GDB threads
+        (\texttt{info threads}), so you can see what each core is doing ---
+        essential for a cross-core hang.
+  \item \texttt{--attach} halts the board \emph{in place} without resetting it, so
+        you can examine a live hang or crash exactly where it stopped (a
+        post-mortem).
+\end{itemize}
+
+The command line and both editors (next section) drive this same OpenOCD + GDB
+path; when finished, \texttt{./x kill-openocd} releases the USB-JTAG port.
+
+\section{Editor integration: VS Code and Vim}
+
+The same build, flash and debug actions are wired into both VS Code and Vim, so
+you need never leave the editor. Both drive the top-level \texttt{./x} dispatcher
+and both use the project's pinned OpenOCD + s3 GDB for on-chip debugging.
+
+Two prerequisites are shared by either editor. On-chip debugging first needs the
+tools fetched once:
+
+\begin{lstlisting}[style=sh]
+./x get-debug-tools     # pinned, SHA-256-verified OpenOCD + xtensa-esp32s3-elf-gdb
+\end{lstlisting}
+
+And \emph{code intelligence} --- completion, go-to-definition, diagnostics, hover
+--- comes from the \textbf{Ada Language Server}, which ships inside the AdaCore
+toolchain (nothing to install separately). It only needs to be pointed at the
+example's \texttt{.gpr} project file, shown for each editor below.
+
+\subsection{VS Code}
+
+There are two complementary pieces. The first is the committed workspace
+configuration in \texttt{.vscode/} (\texttt{tasks.json}, \texttt{launch.json},
+\texttt{settings.json}), which wires the editor to \texttt{./x} and needs two
+extensions:
+
+\begin{description}[style=nextline]
+\item[Ada \& SPARK (\texttt{AdaCore.ada}).] The Ada Language Server --- required,
+  for all code intelligence.
+\item[Native Debug (\texttt{webfreak.debug}).] A GDB frontend, needed only for
+  \texttt{F5} debugging. \texttt{cppdbg} cannot walk the Xtensa register-window
+  stack (it connects but shows no call stack or source); Native Debug simply
+  relays GDB's own frames, which unwind correctly.
+\end{description}
+
+Install both from a terminal (or from the Extensions view, which also offers them
+as workspace recommendations):
+
+\begin{lstlisting}[style=sh]
+code --install-extension AdaCore.ada
+code --install-extension webfreak.debug
+\end{lstlisting}
+
+Then point the language server at the example you are working on by editing
+\texttt{ada.projectFile} in \texttt{.vscode/settings.json} and reloading the
+window (\texttt{Ctrl-Shift-P} $\rightarrow$ \emph{Developer: Reload Window}):
+
+\begin{lstlisting}[style=sh]
+"ada.projectFile": "examples/esp32s3_gpio0_blink/gpio_blink.gpr"
+\end{lstlisting}
+
+Build, flash and monitor are tasks: \texttt{Ctrl-Shift-B} runs the default
+\texttt{Ada: build}, and \emph{Tasks: Run Task} offers flash, monitor, run and
+clean. Each prompts for the example, serial port and runtime profile and routes
+to \texttt{./x}; build errors land in the \textbf{Problems} panel via a GNAT
+problem matcher.
+
+To \textbf{debug} (\texttt{F5}, ``Ada: debug (OpenOCD + GDB)''): build \emph{and
+flash} the example first, so the chip runs the same image whose \texttt{app.elf}
+you debug --- the launch only \emph{attaches}, so a stale or different-profile
+image leaves the breakpoint addresses mismatched. It starts OpenOCD and halts at
+\texttt{app\_main} (the shared boot-glue entry; these GNAT images have no C
+\texttt{main}); set breakpoints in the Ada source and continue/step.
+
+The second piece is an optional \textbf{status-bar extension}
+(\texttt{ide/vscode-ada-esp32}) that adds clickable build / flash / monitor /
+debug icons plus persistent port and profile selectors. A prebuilt
+\texttt{.vsix} is committed to the repository, so installing needs only the
+\texttt{code} CLI on \texttt{PATH}:
+
+\begin{lstlisting}[style=sh]
+./x install-ide         # installs the committed vscode-ada-esp32.vsix
+\end{lstlisting}
+
+Reload the window afterwards; re-run it to update after a \texttt{git pull} (a
+repo-hosted \texttt{.vsix} does not auto-update). Its debug icon uses the same
+OpenOCD + GDB launch described above.
+
+\subsection{Vim and Neovim}
+
+The \texttt{ide/vim-ada-esp32} plugin gives the same actions as Vim commands. It
+is pure Vimscript --- nothing to compile --- and needs \textbf{Vim 8.1+ with
+\texttt{+terminal}} (which bundles the \texttt{termdebug} GDB frontend); Neovim
+works too. Install it with one command, which symlinks the plugin into Vim's and
+Neovim's native package directories; because it is a symlink \emph{into} the repo,
+a \texttt{git pull} updates it in place:
+
+\begin{lstlisting}[style=sh]
+./x install-vim
+\end{lstlisting}
+
+Or wire it up by hand --- it has the standard \texttt{plugin/} layout:
+
+\begin{lstlisting}[style=sh]
+" vim-plug
+Plug '/path/to/ada-bare-metal-esp32s3/ide/vim-ada-esp32'
+" or, with no plugin manager:
+set runtimepath^=/path/to/ada-bare-metal-esp32s3/ide/vim-ada-esp32
+\end{lstlisting}
+
+The commands auto-detect context by searching upward for \texttt{./x}, so they
+work from anywhere inside the repo:
+
+\begin{description}[style=nextline]
+\item[{\texttt{:AdaEsp32Build [example]}}] build via \texttt{./x build}.
+\item[{\texttt{:AdaEsp32Flash [example]}}] flash to the selected port.
+\item[{\texttt{:AdaEsp32BuildFlash [example]}}] build then flash.
+\item[{\texttt{:AdaEsp32Run [example]}}] build $+$ flash $+$ monitor.
+\item[{\texttt{:AdaEsp32Monitor}}] serial console at 115200.
+\item[{\texttt{:AdaEsp32Debug [example]}}] OpenOCD $+$ \texttt{termdebug} (below).
+\item[{\texttt{:AdaEsp32Port [port]} / \texttt{:AdaEsp32Profile [prof]}}] set the
+  serial port / runtime profile; both persist across later commands.
+\end{description}
+
+The example argument accepts the short name (\texttt{gpio0\_blink}) or the full
+directory (\texttt{esp32s3\_gpio0\_blink}), with tab-completion; the chosen
+example, port and profile persist (in \texttt{g:ada\_esp32\_example} and friends)
+so later commands reuse them without re-prompting.
+
+\textbf{Debugging} uses Vim's built-in \texttt{termdebug} --- the Vim analog of
+the Native Debug setup, relaying GDB's own frames so it handles Xtensa correctly.
+After a build:
+
+\begin{lstlisting}[style=sh]
+:AdaEsp32Build gpio0_blink
+:AdaEsp32Debug gpio0_blink
+\end{lstlisting}
+
+This starts OpenOCD in the background, waits for its GDB server, then opens
+\texttt{termdebug} reset and halted with a breakpoint armed at \texttt{app\_main}.
+From there \texttt{:Continue} runs to it, \texttt{:Break src/foo.adb:53} (or
+\texttt{:Break} on the cursor line) sets an Ada breakpoint, and
+\texttt{:Step}/\texttt{:Over}/\texttt{:Finish} are the step controls; OpenOCD is
+stopped automatically when you quit the session. One inherent caveat: a
+\texttt{:Over} across a \emph{blocking} statement (a \texttt{delay}, an entry
+call) can step into the hand-written Xtensa assembly (the interrupt vectors or
+context switch), which carries no debug bounds --- GDB then reports ``cannot find
+bounds of current function.'' Set a breakpoint past the statement and
+\texttt{:Continue} instead.
+
+Code intelligence again comes from the Ada Language Server through your LSP
+client, pointed at the example's \texttt{.gpr}. For example, with
+\texttt{coc.nvim} in \texttt{coc-settings.json}:
+
+\begin{lstlisting}[style=sh]
+{ "ada.projectFile": "examples/esp32s3_gpio0_blink/gpio_blink.gpr" }
+\end{lstlisting}
+
+or register \texttt{ada\_language\_server} for the \texttt{ada} filetype with
+native LSP / vim-lsp and set the same \texttt{ada.projectFile} setting.
+
+\section{Post-mortem: decoding a Guru Meditation}
+
+An unhandled fault prints a register dump and a backtrace of program-counter
+values over the console (a ``Guru Meditation''). You do not need a live debugger
+to read it --- turn the addresses back into source with \texttt{addr2line} against
+the ELF:
+
+\begin{lstlisting}[style=sh]
+xtensa-esp32s3-elf-addr2line -fe build/app.elf 0x4200abcd 0x4200ef01
+\end{lstlisting}
+
+In the dump, \texttt{EXCVADDR} is the faulting data address and \texttt{EXCCAUSE}
+the reason --- a \texttt{LoadStoreError} (a bad data access), or an
+\texttt{InstructionFetchError} (a wild jump, often a corrupted stack or a stray
+pointer). Flash, reproduce, decode: that loop localises most faults without ever
+attaching a debugger.
+
+\section{The runtime's own diagnostics}
+
+The runtime helps before you reach for a tool at all:
+
+\begin{itemize}
+  \item \textbf{Precise stack-overflow detection.} Each task arms a hardware
+        watchpoint near its stack limit, so an overflow faults \emph{precisely}
+        (a debug exception) instead of silently corrupting a neighbour --- and on
+        the \texttt{full} profile the runtime can turn it into a catchable
+        \texttt{Storage\_Error}.
+  \item \textbf{A fault safe-state hook.} The \texttt{esp32s3\_safe\_state}
+        example wraps the panic handler to classify a fault --- stack overflow
+        versus other --- against the running task's stack window, latch a safe
+        state, and print an explicit \texttt{*** STACK OVERFLOW ***} verdict
+        before the board resets.
+  \item \textbf{The last-chance handler.} Any exception that escapes every handler
+        ends up in the runtime's last-chance handler; on the leanest profile,
+        where exceptions cannot propagate across calls, that is your fault report
+        --- a message and a controlled reset.
+\end{itemize}
+
+\textbf{A note on console output while debugging.} \texttt{Ada.Text\_IO} reaches
+\texttt{/dev/ttyACM0}; for terse status from interrupt or early-boot context the
+examples call the ROM \texttt{esp\_rom\_printf}, which is always available. When
+two cores --- or an interrupt handler and a task --- might print at once, funnel
+output through one task: interleaved single-character writes have themselves been
+mistaken for bugs more than once.

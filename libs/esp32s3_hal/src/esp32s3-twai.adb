@@ -1,0 +1,183 @@
+with ESP32S3.TWAI.Engine;
+
+package body ESP32S3.TWAI is
+
+   package E renames ESP32S3.TWAI.Engine;
+
+   --------------------------------------------------------------------------
+   --  Single-controller ownership guard.
+   --------------------------------------------------------------------------
+
+   protected Guard is
+      entry    Acquire;
+      procedure Release;
+   private
+      Held : Boolean := False;
+   end Guard;
+
+   protected body Guard is
+      entry Acquire when not Held is
+      begin
+         Held := True;
+      end Acquire;
+      procedure Release is
+      begin
+         Held := False;
+      end Release;
+   end Guard;
+
+   ----------------------------------------------------------------------------
+   --  State -- the single, ownership-checked gateway to the controller.
+   --
+   --  The configured Bus handle (from the private Engine child, the only unit
+   --  that names the TWAI registers) lives in this package's BODY.  Owned (S)
+   --  is the only export that returns it, and it raises Not_Owned unless S holds
+   --  the controller -- so a transfer or a reconfiguration physically cannot
+   --  reach the hardware without proving ownership, and a new op cannot be
+   --  written that skips the check.
+   ----------------------------------------------------------------------------
+
+   package State is
+      procedure Open (Mode : Bus_Mode; Bit_Rate : Positive);
+      function  Ready return Boolean;
+      function  Owned (S : Session) return E.Bus;
+   end State;
+
+   package body State is
+      The_Bus : E.Bus;                 --  configured handle, hidden here
+      Is_Set  : Boolean := False;      --  Setup done?
+
+      procedure Open (Mode : Bus_Mode; Bit_Rate : Positive) is
+      begin
+         The_Bus := E.Open (Mode, Bit_Rate);
+         Is_Set  := True;
+      end Open;
+
+      function Ready return Boolean is (Is_Set);
+
+      function Owned (S : Session) return E.Bus is
+      begin
+         if not S.Active then
+            raise Not_Owned with "TWAI used without holding it -- Acquire first";
+         end if;
+         return The_Bus;
+      end Owned;
+   end State;
+
+   -----------
+   -- Setup --
+   -----------
+
+   procedure Setup (Mode     : Bus_Mode := Normal;
+                    Bit_Rate : Positive  := 125_000) is
+   begin
+      State.Open (Mode, Bit_Rate);
+   end Setup;
+
+   -------------
+   -- Acquire --
+   -------------
+
+   procedure Acquire (S : in out Session) is
+   begin
+      if not State.Ready then
+         raise Not_Initialized with "TWAI controller acquired before Setup";
+      end if;
+      Guard.Acquire;
+      S.Active := True;
+   end Acquire;
+
+   --------------------
+   -- Configure_Pins --
+   --------------------
+
+   procedure Configure_Pins (S  : Session;
+                             Tx : ESP32S3.GPIO.Optional_Pin;
+                             Rx : ESP32S3.GPIO.Optional_Pin) is
+   begin
+      E.Configure_Pins (State.Owned (S), Tx, Rx);
+   end Configure_Pins;
+
+   ---------------------
+   -- Enable_Loopback --
+   ---------------------
+
+   procedure Enable_Loopback (S : Session; Pad : ESP32S3.GPIO.Pin_Id) is
+   begin
+      E.Enable_Loopback (State.Owned (S), Pad);
+   end Enable_Loopback;
+
+   ----------
+   -- Send --
+   ----------
+
+   procedure Send (S : Session; F : Standard_Frame) is
+   begin
+      E.Send (State.Owned (S), Extended => False, Remote => F.Remote,
+              Id => F.Id, Length => F.Length, Data => F.Data);
+   end Send;
+
+   procedure Send (S : Session; F : Extended_Frame) is
+   begin
+      E.Send (State.Owned (S), Extended => True, Remote => F.Remote,
+              Id => F.Id, Length => F.Length, Data => F.Data);
+   end Send;
+
+   ---------------
+   -- Available --
+   ---------------
+
+   function Available (S : Session) return Boolean is
+     (E.RX_Pending (State.Owned (S)));
+
+   function Is_Extended (S : Session) return Boolean is
+     (E.RX_Extended (State.Owned (S)));
+
+   -------------
+   -- Receive --
+   -------------
+
+   procedure Receive (S : Session; F : out Standard_Frame; Got : out Boolean) is
+      Id  : Interfaces.Unsigned_32;
+      Rmt : Boolean;
+      Len : Data_Length;
+      Dat : Data_Bytes;
+   begin
+      E.Receive (State.Owned (S), Want_Extended => False,
+                 Id => Id, Remote => Rmt, Length => Len, Data => Dat, Got => Got);
+      F := (if Got
+            then (Id => Standard_Id (Id), Remote => Rmt, Length => Len, Data => Dat)
+            else (others => <>));
+   end Receive;
+
+   procedure Receive (S : Session; F : out Extended_Frame; Got : out Boolean) is
+      Id  : Interfaces.Unsigned_32;
+      Rmt : Boolean;
+      Len : Data_Length;
+      Dat : Data_Bytes;
+   begin
+      E.Receive (State.Owned (S), Want_Extended => True,
+                 Id => Id, Remote => Rmt, Length => Len, Data => Dat, Got => Got);
+      F := (if Got
+            then (Id => Extended_Id (Id), Remote => Rmt, Length => Len, Data => Dat)
+            else (others => <>));
+   end Receive;
+
+   -------------
+   -- Release --
+   -------------
+
+   procedure Release (S : in out Session) is
+   begin
+      if S.Active then
+         S.Active := False;
+         Guard.Release;
+      end if;
+   end Release;
+
+   overriding procedure Finalize (S : in out Session) is
+   begin
+      Release (S);
+   end Finalize;
+
+end ESP32S3.TWAI;

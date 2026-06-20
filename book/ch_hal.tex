@@ -1,0 +1,531 @@
+\chapter{The Peripheral HAL}
+\label{ch:hal}
+
+The hand-written drivers live under \texttt{libs/esp32s3\_hal} as children of a
+single root package, \texttt{ESP32S3}: \texttt{ESP32S3.GPIO},
+\texttt{ESP32S3.SPI}, and so on. A consumer adds one line to its project file,
+
+\begin{lstlisting}
+with "esp32s3_hal.gpr";   --  or a relative path in-repo
+\end{lstlisting}
+
+and then \texttt{with}s the drivers it needs. Every driver in this book has been
+exercised on real silicon.
+
+\section{Conventions used by every driver}
+
+\begin{description}[style=nextline]
+\item[Valid-pin types.] A pin is named with \texttt{ESP32S3.GPIO.Pin\_Id}, a
+  subtype whose \emph{static predicate} admits only the pads the ESP32-S3 exposes
+  (0--21 and 38--48); the flash/PSRAM pads are excluded. A bad constant pin is a
+  compile-time error.
+\item[Errors.] Simple drivers report failure through a \texttt{Status} enum or an
+  \texttt{out Boolean}; the filesystem and richer layers raise exceptions. Either
+  way, failure is explicit.
+\item[Task-safety, two shapes.] A peripheral that is a single shared controller
+  (SPI host, I2C host, UART port, I2S port, the TWAI/LCD controller) is mediated
+  by a protected object plus a limited, non-copyable \texttt{Session} handle: you
+  \texttt{Acquire} it, use it, and it is released automatically when it leaves
+  scope. A peripheral that is a \emph{pool} of identical units (GDMA channels,
+  LEDC/RMT/PCNT/SDM channels, timers, ADC units, MCPWM channels) hands out a
+  limited, controlled handle you \texttt{Claim}; ownership makes per-handle
+  operations safe without a global lock, and the unit is reclaimed on scope exit.
+\item[RAII.] Those \texttt{Session}/\texttt{Channel}/\texttt{Reader} handles are
+  controlled types --- they release on scope exit, including during exception
+  unwinding --- so they require the \texttt{embedded} or \texttt{full} profile.
+  The lock-free drivers (GPIO, RNG, Temperature, RTC, RTC\_IO, Touch, SHA, AES,
+  SDMMC) work under every profile.
+\item[Init-before-use guard.] For the drivers that configure a controller once
+  at startup and only later hand out ownership (SPI, I2C, UART, I2S, TWAI, LCD,
+  and MCPWM), \texttt{Acquire}/\texttt{Claim} raises \texttt{Not\_Initialized} if
+  the port/host/unit was never \texttt{Setup}. Configuration must precede
+  ownership; the contract is enforced, not merely documented.
+\item[Ownership gateway.] Across all six \texttt{Session} drivers (SPI, I2C,
+  UART, I2S, TWAI, LCD), all register access lives in a private \texttt{Engine}
+  child, and the configured handle it returns is hidden in a nested package body.
+  The only way to reach it is one ownership-checked gateway, \texttt{Owned (S)},
+  which raises \texttt{Not\_Owned} unless the caller holds the port. Every
+  operation that touches a live controller --- transfers \emph{and} every
+  post-\texttt{Setup} reconfiguration (pins, baud, inversion, loopback) --- goes
+  through it. So a transfer or a setting change without ownership fails loudly,
+  and a new operation cannot be added that skips the check: there is no other
+  door to the hardware. This is a project rule for any exclusive driver that can
+  be reconfigured after setup (see the UART section for the worked pattern).
+\end{description}
+
+\paragraph{Recurring parameter types.} Each driver below lists its parameters
+with their allowed values and defaults. A few types recur throughout and are
+described once here rather than on every driver:
+\begin{description}[style=nextline]
+\item[\texttt{Pin\_Id}] a usable GPIO pad --- \texttt{0\,..\,21} or
+  \texttt{38\,..\,48} (the gaps are flash/PSRAM/absent pads). A bad constant is a
+  compile error.
+\item[\texttt{Optional\_Pin}] a \texttt{Pin\_Id} \emph{or} \texttt{No\_Pin} (the
+  value $-1$) to leave that line unrouted.
+\item[Ownership handles (\texttt{Session}, \texttt{Channel}, \texttt{Reader},
+  \texttt{Unit}, \texttt{Timer})] the limited, controlled handles described above:
+  you declare one, \texttt{Acquire}/\texttt{Claim} it, pass it to each operation,
+  and it releases on scope exit.
+\item[\texttt{...\_Hz}, \texttt{Freq}, \texttt{Baud}, \texttt{Bit\_Rate}]
+  frequencies / rates in hertz (or bits per second); \texttt{Positive} unless a
+  narrower subtype is noted.
+\item[\texttt{...\_Percent}] a \texttt{Float} in \texttt{0.0\,..\,100.0}.
+\item[Buffers] a transfer takes a buffer \texttt{'Address} and a byte
+  \texttt{Length}; the DMA-backed drivers cap a single transfer at \texttt{4095}
+  bytes.
+\end{description}
+
+\section{GPIO --- digital input and output}\index{GPIO driver}
+
+\texttt{ESP32S3.GPIO} configures a pad's direction, pull and drive strength and
+then drives or reads it. \texttt{Set}/\texttt{Clear}/\texttt{Write}/\texttt{Read}
+are hardware-atomic (lock-free); \texttt{Configure}/\texttt{Toggle} are serialised
+by a protected object.
+
+\begin{lstlisting}
+procedure Configure (Pin : Pin_Id; Mode : Pin_Mode;
+                     Pull  : Pull_Mode      := Floating;
+                     Drive : Drive_Strength := Drive_Medium);
+procedure Set    (Pin : Pin_Id);   procedure Clear (Pin : Pin_Id);
+procedure Toggle (Pin : Pin_Id);   procedure Write (Pin : Pin_Id; On : Boolean);
+function  Read   (Pin : Pin_Id) return Boolean;
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Pin}] the pad to act on (\texttt{Pin\_Id}).
+\item[\texttt{Mode}] direction: \texttt{Input} or \texttt{Output}.
+\item[\texttt{Pull}] internal resistor: \texttt{Floating} (default), \texttt{Pull\_Up}
+  or \texttt{Pull\_Down}.
+\item[\texttt{Drive}] output current: \texttt{Drive\_Weak}, \texttt{Drive\_Medium}
+  (default), \texttt{Drive\_Strong}, \texttt{Drive\_Strongest} (roughly
+  5 / 10 / 20 / 40\,mA).
+\item[\texttt{On}] (\texttt{Write}) the level to drive --- \texttt{True} = high,
+  \texttt{False} = low.
+\end{description}
+
+\texttt{Configure} always sets the pad up as a software-controlled GPIO (routed
+through the GPIO matrix). Handing a pad to a \emph{peripheral} instead is the job
+of that peripheral's own \texttt{Configure\_Pins}, which programs the matrix
+directly --- the ESP32-S3 GPIO matrix is a full crossbar, so almost any signal
+can reach almost any pad.
+
+\textbf{Example 1 --- blink an LED.}
+\begin{lstlisting}
+with Ada.Real_Time; use Ada.Real_Time;
+with ESP32S3.GPIO;  use ESP32S3.GPIO;
+procedure Blink is
+   Led : constant Pin_Id := 2;
+begin
+   Configure (Led, Mode => Output);
+   loop
+      Toggle (Led);
+      delay until Clock + Milliseconds (250);
+   end loop;
+end Blink;
+\end{lstlisting}
+
+\textbf{Example 2 --- a button drives an LED.}
+\begin{lstlisting}
+with ESP32S3.GPIO; use ESP32S3.GPIO;
+procedure Button is
+   Button_Pin : constant Pin_Id := 9;    --  active-low, internal pull-up
+   Led        : constant Pin_Id := 2;
+begin
+   Configure (Button_Pin, Mode => Input,  Pull => Pull_Up);
+   Configure (Led,        Mode => Output);
+   loop
+      Write (Led, not Read (Button_Pin)); --  pressed (low) -> LED on
+   end loop;
+end Button;
+\end{lstlisting}
+
+\section{RNG --- hardware random numbers}\index{RNG driver}
+
+\begin{lstlisting}
+function Read return Word;                 --  a 32-bit random word
+procedure Fill (Buffer : out Byte_Array);  --  fill any length
+\end{lstlisting}
+
+\textbf{Parameters.} \texttt{Read} takes none and returns a \texttt{Word} (a 32-bit
+\texttt{Interfaces.Unsigned\_32}). \texttt{Fill}'s \texttt{Buffer} is an
+\texttt{out Byte\_Array} of \emph{any} length --- the call fills every element with
+random bytes.
+
+\textbf{Example 1 --- a random word.}
+\begin{lstlisting}
+with Ada.Text_IO; use Ada.Text_IO;
+with ESP32S3.RNG;
+procedure RNG_Word is
+   X : constant ESP32S3.RNG.Word := ESP32S3.RNG.Read;
+begin
+   Put_Line (ESP32S3.RNG.Word'Image (X));
+end RNG_Word;
+\end{lstlisting}
+
+\textbf{Example 2 --- a random nonce.}
+\begin{lstlisting}
+with ESP32S3.RNG;
+procedure RNG_Nonce is
+   Nonce : ESP32S3.RNG.Byte_Array (0 .. 15);
+begin
+   ESP32S3.RNG.Fill (Nonce);   --  16 random bytes
+end RNG_Nonce;
+\end{lstlisting}
+
+(For true entropy the radio/ADC clocks should be running; see the package spec.)
+
+\section{Temperature --- the on-die sensor}\index{Temperature driver}
+
+\begin{lstlisting}
+procedure Initialize (Span : Measure_Range := Range_Minus10_80);
+function Read_Celsius return Integer;        --  whole degrees
+function Read_Centi_Celsius return Integer;  --  hundredths of a degree
+\end{lstlisting}
+
+\textbf{Parameters.} \texttt{Initialize}'s \texttt{Span} (a \texttt{Measure\_Range})
+picks the calibrated window --- accuracy is best when it brackets the real
+temperature. The five values are \texttt{Range\_Minus10\_80} (default, $-10\,..\,80$\,\textdegree C),
+\texttt{Range\_20\_100}, \texttt{Range\_50\_125}, \texttt{Range\_Minus30\_50}
+($-30\,..\,50$) and \texttt{Range\_Minus40\_20} ($-40\,..\,20$). The two
+\texttt{Read\_*} functions take no parameters; one returns whole degrees, the
+other hundredths.
+
+\textbf{Example 1 --- read degrees.}
+\begin{lstlisting}
+with Ada.Text_IO;        use Ada.Text_IO;
+with ESP32S3.Temperature; use ESP32S3.Temperature;
+procedure Temp_Degrees is
+begin
+   Initialize;
+   Put_Line ("die temp =" & Integer'Image (Read_Celsius) & " C");
+end Temp_Degrees;
+\end{lstlisting}
+
+\textbf{Example 2 --- higher resolution and a different span.}
+\begin{lstlisting}
+with Ada.Text_IO;        use Ada.Text_IO;
+with ESP32S3.Temperature; use ESP32S3.Temperature;
+procedure Temp_Centi is
+begin
+   Initialize (Span => Range_50_125);          --  a hotter measurement range
+   declare
+      Centi : constant Integer := Read_Centi_Celsius;
+   begin
+      Put_Line ("temp =" & Integer'Image (Centi / 100) & "." &
+                Integer'Image (Centi mod 100) & " C");
+   end;
+end Temp_Centi;
+\end{lstlisting}
+
+\section{SPI --- full-duplex master}\index{SPI driver}
+
+\texttt{ESP32S3.SPI} drives either general-purpose host (\texttt{SPI2}/\texttt{SPI3})
+over GDMA. Configure the host once, then \texttt{Acquire} a \texttt{Session} for a
+transaction. \texttt{Transfer} shifts \texttt{Tx} out while capturing \texttt{Rx}.
+
+\begin{lstlisting}
+procedure Setup (Host : SPI_Host; Mode : SPI_Mode := 0;
+                 Clock_Hz : Positive := 1_000_000);
+procedure Configure_Pins (Host : SPI_Host; Sclk, Mosi, Miso : Optional_Pin;
+                          Cs : Optional_Pin := No_Pin);
+procedure Acquire  (S : in out Session; Host : SPI_Host);
+procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+procedure Release  (S : in out Session);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Host}] which general-purpose host: \texttt{SPI2} or \texttt{SPI3}.
+\item[\texttt{Mode}] SPI clock mode \texttt{0\,..\,3} (the CPOL/CPHA combinations);
+  default \texttt{0}.
+\item[\texttt{Clock\_Hz}] bit clock in Hz; default \texttt{1\_000\_000}, clamped to
+  roughly 80\,kHz\,..\,80\,MHz.
+\item[\texttt{Sclk}, \texttt{Mosi}, \texttt{Miso}, \texttt{Cs}] the four lines as
+  \texttt{Optional\_Pin}; \texttt{Cs} defaults to \texttt{No\_Pin} (drive it as a
+  plain GPIO when you have more than one device).
+\item[\texttt{Tx}, \texttt{Rx}, \texttt{Length}] transmit/receive buffer
+  \texttt{'Address}es and a byte count, \texttt{1\,..\,4095}; full-duplex, so both
+  move \texttt{Length} bytes together.
+\item[\texttt{Pad}] (\texttt{Enable\_Loopback}) one pad that folds MOSI back to MISO
+  for the wiring-free self-test.
+\end{description}
+
+\textbf{Example 1 --- write a command to a device.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.SPI; use ESP32S3.SPI;
+procedure SPI_Write is
+   S  : Session;
+   Tx : aliased array (0 .. 2) of Interfaces.Unsigned_8 := (16#9F#, 0, 0);
+   Rx : aliased array (0 .. 2) of Interfaces.Unsigned_8;
+begin
+   Setup (SPI2, Mode => 0, Clock_Hz => 8_000_000);
+   Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
+   Acquire (S, SPI2);
+   Transfer (S, Tx'Address, Rx'Address, 3);   --  Rx now holds the response
+end SPI_Write;                                 --  S releases the host here
+\end{lstlisting}
+
+\textbf{Example 2 --- wiring-free self-test via internal loopback.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.SPI; use ESP32S3.SPI;
+procedure SPI_Loopback is
+   S  : Session;
+   Tx : aliased array (0 .. 31) of Interfaces.Unsigned_8 := (others => 16#A5#);
+   Rx : aliased array (0 .. 31) of Interfaces.Unsigned_8 := (others => 0);
+begin
+   Setup (SPI2);
+   Enable_Loopback (SPI2, Pad => 5);   --  MOSI->MISO through one pad
+   Acquire (S, SPI2);
+   Transfer (S, Tx'Address, Rx'Address, 32);
+   --  Rx = Tx
+end SPI_Loopback;
+\end{lstlisting}
+
+\section{I2C --- master}\index{I2C driver}
+
+\begin{lstlisting}
+procedure Setup (Host : I2C_Host; Clock_Hz : Positive := 100_000);
+procedure Configure_Pins (Host : I2C_Host; Scl, Sda : Pin_Id);
+procedure Acquire (S : in out Session; Host : I2C_Host);
+procedure Write (S : Session; Addr : Slave_Address; Data : Byte_Array;
+                 Success : out Boolean; Check_Ack : Boolean := True);
+procedure Read  (S : Session; Addr : Slave_Address; Data : out Byte_Array;
+                 Success : out Boolean);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Host}] \texttt{I2C0} or \texttt{I2C1}.
+\item[\texttt{Clock\_Hz}] SCL frequency; default \texttt{100\_000} (standard mode),
+  \texttt{400\_000} for fast mode.
+\item[\texttt{Scl}, \texttt{Sda}] the two bus lines (\texttt{Pin\_Id}); the bus is
+  open-drain, so fit external pull-ups.
+\item[\texttt{Addr}] 7-bit slave address, \texttt{0\,..\,16\#7F\#}
+  (\texttt{Slave\_Address}).
+\item[\texttt{Data}] the bytes to write, or the \texttt{out} buffer to read into
+  (\texttt{Byte\_Array} --- its length sets the count).
+\item[\texttt{Success}] \texttt{out Boolean} --- \texttt{True} if the slave
+  acknowledged.
+\item[\texttt{Check\_Ack}] (\texttt{Write}) require an ACK on each byte; default
+  \texttt{True}.
+\end{description}
+
+\textbf{Example 1 --- write a register on a sensor at address \texttt{16\#68\#}.}
+\begin{lstlisting}
+with ESP32S3.I2C; use ESP32S3.I2C;
+procedure I2C_Write_Reg is
+   S  : Session;
+   Ok : Boolean;
+begin
+   Setup (I2C0, Clock_Hz => 400_000);
+   Configure_Pins (I2C0, Scl => 9, Sda => 8);
+   Acquire (S, I2C0);
+   Write (S, Addr => 16#68#, Data => (16#6B#, 16#00#), Success => Ok);  --  reg<=0
+end I2C_Write_Reg;
+\end{lstlisting}
+
+\textbf{Example 2 --- register read (write the address, then read).}
+\begin{lstlisting}
+with ESP32S3.I2C; use ESP32S3.I2C;
+procedure I2C_Read_Reg is
+   S    : Session;
+   Ok   : Boolean;
+   Who  : Byte_Array (0 .. 0);
+begin
+   Setup (I2C0, Clock_Hz => 400_000);
+   Configure_Pins (I2C0, Scl => 9, Sda => 8);
+   Acquire (S, I2C0);
+   Write (S, 16#68#, (1 => 16#75#), Ok);     --  point at WHO_AM_I register
+   Read  (S, 16#68#, Who, Ok);               --  read it back
+end I2C_Read_Reg;
+\end{lstlisting}
+
+\section{UART --- asynchronous serial}\index{UART driver}
+
+\begin{lstlisting}
+--  Startup (single-threaded): the ONLY port-based configuration call.
+procedure Setup (Port : UART_Port; Baud : Baud_Rate := 115_200;
+                 Bits : Data_Bits := 8; Parity : Parity_Mode := None;
+                 Stop : Stop_Bits := One;
+                 Tx, Rx, Rts, Cts : Optional_Pin := No_Pin;  --  routes the pads too
+                 Rx_Flow_Threshold : Natural := 100);
+procedure Acquire (S : in out Session; Port : UART_Port);
+procedure Write (S : Session; Data : Byte_Array);
+procedure Read  (S : Session; Data : out Byte_Array; Count : out Natural);
+function  Available (S : Session) return Natural;
+--  Post-Setup reconfiguration -- each takes the HELD Session, not a Port:
+procedure Set_Baud      (S : Session; Baud   : Baud_Rate);
+procedure Set_Data_Bits (S : Session; Bits   : Data_Bits);
+procedure Set_Parity    (S : Session; Parity : Parity_Mode);
+procedure Set_Stop_Bits (S : Session; Stop   : Stop_Bits);
+procedure Configure_Pins  (S : Session; ...);   --  re-route pads
+procedure Enable_Loopback (S : Session; On : Boolean := True);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Port}] \texttt{UART0}, \texttt{UART1} or \texttt{UART2}.
+\item[\texttt{Baud}] bit rate (\texttt{Baud\_Rate}, \texttt{300\,..\,5\_000\_000});
+  default \texttt{115\_200}.
+\item[\texttt{Bits}] data bits per frame (\texttt{Data\_Bits}, \texttt{5\,..\,8});
+  default \texttt{8}.
+\item[\texttt{Parity}] \texttt{None} (default), \texttt{Even} or \texttt{Odd}.
+\item[\texttt{Stop}] stop bits: \texttt{One} (default) or \texttt{Two}.
+\item[\texttt{Tx}, \texttt{Rx}, \texttt{Rts}, \texttt{Cts}] the four pads as
+  \texttt{Optional\_Pin}; all default to \texttt{No\_Pin} (route only the lines the
+  link uses).
+\item[\texttt{Rx\_Flow\_Threshold}] RX FIFO fill, in bytes, at which RTS
+  de-asserts; default \texttt{100} (the FIFO holds 128).
+\item[\texttt{On}] (\texttt{Enable\_Loopback}) \texttt{True} (default) folds TX back
+  to RX internally.
+\item[the \texttt{Set\_*} setters] each take the held \texttt{Session} and one new
+  value of the matching \texttt{Setup} type (e.g. \texttt{Set\_Parity} takes a
+  \texttt{Parity\_Mode}); \texttt{Configure\_Pins} additionally accepts per-line
+  \texttt{*\_Invert} booleans (default \texttt{False}).
+\end{description}
+
+\texttt{Setup} both configures the frame format \emph{and} routes the four pins
+(all optional --- pass only what the link uses, or none for an internal loopback
+self-test). It is the one port-based call, meant to run once at startup before
+any task contends for the port. \emph{Every} later change --- baud, data bits,
+parity, stop bits, pin re-routing, loopback --- takes a \texttt{Session} instead
+of a \texttt{Port}, so you must \texttt{Acquire} the port before you can
+reconfigure it. Changing a parameter therefore requires owning the port and can
+never race another task's transfer. Each frame setter is an independent
+read-modify-write that leaves the other attributes and the pin routing untouched.
+
+This rule is enforced \emph{structurally}, not by convention. Inside the body,
+the per-port register handle lives in a nested package whose body hides it; the
+only way to obtain it is one ownership-checked gateway that raises
+\texttt{Not\_Owned} unless the passed \texttt{Session} holds the port. Every
+transfer and every reconfiguration goes through that gateway, so a call without
+ownership fails loudly --- and, just as importantly, a \emph{new} operation
+added to the driver cannot reach the registers without passing a \texttt{Session}
+through the same check. The guard is impossible to forget because there is no
+other door to the hardware.
+
+\textbf{Example 1 --- transmit a line.}
+\begin{lstlisting}
+with ESP32S3.UART; use ESP32S3.UART;
+procedure UART_Tx is
+   S : Session;
+begin
+   Setup (UART1, Baud => 115_200, Tx => 17, Rx => 16);   --  format + pins in one
+   Acquire (S, UART1);
+   Write (S, (Character'Pos ('h'), Character'Pos ('i'), 10));
+end UART_Tx;
+\end{lstlisting}
+
+\textbf{Example 2 --- echo received bytes (wiring-free, internal loopback).}
+\begin{lstlisting}
+with ESP32S3.UART; use ESP32S3.UART;
+procedure UART_Echo is
+   S   : Session;
+   Buf : Byte_Array (0 .. 63);
+   N   : Natural;
+begin
+   Setup (UART1);
+   Acquire (S, UART1);
+   Enable_Loopback (S);              --  TX folded back to RX (held port)
+   Write (S, (1 => 16#42#));
+   loop
+      exit when Available (S) > 0;
+   end loop;
+   Read (S, Buf, N);                 --  Buf (0 .. N-1) holds the echoed bytes
+end UART_Echo;
+\end{lstlisting}
+
+\textbf{Example 2, step by step.} This example is worth reading line by line,
+because it exercises every part of the \texttt{Session} pattern.
+
+\emph{The declarations (before \texttt{begin}).}
+\begin{itemize}
+\item \texttt{S : Session} --- \texttt{Session} is a \emph{limited controlled}
+  type. \emph{Limited} means it cannot be copied or assigned (two tasks can
+  never share one hold); \emph{controlled} means it has a \texttt{Finalize} that
+  runs automatically when \texttt{S} leaves scope. It starts inactive --- it
+  owns nothing yet.
+\item \texttt{Buf : Byte\_Array (0 .. 63)} --- a 64-element array of
+  \texttt{Byte} (which is \texttt{new Interfaces.Unsigned\_8}); the destination
+  for the bytes we read back.
+\item \texttt{N : Natural} --- receives the count of bytes actually read.
+\end{itemize}
+
+\emph{The statements, in execution order.}
+\begin{enumerate}
+\item \texttt{Setup (UART1)} brings UART1 up with the default frame format
+  (115200 baud, 8 data bits, no parity, one stop bit --- the defaults on
+  \texttt{Setup}). It opens the controller and records that UART1 is configured.
+  No pins are routed: we pass no pin arguments to \texttt{Setup} (they all
+  default to \texttt{No\_Pin}) because this is a wiring-free self-test.
+\item \texttt{Acquire (S, UART1)} takes exclusive ownership of UART1. It first
+  checks the init-before-use guard: had UART1 never been \texttt{Setup}, this
+  would raise \texttt{Not\_Initialized}. It then blocks on UART1's protected
+  guard until the port is free (here, immediately), marks \texttt{S} active, and
+  records that it holds UART1. Until \texttt{S} is released no other task can
+  acquire UART1 --- and, because every reconfiguration call below takes the held
+  \texttt{Session}, no other task can change UART1's settings either.
+\item \texttt{Enable\_Loopback (S)} sets the controller's internal TX$\rightarrow$RX
+  loopback bit \emph{on the held port}. Everything the transmitter shifts out is
+  fed straight back into the receiver \emph{inside the chip}. Because UART is
+  push-pull (unlike I2C's open-drain bus) this loopback is faithful and needs
+  \emph{no external wiring and no GPIO pads} --- the whole point of the example.
+  It takes \texttt{S} (not \texttt{UART1}): you can only flip loopback on a port
+  you own.
+\item \texttt{Write (S, (1 => 16\#42\#))} --- \texttt{(1 => 16\#42\#)} is a
+  one-element array aggregate, a \texttt{Byte\_Array} of length 1 holding the
+  byte \texttt{16\#42\#} (66, ASCII \texttt{'B'}). \texttt{Write} pushes it into
+  the TX FIFO and returns once it is queued. This runs \emph{outside} the
+  protected lock --- the lock only arbitrated \emph{ownership} in the previous
+  step; the blocking I/O is never done while holding it. With loopback on, that
+  byte will reappear in the RX FIFO shortly.
+\item The poll loop \texttt{loop exit when Available (S) > 0; end loop;} spins,
+  re-reading how many bytes sit in the RX FIFO, until at least one has arrived.
+  The looped-back byte takes roughly one character-time ($\sim$87\,\textmu s at
+  115200 baud), so the loop spins briefly then exits. (A self-test idiom;
+  production code would use a timeout or an interrupt instead of a bare spin.)
+\item \texttt{Read (S, Buf, N)} reads up to \texttt{Buf'Length} (64) bytes into
+  \texttt{Buf} and sets \texttt{N} to how many it actually got --- here
+  \texttt{N = 1}, with \texttt{Buf (0) = 16\#42\#}. Elements
+  \texttt{Buf (N .. 63)} are left untouched. \texttt{Read} waits only briefly
+  per byte and does a short read on timeout, so it never hangs on bytes that
+  never come.
+\item At \texttt{end UART\_Echo}, \texttt{S} goes out of scope. Being controlled,
+  its \texttt{Finalize} runs automatically and calls \texttt{Release}, handing
+  UART1 back to its guard. This happens \emph{even if an exception had been
+  raised} between \texttt{Acquire} and here --- that is why the RAII handle
+  exists: the lock cannot leak.
+\end{enumerate}
+
+The two phases are deliberately separate. \texttt{Setup} (step 1) is the one
+port-based call, meant to run single-threaded at startup before any task
+contends for the port. \texttt{Acquire} (step 2) is the per-transaction
+ownership gate that hands you a \texttt{Session} --- and everything after it,
+including \texttt{Enable\_Loopback} here, acts through that \texttt{Session}, so
+a reconfiguration is only possible while you hold the port. Two guards tie the
+phases together: you cannot \texttt{Acquire} a port you never \texttt{Setup}, and
+you cannot change a port's parameters without holding it.
+
+\textbf{Example 3 --- change baud and frame format independently.} Each frame
+attribute has its own setter, so a protocol that renegotiates the link (or a
+bootloader that bumps the speed after handshaking) can change just one without
+re-running \texttt{Setup} or touching the pin routing. The setters take the held
+\texttt{Session}, so you \texttt{Acquire} the port first --- the reconfiguration
+runs under the same ownership as the transfers:
+\begin{lstlisting}
+with ESP32S3.UART; use ESP32S3.UART;
+procedure UART_Reconfig is
+   S : Session;
+begin
+   Setup (UART1, Tx => 17, Rx => 16);   --  115200 8-N-1 to start
+   Acquire (S, UART1);                  --  own the port before reconfiguring
+   Set_Baud      (S, 9_600);            --  then change each attribute alone
+   Set_Data_Bits (S, 7);
+   Set_Parity    (S, Even);
+   Set_Stop_Bits (S, Two);              --  now 9600 7-E-2
+   Write (S, (1 => 16#55#));
+end UART_Reconfig;
+\end{lstlisting}

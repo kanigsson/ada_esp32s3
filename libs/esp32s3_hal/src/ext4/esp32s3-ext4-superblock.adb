@@ -1,0 +1,127 @@
+with Interfaces; use Interfaces;
+with ESP32S3.Ext4.CRC32C;
+
+package body ESP32S3.Ext4.Superblock is
+
+   Magic : constant U16 := 16#EF53#;
+
+   procedure Read (Dev : ESP32S3.Block_Dev.Device; SB : out Info) is
+      --  The superblock lives at byte offset 1024 = sectors 2 and 3.
+      Buf  : Byte_Array (0 .. 1023);
+      Sec  : ESP32S3.Block_Dev.Sector;
+      Rev  : U32;
+      Log  : U32;
+      DSz  : U16;
+   begin
+      ESP32S3.Block_Dev.Read_Sector (Dev, 2, Sec);
+      Buf (0 .. 511) := Byte_Array (Sec);
+      ESP32S3.Block_Dev.Read_Sector (Dev, 3, Sec);
+      Buf (512 .. 1023) := Byte_Array (Sec);
+
+      if Get_U16 (Buf, 16#38#) /= Magic then
+         raise Corrupt with "not an ext2/3/4 filesystem (bad superblock magic)";
+      end if;
+
+      Log := Get_U32 (Buf, 16#18#);
+      SB.Block_Size       := Natural (Shift_Left (U32 (1024), Natural (Log)));
+      SB.First_Data_Block := Get_U32 (Buf, 16#14#);
+      SB.Blocks_Per_Group := Get_U32 (Buf, 16#20#);
+      SB.Inodes_Per_Group := Get_U32 (Buf, 16#28#);
+      SB.Inodes_Count     := Get_U32 (Buf, 16#00#);
+      SB.Blocks_Count     := U64 (Get_U32 (Buf, 16#04#));
+      SB.Free_Blocks      := U64 (Get_U32 (Buf, 16#0C#));
+      SB.Free_Inodes      := Get_U32 (Buf, 16#10#);
+      SB.Feature_Compat   := Get_U32 (Buf, 16#5C#);
+      SB.Feature_Incompat := Get_U32 (Buf, 16#60#);
+      SB.Feature_RO_Compat := Get_U32 (Buf, 16#64#);
+
+      Rev := Get_U32 (Buf, 16#4C#);
+      if Rev >= 1 then
+         SB.Inode_Size := Natural (Get_U16 (Buf, 16#58#));
+      else
+         SB.Inode_Size := 128;
+      end if;
+
+      if Is_64Bit (SB) then
+         SB.Blocks_Count := SB.Blocks_Count
+           or Shift_Left (U64 (Get_U32 (Buf, 16#150#)), 32);
+         SB.Free_Blocks := SB.Free_Blocks
+           or Shift_Left (U64 (Get_U32 (Buf, 16#158#)), 32);
+         DSz := Get_U16 (Buf, 16#FE#);
+         SB.Desc_Size := (if DSz = 0 then 32 else Natural (DSz));
+      else
+         SB.Desc_Size := 32;
+      end if;
+
+      --  Number of block groups = ceil((blocks - first_data_block) / per_group).
+      declare
+         Span : constant U64 := SB.Blocks_Count - U64 (SB.First_Data_Block);
+         Per  : constant U64 := U64 (SB.Blocks_Per_Group);
+      begin
+         SB.Groups_Count := U32 ((Span + Per - 1) / Per);
+      end;
+
+      --  metadata_csum: validate the superblock checksum and derive the per-fs
+      --  seed used to verify group descriptors, inodes, extents and dir tails.
+      SB.Has_Csum := Has_Metadata_Csum (SB);
+      if SB.Has_Csum then
+         declare
+            Stored : constant U32 := Get_U32 (Buf, 16#3FC#);
+            Calc   : constant U32 :=
+                       CRC32C.Update (16#FFFF_FFFF#, Buf (0 .. 16#3FB#));
+         begin
+            if Calc /= Stored then
+               raise Bad_Checksum with "superblock checksum mismatch";
+            end if;
+         end;
+
+         if (SB.Feature_Incompat and Incompat_Csum_Seed) /= 0 then
+            SB.Csum_Seed := Get_U32 (Buf, 16#270#);       --  s_checksum_seed
+         else
+            SB.Csum_Seed :=                                --  crc32c(~0, uuid)
+              CRC32C.Update (16#FFFF_FFFF#, Buf (16#68# .. 16#77#));
+         end if;
+      end if;
+   end Read;
+
+   procedure Encode (SB : Info; Buf : in out Byte_Array; Base : Natural) is
+   begin
+      Put_U32 (Buf, Base + 16#0C#, U32 (SB.Free_Blocks and 16#FFFF_FFFF#));
+      Put_U32 (Buf, Base + 16#10#, SB.Free_Inodes);
+      Put_U32 (Buf, Base + 16#60#, SB.Feature_Incompat);
+      if Is_64Bit (SB) then
+         Put_U32 (Buf, Base + 16#158#, U32 (Shift_Right (SB.Free_Blocks, 32)));
+      end if;
+      if SB.Has_Csum then
+         Put_U32 (Buf, Base + 16#3FC#,
+                  CRC32C.Update (16#FFFF_FFFF#, Buf (Base .. Base + 16#3FB#)));
+      end if;
+   end Encode;
+
+   procedure Sync (Dev : ESP32S3.Block_Dev.Device; SB : Info) is
+      Buf : Byte_Array (0 .. 1023);
+      Sec : ESP32S3.Block_Dev.Sector;
+   begin
+      ESP32S3.Block_Dev.Read_Sector (Dev, 2, Sec);
+      Buf (0 .. 511) := Byte_Array (Sec);
+      ESP32S3.Block_Dev.Read_Sector (Dev, 3, Sec);
+      Buf (512 .. 1023) := Byte_Array (Sec);
+
+      Encode (SB, Buf, 0);
+
+      Sec := ESP32S3.Block_Dev.Sector (Buf (0 .. 511));
+      ESP32S3.Block_Dev.Write_Sector (Dev, 2, Sec);
+      Sec := ESP32S3.Block_Dev.Sector (Buf (512 .. 1023));
+      ESP32S3.Block_Dev.Write_Sector (Dev, 3, Sec);
+   end Sync;
+
+   procedure Require_Supported (SB : Info; Handled : U32) is
+   begin
+      if (SB.Feature_Incompat and not Handled) /= 0 then
+         raise Unsupported_Feature
+           with "ext incompat feature bit(s) not implemented:"
+                & U32'Image (SB.Feature_Incompat and not Handled);
+      end if;
+   end Require_Supported;
+
+end ESP32S3.Ext4.Superblock;

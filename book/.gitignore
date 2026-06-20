@@ -1,0 +1,10 @@
+*.aux
+*.log
+*.toc
+*.out
+*.idx
+*.ind
+*.ilg
+*.pdf
+!main.pdf
+!Ada.pdf

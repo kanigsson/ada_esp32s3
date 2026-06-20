@@ -1,0 +1,110 @@
+{
+  // Build / flash / monitor tasks for the bare-metal Ada ESP32-S3 examples.
+  // All delegate to the top-level ./x dispatcher, so this file stays tiny and
+  // never duplicates build logic.  Language features (completion, diagnostics,
+  // go-to-def) come from the Ada Language Server via each example's .gpr -- pair
+  // this with the "Ada & SPARK" (AdaCore) VS Code extension.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Ada: build",
+      "type": "shell",
+      "command": "${workspaceFolder}/x",
+      "args": ["build", "${input:example}", "--profile", "${input:profile}"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": {
+        "owner": "ada",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
+    },
+    {
+      "label": "Ada: flash",
+      "type": "shell",
+      "command": "${workspaceFolder}/x",
+      "args": ["flash", "${input:example}", "-p", "${input:port}"],
+      "problemMatcher": []
+    },
+    {
+      // build then flash, in sequence -- bound to Ctrl+F9 (see .vscode/README.md).
+      // The example/port are prompted once and shared across both steps.
+      "label": "Ada: build + flash",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Ada: build", "Ada: flash"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Ada: monitor",
+      "type": "shell",
+      "command": "${workspaceFolder}/x",
+      "args": ["monitor", "-p", "${input:port}"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Ada: run (build+flash+monitor)",
+      "type": "shell",
+      "command": "${workspaceFolder}/x",
+      "args": ["run", "${input:example}", "-p", "${input:port}", "--profile", "${input:profile}"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Ada: clean",
+      "type": "shell",
+      "command": "${workspaceFolder}/x",
+      "args": ["clean", "${input:example}"],
+      "problemMatcher": []
+    },
+    {
+      // background OpenOCD server for debugging (see launch.json).
+      // Uses the pinned copy from `./x get-openocd` (tools/openocd/), else an
+      // openocd on PATH.
+      "label": "openocd",
+      "type": "shell",
+      "command": "${workspaceFolder}/tools/openocd.sh",
+      "isBackground": true,
+      "problemMatcher": {
+        // Non-matching pattern on purpose: OpenOCD's normal Info/Warn output must
+        // NOT be reported as errors (a catch-all "^(.*)$" caused the spurious
+        // "Errors exist after running preLaunchTask 'openocd'" prompt). The
+        // background begins/endsPattern below still gate the debug launch on
+        // "Listening on port 3333".
+        "pattern": { "regexp": "^(__openocd_never_match__)$", "message": 1 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Open On-Chip Debugger",
+          "endsPattern": "Listening on port 3333"
+        }
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "example",
+      "type": "pickString",
+      "description": "Which example?",
+      "default": "gpio0_blink",
+      "options": [
+        "gpio0_blink", "esp32s3_heartbeat", "smp_skeleton", "smp_empty", "smp",
+        "psram", "profile_test", "embedded", "full_tasking", "acats"
+      ]
+    },
+    {
+      "id": "port",
+      "type": "promptString",
+      "description": "Serial port",
+      "default": "/dev/ttyACM0"
+    },
+    {
+      "id": "profile",
+      "type": "pickString",
+      "description": "Runtime profile (auto = the example's own default)",
+      "default": "auto",
+      "options": ["auto", "light-tasking", "embedded", "full"]
+    }
+  ]
+}

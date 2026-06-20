@@ -1,0 +1,31 @@
+--  Compile the bare boot-support unit (bare_boot.adb) to a single relocatable
+--  object, ZFP-style: built against the pinned runtime only for system.ads, but
+--  compiled -gnatp / No_Elaboration so the linked output needs no binder
+--  (adainit) and pulls no runtime.  bare_build.sh runs `gprbuild -c` then links
+--  obj/bare_boot.o in place of the former stubs.o.  Source_Dirs includes the
+--  svd-derived register specs (closure-only: only RTC_CNTL/SYSTEM/SYSTIMER are
+--  actually compiled into the object).
+with "esp32s3_rts.gpr";
+
+project Bare_Boot is
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   for Source_Dirs use (".", "../../../../libs/esp32s3_hal/svd");
+   --  Compile only the specs in bare_boot's closure (the whole svd dir is valid,
+   --  but there is no point compiling 46 peripherals to use three).
+   for Source_Files use
+     ("bare_boot.ads", "bare_boot.adb",
+      "esp32s3_registers.ads",
+      "esp32s3_registers-interrupt_core0.ads",
+      "esp32s3_registers-interrupt_core1.ads",
+      "esp32s3_registers-rtc_cntl.ads",
+      "esp32s3_registers-system.ads",
+      "esp32s3_registers-systimer.ads");
+   for Object_Dir use "obj";
+
+   package Compiler is
+      for Switches ("Ada") use
+        ("-Os", "-mlongcalls", "-gnatp",
+         "-ffunction-sections", "-fdata-sections");
+   end Compiler;
+end Bare_Boot;

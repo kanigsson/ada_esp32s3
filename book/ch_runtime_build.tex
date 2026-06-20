@@ -1,0 +1,217 @@
+\chapter{Building and Porting the Runtime}
+\label{ch:runtime-build}
+
+The earlier \emph{Building and Running} chapter (\S\ref{ch:build}) showed the
+runtime from the outside: pick a profile, run \texttt{./x}, get an image. This
+chapter opens the box. It explains how the three runtimes are actually
+\emph{constructed} --- where the Ada runtime sources come from, what makes one
+profile differ from another, how the experimental \texttt{full} profile is
+synthesised, and how the register packages are generated. If you ever need to
+change a runtime unit, add a peripheral, or port the whole stack to another
+Xtensa chip, this is the map.
+
+\section{The idea: a board on top of \texttt{bb-runtimes}}\index{bb-runtimes}
+
+The runtime is not written from scratch. It is grown from AdaCore's
+\texttt{bb-runtimes} --- the same generator that produces the bareboard GNAT
+runtimes for Cortex-M, LEON, RISC-V and the rest. \texttt{bb-runtimes} knows how
+to assemble a runtime from a large pool of shared Ada units; what it needs from
+\emph{you} is a \emph{board definition}: the target triple, the clock, the
+interrupt model, and a handful of board-specific bodies (the console, the timer,
+machine reset).
+
+\texttt{bb-runtimes} lives in the repository as a git submodule --- a fork
+(\texttt{rowsail/bb-runtimes}, branch \texttt{xtensa-esp32s3-port}) that carries
+the ESP32-S3 board on top of the upstream sources. Keeping it a submodule means
+the board port is version-pinned and the upstream history stays visible.
+
+\cnote{There is no equivalent step in an ESP-IDF project: the C toolchain ships a
+fixed newlib and FreeRTOS. Here the language runtime itself is a build product
+you can read, patch and regenerate --- the scheduler, the tick, the secondary
+stack and the exception machinery are all Ada source in the tree.}
+
+\section{\texttt{gen\_runtime.sh}: from board to archive}\index{gen\_runtime.sh}
+
+One script, \texttt{crates/esp32s3\_rts/gen\_runtime.sh}, turns the board
+definition into a ready-to-link runtime. It is driven by a single environment
+variable:
+
+\begin{lstlisting}[style=sh]
+export ESP32S3_RTS_PROFILE=embedded      # light-tasking (default) | embedded | full
+crates/esp32s3_rts/gen_runtime.sh
+\end{lstlisting}
+
+The script does four things:
+
+\begin{enumerate}
+\item \textbf{Generate the source tree.} It runs \texttt{bb-runtimes}'
+  \texttt{build\_rts.py} against the \texttt{esp32s3} board, which copies the
+  selected pool units plus the board's own sources into a profile-specific
+  directory:
+\begin{lstlisting}[style=sh]
+python3 build_rts.py -f -o "$HERE" \
+   --rts-src-descriptor=gnat_rts_sources/lib/gnat/rts-sources.json esp32s3
+\end{lstlisting}
+  The output lands in \texttt{crates/esp32s3\_rts/<profile>-esp32s3/} --- a
+  complete runtime with \texttt{gnat/} (sequential units) and \texttt{gnarl/}
+  (tasking units) subdirectories. These directories are \emph{git-ignored}: they
+  are build products, regenerated on demand.
+\item \textbf{(\texttt{full} only) Apply the overlay and patches} --- the next
+  section.
+\item \textbf{Compile} the tree with \texttt{gprbuild} against a small
+  \texttt{ravenscar\_build.gpr}.
+\item \textbf{Archive} the objects into \texttt{adalib/libgnat.a} (sequential)
+  and \texttt{adalib/libgnarl.a} (tasking) with \texttt{xtensa-esp32-elf-ar}.
+  The \texttt{esp32s3\_rts.gpr} that applications \texttt{with} points its
+  \texttt{Runtime} at \texttt{<profile>-esp32s3/}, so consuming the runtime is
+  just naming the crate.
+\end{enumerate}
+
+Crucially the compile-and-archive step is guarded: it runs only when
+\texttt{adalib/libgnat.a} is \emph{absent}. A second invocation with the tree
+already built is therefore nearly instant --- but it is also the source of a trap
+(\S\ref{sec:stale-cache}).
+
+\section{Three profiles, three \texttt{system.ads}}\index{runtime profiles}
+
+What actually distinguishes the profiles is mostly one file: \texttt{system.ads},
+the package that declares the target's restrictions and capabilities. The board
+class maps each profile name to a variant:
+
+\begin{center}
+\begin{tabular}{l l}
+\textbf{Profile} & \textbf{\texttt{system.ads} variant} \\ \hline
+\texttt{light-tasking} & \texttt{system-xi-xtensa-light-tasking.ads} \\
+\texttt{embedded}      & \texttt{system-xi-xtensa-embedded.ads} \\
+\texttt{full}          & synthesised locally (see below) \\
+\end{tabular}
+\end{center}
+
+The \texttt{light-tasking} variant carries the restrictive pragmas ---
+\texttt{No\_Exception\_Propagation}, \texttt{No\_Finalization},
+\texttt{No\_Secondary\_Stack}, all under \texttt{pragma Profile (Jorvik)}. The
+\texttt{embedded} variant is the \emph{same Jorvik profile} with those three
+restrictions lifted: exceptions propagate (zero-cost, ZCX), controlled types
+finalize, and a secondary stack exists. Changing profile is, at heart, swapping
+this declaration --- everything downstream (which pool units \texttt{build\_rts}
+selects, which code the compiler generates) follows from it.
+
+The board's own bodies are shared across profiles and named with the
+\texttt{\_\_esp32s3} convention that \texttt{bb-runtimes} uses for board files:
+
+\begin{center}
+\begin{tabular}{l l}
+\textbf{File} & \textbf{Role} \\ \hline
+\texttt{s-bbpara\_\_esp32s3.ads} & board parameters: 240\,MHz clock, interrupt range, stacks \\
+\texttt{s-bbbosu\_\_esp32s3.adb} & board support: the tick (\texttt{CCOMPARE}), interrupt dispatch \\
+\texttt{s-textio\_\_esp32s3.adb} & console \texttt{Put} via the ROM \texttt{esp\_rom\_printf} \\
+\texttt{s-macres\_\_esp32s3.adb} & machine reset \\
+\texttt{a-intnam\_\_esp32s3.ads}  & \texttt{Ada.Interrupts.Names} for the CPU's interrupts \\
+\end{tabular}
+\end{center}
+
+\section{The \texttt{full} profile: overlay plus patches}\index{full profile}
+
+There is no upstream Jorvik-free Xtensa runtime, so \texttt{full} is built on top
+of \texttt{embedded} rather than generated directly. \texttt{gen\_runtime.sh}
+generates the embedded tree, then layers two things on it:
+
+\begin{itemize}
+\item an \textbf{overlay} (\texttt{full\_overlay/}) --- a de-restricted
+  \texttt{system.ads} and a set of GNARL units (interrupt management, the OS
+  primitives, the tasking primitives) that replace the Jorvik-limited versions
+  with the full ones; and
+\item a small set of \textbf{source patches}, kept as ordinary \texttt{.patch}
+  files and applied with GNU \texttt{patch}:
+\end{itemize}
+
+\begin{lstlisting}[style=sh]
+patch -p1 -d "$RTS" < full_overlay/patches/01-...-secondary-stacks.patch
+\end{lstlisting}
+
+Each patch fixes one concrete defect that only surfaces under full tasking, and
+each is documented at its head:
+
+\begin{center}
+\begin{tabular}{p{4.6cm} p{8.6cm}}
+\textbf{Patch} & \textbf{What it fixes} \\ \hline
+secondary-stack reclaim & free a task's heap secondary stack when it terminates \\
+trampoline IRAM alias & point nested-subprogram trampolines at the executable
+  (IRAM) alias of SRAM, not the data view --- otherwise the first call faults \\
+\texttt{To\_Time\_Span} rounding & a nonzero \texttt{Duration} must round to
+  $\geq 1$ tick (the 4.17\,ns tick is coarser than \texttt{Duration'Small}) \\
+dynamic-priority re-apply & re-apply a \texttt{Set\_Priority} after the lock is
+  released, which the bareboard unlock would otherwise undo \\
+FIFO-within-priority & implement RM~D.2.3 so a base-priority change moves a task
+  to the tail of its ready queue \\
+\end{tabular}
+\end{center}
+
+Keeping these as diffs rather than wholesale copied files means each change is
+small, reviewable, and obviously attributable to a specific runtime behaviour ---
+and it keeps \texttt{gen\_runtime.sh} readable.
+
+\section{Register packages from the SVD}\index{svd2ada}\index{SVD}
+
+The HAL never hard-codes a peripheral address. Every register is a typed Ada
+record drawn from \texttt{ESP32S3\_Registers.*}, and those packages are
+\emph{generated} from Espressif's machine-readable SVD (System View Description)
+by \texttt{svd2ada}. The generator script,
+\texttt{libs/esp32s3\_hal/regenerate.sh}:
+
+\begin{enumerate}
+\item fetches a pinned \texttt{esp32s3.svd} (a specific \texttt{espressif/svd}
+  commit, overridable with \texttt{ESP32S3\_SVD=...});
+\item builds \texttt{svd2ada} \emph{from AdaCore source} --- the Alire-indexed
+  build is too old and mishandles dimensioned register arrays;
+\item runs it into \texttt{libs/esp32s3\_hal/svd/}:
+\begin{lstlisting}[style=sh]
+svd2ada esp32s3.svd -o svd -p ESP32S3_Registers --boolean
+\end{lstlisting}
+\end{enumerate}
+
+The root package is named \texttt{ESP32S3\_Registers} on purpose: GNAT forbids
+user-defined children of \texttt{Interfaces}, so the natural
+\texttt{Interfaces.ESP32S3} is not allowed. One wrinkle needs a post-process:
+the SVD has a peripheral literally called \texttt{SYSTEM}, which becomes
+\texttt{ESP32S3\_Registers.SYSTEM} --- and because Ada is case-insensitive, a
+bare \texttt{System.\dots} reference inside that unit resolves to the wrong
+package. A one-line \texttt{sed} rewrites those references to the fully qualified
+\texttt{Standard.System.\dots}. Add a peripheral and the recipe is the same: add
+\texttt{ESP32S3.<Peri>} to the HAL, backed by the generated register record.
+
+\section{The stale-cache trap}\index{stale cache}
+\label{sec:stale-cache}
+
+Because the heavy compile/archive step runs only when
+\texttt{adalib/libgnat.a} is missing, editing a runtime source \emph{in the
+generated tree} does not, on its own, rebuild anything --- the next build links
+the old archive and your change silently does nothing. This has burned us more
+than once, so it is worth stating plainly:
+
+\begin{quote}
+\textbf{After editing a generated runtime \texttt{.adb}, delete the archives
+before rebuilding:}
+\begin{lstlisting}[style=sh]
+rm crates/esp32s3_rts/<profile>-esp32s3/adalib/libgnat.a \
+   crates/esp32s3_rts/<profile>-esp32s3/adalib/libgnarl.a
+\end{lstlisting}
+\end{quote}
+
+(Editing a source under \texttt{bb-runtimes/} or \texttt{full\_overlay/} instead
+regenerates correctly, because the whole tree is rebuilt; the trap is specifically
+editing the \emph{regenerated copy}.) The same caution applies to verifying any
+runtime fix: confirm the change is in the linked archive, not just on disk,
+before drawing a conclusion.
+
+\section{Porting to another board}
+
+The structure makes the porting checklist short. To bring the runtime to another
+Xtensa SoC you would: add a board class under \texttt{bb-runtimes/xtensa/} (target
+triple, clock, interrupt range, SMP flag); supply the five \texttt{\_\_<board>}
+bodies (parameters, board support, console, reset, interrupt names); write the
+two \texttt{system-xi-xtensa-*.ads} variants (or reuse these if the restriction
+set is the same); regenerate the register packages from that chip's SVD; and
+point \texttt{gen\_runtime.sh} at the new board name. The boot path --- the
+2nd-stage loader, the clock and cache bring-up, PSRAM --- is the subject of the
+next chapter.

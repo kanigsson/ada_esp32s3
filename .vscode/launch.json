@@ -1,0 +1,57 @@
+{
+  // On-chip debug via OpenOCD + GDB, using the **Native Debug** extension
+  // (webfreak.debug, type "gdb") -- NOT cppdbg. cppdbg has architecture-specific
+  // stack unwinding and does not support Xtensa: it connects but shows no call
+  // stack / no source ("assuming x86_64"). Native Debug just relays GDB's own
+  // frames, which unwind correctly. Setup:
+  //   * install "Native Debug" (webfreak.debug)
+  //   * run  ./x get-debug-tools  once (fetches OpenOCD + the s3 xtensa-esp32s3-elf-gdb)
+  //   * build the chosen example first (Ada: build) so its app.elf exists
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Ada: debug (OpenOCD + GDB)",
+      "type": "gdb",
+      "request": "attach",
+      "executable": "${workspaceFolder}/examples/${input:exampleDir}/app.elf",
+      "target": "localhost:3333",
+      "remote": true,
+      "cwd": "${workspaceFolder}",
+      "gdbpath": "${workspaceFolder}/tools/gdb/xtensa-esp-elf-gdb/bin/xtensa-esp32s3-elf-gdb",
+      "valuesFormatting": "parseText",
+      "preLaunchTask": "openocd",
+      // Two-stage stop. Native Debug runs `autorun`, then issues its OWN `continue`
+      // (attach semantics), so the autorun stop is NOT the resting point -- whatever
+      // Native Debug's continue hits next is. Stage 1 (`thb app_main` + `continue`)
+      // is a throwaway tracked stop that re-syncs GDB's run-state: after `monitor
+      // reset halt` the cores sit at the ROM vector outside GDB's run-control, and
+      // thread-info would error "target running" without it. Stage 2 (`thb
+      // _ada_main`) is the resting point -- Native Debug's post-autorun continue
+      // lands there, at the Ada `Main` (procedure Main -> `_ada_main`), so the cursor
+      // opens on your code. NOTE: this config (unlike the status-bar Debug button)
+      // does NOT build/flash first -- build+flash the SAME image, or the breakpoints
+      // won't match the running code. The status-bar Debug icon does all of this.
+      "autorun": [
+        "monitor reset halt",
+        "maintenance flush register-cache",
+        "thb app_main",
+        "continue",
+        "thb _ada_main"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "exampleDir",
+      "type": "pickString",
+      "description": "Which example's app.elf to debug?",
+      "default": "esp32s3_gpio0_blink",
+      "options": [
+        "esp32s3_gpio0_blink", "esp32s3_heartbeat", "esp32s3_smp_skeleton",
+        "esp32s3_smp_empty", "esp32s3_smp", "esp32s3_psram",
+        "esp32s3_jorvik_profile_test", "esp32s3_embedded",
+        "esp32s3_full_tasking", "esp32s3_acats"
+      ]
+    }
+  ]
+}

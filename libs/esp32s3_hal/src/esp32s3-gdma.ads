@@ -1,0 +1,104 @@
+with System;
+with Ada.Finalization;
+
+--  ESP32-S3 General DMA (GDMA).
+--
+--  The S3 has ONE AHB GDMA block with five channel pairs (0 .. 4).  Each pair
+--  has an independent transmit (OUT) path and receive (IN) path, and either can
+--  be wired to any peripheral through the GDMA crossbar -- the channel is a
+--  runtime-assigned resource, not a fixed-per-peripheral one.  This driver
+--  models that directly: Claim hands out a free Channel handle bound to a
+--  peripheral; later peripheral drivers (SPI, I2S, ...) will Claim a channel
+--  and drive their own descriptors over it.
+--
+--  Transfers are described by linked lists of descriptors in memory; the engine
+--  walks the list, moving each buffer.  This first cut implements the
+--  memory-to-memory path (Mem2Mem): a single Copy that the hardware completes by
+--  looping one channel's OUT path into its own IN path.
+--
+--  Concurrency / ownership: Claim / Release go through a protected allocator, so
+--  concurrent tasks can never be handed the same channel.  The Channel handle is
+--  LIMITED (non-copyable -- you can't assign it to another variable or pass a
+--  copy to another task, so two tasks can't alias one channel) and CONTROLLED
+--  (it releases its channel automatically when it leaves scope, including on an
+--  exception, so a channel can't leak or be reused through a stale copy).  Once
+--  you hold a Channel, only you touch its registers and descriptors -- so the
+--  transfer operations need no further locking.  Using finalization, this driver
+--  targets the embedded/full profile (excluded from the light-tasking build).
+package ESP32S3.GDMA is
+   --  The five GDMA channel pairs.
+   type Channel_Id is mod 5;
+
+   --  Peripherals a channel can be bound to.  Mem2Mem is the internal
+   --  memory-to-memory loopback (no external peripheral).  The others match the
+   --  GDMA PERI_SEL encoding and are placeholders until their drivers land.
+   type Peripheral is
+     (Mem2Mem, SPI2, SPI3, UHCI0, I2S0, I2S1, LCD_CAM, AES, SHA, ADC_DAC, RMT);
+
+   --  An opaque, non-copyable handle to a claimed channel.  Default-initialised
+   --  to invalid (check Is_Valid); auto-releases its channel on scope exit.
+   type Channel is limited private;
+
+   --  Largest single-descriptor transfer (hardware buffer-size field is 12 bits).
+   Max_Transfer : constant := 4095;
+
+   --  Claim a free channel into C and bind both its paths to Peri.  If all five
+   --  are in use, C is left invalid (Is_Valid False).  For Mem2Mem the one
+   --  channel's OUT and IN paths are used together.  (If C already holds a
+   --  channel it is released first.)  C releases its channel automatically when
+   --  it goes out of scope -- call Release only to hand it back early.
+   procedure Claim (C : in out Channel; Peri : Peripheral);
+
+   --  True when Claim succeeded (a real channel is held).
+   function Is_Valid (C : Channel) return Boolean;
+
+   --  Return a channel to the free pool (also tears down its peripheral
+   --  binding).  Harmless on an invalid handle.
+   procedure Release (C : in out Channel);
+
+   --  Blocking memory-to-memory copy of Length bytes (1 .. Max_Transfer) from
+   --  Src to Dst over channel C (claimed for Mem2Mem).  Returns once the
+   --  transfer's success-EOF is observed.  Src, Dst and the driver's internal
+   --  descriptors must live in INTERNAL SRAM -- the descriptor link address is a
+   --  20-bit field the engine completes within the on-chip RAM region.
+   --
+   --  No-op if C is invalid or Length is 0 / over Max_Transfer.
+   procedure Copy (C : Channel; Dst, Src : System.Address; Length : Natural);
+
+   ------------------------------------------------------------------------
+   --  Peripheral-bound transfers.
+   --
+   --  A peripheral driver (SPI, I2S, UART/UHCI, ...) Claims a channel bound to
+   --  its peripheral, then drives one direction at a time over it.  The GDMA
+   --  side here is the same descriptor engine the (HW-verified) Copy uses; the
+   --  peripheral's own configuration and its DMA request handshake live in the
+   --  peripheral driver.
+   ------------------------------------------------------------------------
+
+   --  Data-flow direction of a transfer:
+   --    Mem_To_Periph -> the OUT (TX) path reads RAM and feeds the peripheral
+   --    Periph_To_Mem -> the IN (RX) path receives from the peripheral into RAM
+   type Direction is (Mem_To_Periph, Periph_To_Mem);
+
+   --  Arm a single-buffer transfer in direction Dir on channel C and kick the
+   --  GDMA side.  NON-blocking: configure and start the peripheral separately;
+   --  the GDMA moves data as the peripheral asserts its DMA request.  Poll Done
+   --  or call Wait for completion.  Buffer must be in internal SRAM; Length in
+   --  1 .. Max_Transfer.  No-op on an invalid handle or out-of-range Length.
+   procedure Start (C : Channel; Dir : Direction;
+                    Buffer : System.Address; Length : Natural);
+
+   --  True once the Dir transfer has signalled success-EOF (also True for an
+   --  invalid handle, so a Wait never hangs on one).
+   function Done (C : Channel; Dir : Direction) return Boolean;
+
+   --  Block (bounded busy-wait) until Done (C, Dir).
+   procedure Wait (C : Channel; Dir : Direction);
+
+private
+   type Channel is new Ada.Finalization.Limited_Controlled with record
+      Id    : Channel_Id := 0;
+      Valid : Boolean    := False;
+   end record;
+   overriding procedure Finalize (C : in out Channel);   --  auto-release on scope exit
+end ESP32S3.GDMA;

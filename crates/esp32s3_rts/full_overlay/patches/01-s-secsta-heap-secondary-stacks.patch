@@ -1,0 +1,53 @@
+--- b/gnat/s-secsta.ads	2026-06-15 16:25:06.667624980 -0400
++++ a/gnat/s-secsta.ads	2026-06-15 16:25:06.703625267 -0400
+@@ -126,6 +126,8 @@
+    --  Return the Mark corresponding to the current state of the stack
+ 
+    procedure SS_Release (M : Mark_Id);
++
++   procedure SS_Free (Stack : in out SS_Stack_Ptr);
+    --  Restore the state of the stack corresponding to the mark M
+ 
+    function SS_Get_Max return Long_Long_Integer;
+--- b/gnat/s-secsta.adb	2026-06-15 16:25:06.667624980 -0400
++++ a/gnat/s-secsta.adb	2026-06-15 16:25:06.703625267 -0400
+@@ -35,6 +35,7 @@
+ --  deallocation of the secondary stack and its contents.
+ 
+ with Ada.Unchecked_Conversion;
++with Ada.Unchecked_Deallocation;
+ 
+ package body System.Secondary_Stack is
+ 
+@@ -294,11 +295,11 @@
+          --  program. In this case return without assigning a stack as it will
+          --  never be used.
+ 
+-         elsif Binder_SS_Count = 0 then
+-            return;
+-
+          else
+-            raise Program_Error;
++            --  No binder pool slot (built -Q0, or pool exhausted):
++            --  heap-allocate; SS_Free reclaims it on termination.
++            Stack := new SS_Stack
++              (if Size = Unspecified_Size then Default_SS_Size else Size);
+          end if;
+       end if;
+ 
+@@ -326,4 +327,15 @@
+       Get_Sec_Stack.Top := SS_Ptr (M);
+    end SS_Release;
+ 
++   procedure SS_Free (Stack : in out SS_Stack_Ptr) is
++      procedure Free is new
++        Ada.Unchecked_Deallocation (SS_Stack, SS_Stack_Ptr);
++   begin
++      if Binder_SS_Count = 0 then  --  every stack is heap-allocated
++         Free (Stack);
++      else
++         Stack := null;  --  binder-pool stack: not reclaimable
++      end if;
++   end SS_Free;
++
+ end System.Secondary_Stack;

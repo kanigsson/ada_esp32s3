@@ -1,0 +1,82 @@
+\chapter{Quick Reference}
+\label{ch:appendix}
+
+\section{Usable GPIO pins}
+\label{app:pins}
+
+The HAL's \texttt{Pin\_Id} subtype (\S\ref{sec:subtypes}) admits only the pads the
+ESP32-S3 actually exposes. Everything else is a compile-time error.
+
+\begin{center}
+\begin{tabular}{l l}
+\textbf{Pads} & \textbf{Status} \\ \hline
+\texttt{0 .. 21}   & usable (general-purpose) \\
+\texttt{22 .. 25}  & absent on the package \\
+\texttt{26 .. 32}  & SPI flash --- driving them hangs the chip \\
+\texttt{33 .. 37}  & octal PSRAM --- driving them hangs the chip \\
+\texttt{38 .. 48}  & usable (general-purpose) \\
+\end{tabular}
+\end{center}
+
+So \texttt{Pin\_Id} is \texttt{0\,..\,21 | 38\,..\,48}, and \texttt{Optional\_Pin}
+adds the sentinel \texttt{No\_Pin} ($=-1$) for ``leave this line unrouted.''
+
+\section{Runtime profiles at a glance}
+\label{app:profiles}
+
+\begin{center}
+\begin{tabular}{l l l l}
+\textbf{Feature} & \textbf{light-tasking} & \textbf{embedded} & \textbf{full} \\ \hline
+Tasks, protected objects, \texttt{delay until} & yes & yes & yes \\
+Exception propagation (ZCX)        & no  & yes & yes \\
+Controlled types / finalization (RAII) & no & yes & yes \\
+Secondary stack                    & no  & yes & yes \\
+Heap                               & bump only & first-fit & first-fit \\
+\texttt{select} / rendezvous / \texttt{abort} & no & no & yes \\
+RAII-handle HAL drivers (SPI, I2S, \ldots) & no & yes & yes \\
+Smallest footprint                 & yes & --- & --- \\
+\end{tabular}
+\end{center}
+
+Choose \texttt{light-tasking} for the smallest, most analysable build,
+\texttt{embedded} for most applications (the default), and \texttt{full} only when
+you need dynamic tasking, rendezvous or \texttt{abort}
+(Chapter~\ref{ch:profiles}).
+
+\section{Example index}
+\label{app:examples}
+
+Every example builds and runs with \texttt{./x run <name> -p /dev/ttyACM0}; the
+profile column is its default.
+
+\begin{center}\small
+\begin{longtable}{@{}l l l@{}}
+\textbf{Name} & \textbf{Profile} & \textbf{Shows} \\ \hline
+\endhead
+\texttt{gpio0\_blink}    & light-tasking & GPIO output; the minimal app \\
+\texttt{heartbeat}       & light-tasking & a periodic task \\
+\texttt{psram}           & light-tasking & external PSRAM bring-up \\
+\texttt{smp}             & light-tasking & dual-core scheduling \\
+\texttt{embedded}        & embedded & tagged dispatch, finalization, exceptions \\
+\texttt{exceptions}      & embedded & local / propagated / unhandled exceptions \\
+\texttt{crypto}          & embedded & SHA + AES accelerators \\
+\texttt{adc\_read}       & embedded & SAR ADC one-shot \\
+\texttt{touch\_read}     & embedded & capacitive touch \\
+\texttt{i2c\_loopback}   & embedded & I2C master self-test \\
+\texttt{uart\_loopback}  & embedded & UART internal loopback \\
+\texttt{i2s\_loopback}   & embedded & I2S full-duplex DMA loopback \\
+\texttt{i2s\_pdm}        & embedded & I2S PDM (PCM\,$\leftrightarrow$\,PDM) \\
+\texttt{gdma\_copy}      & embedded & memory-to-memory DMA \\
+\texttt{ledc\_pwm}, \texttt{mcpwm\_pwm} & embedded & PWM outputs \\
+\texttt{rmt\_loopback}   & embedded & RMT pulse TX/RX \\
+\texttt{pcnt\_count}     & embedded & pulse / edge counter \\
+\texttt{sdm\_output}     & embedded & sigma-delta density output \\
+\texttt{twai\_loopback}  & embedded & CAN (standard, extended, RTR) \\
+\texttt{timer\_count}    & embedded & general-purpose timers \\
+\texttt{lcd\_i8080}      & embedded & 8-bit i80 parallel LCD \\
+\texttt{rtc\_sleep}, \texttt{rtcio\_hold} & embedded & deep sleep, RTC pad hold \\
+\texttt{sd\_spi}, \texttt{sdmmc}, \texttt{ext4} & embedded & SD cards + ext4 filesystem \\
+\texttt{intr\_levels}    & embedded & interrupt levels/priorities \\
+\texttt{full\_tasking}, \texttt{rendezvous}, \texttt{full\_intr} & full & rendezvous, dynamic tasking \\
+\end{longtable}
+\end{center}

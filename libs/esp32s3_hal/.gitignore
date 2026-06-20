@@ -1,0 +1,4 @@
+# svd2ada build cache (regenerate.sh fetches it on demand)
+.svd2ada/
+# per-profile build objects (esp32s3_hal.gpr Object_Dir = obj-<profile>)
+/obj-*/

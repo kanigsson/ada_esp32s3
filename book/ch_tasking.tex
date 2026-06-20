@@ -1,0 +1,618 @@
+\chapter{Tasking and Concurrency}
+\label{ch:tasking}
+
+Concurrency in Ada is part of the language, not a bolted-on RTOS API: \emph{tasks}
+for independent threads of control, \emph{protected objects} for race-free sharing,
+interrupt handlers as protected procedures, and a monotonic clock for real-time
+work. This chapter shows the practical mechanics on the dual-core ESP32-S3 ---
+creating tasks and interrupt handlers, periodic scheduling, waiting with timeouts,
+the recurring concurrency patterns, watchdogs, and putting both cores to work. It
+draws on the encapsulation features of Chapter~\ref{ch:encap} and the drivers of
+the HAL chapters.
+
+\section{Tasks and interrupt handlers}
+\label{sec:tasks}\index{tasks}
+
+Concurrency in Ada is in the language, not an RTOS API: you declare \emph{tasks}
+for independent threads of control and \emph{interrupt handlers} as protected
+procedures. This section shows the practical mechanics; the Interrupts chapter has
+the full story on how attachment works underneath.
+
+\subsection{Creating and starting a task}
+
+You do not ``start'' an Ada task with a call --- you \emph{declare} it, and it
+activates automatically. A single task is declared with its body; it begins
+running when its master (the enclosing scope) reaches the code after the
+declarations. For a \emph{library-level} task that master is the program itself,
+so the binder activates it before \texttt{Main} even begins.
+
+\cnote{there is no \texttt{xTaskCreate}, \texttt{pthread\_create}, or
+\texttt{vTaskStartScheduler}: you declare the task and it activates itself, and
+the Ada runtime \emph{is} the scheduler --- already running when \texttt{Main}
+begins.}
+
+\begin{lstlisting}
+   task Blinker;                       -- declaration: this creates the task
+   task body Blinker is
+   begin                              -- runs concurrently once activated
+      loop
+         ESP32S3.GPIO.Toggle (2);
+         delay until Clock + Milliseconds (250);
+      end loop;
+   end Blinker;
+\end{lstlisting}
+
+Add a \texttt{pragma Priority} (or the \texttt{Priority} aspect) to place it in
+the priority order, and on this dual-core target pin it to a core with
+\texttt{CPU => 1} or \texttt{CPU => 2}:
+
+\begin{lstlisting}
+   task Sampler with Priority => 5, CPU => 2;   -- runs on the second core
+\end{lstlisting}
+
+For a \emph{family} of identical workers use a task \emph{type} and declare
+objects of it. One restriction matters here: under the \texttt{light-tasking} and
+\texttt{embedded} (Jorvik) profiles a task may not be nested inside a subprogram
+(\texttt{No\_Task\_Hierarchy}), so application tasks live at \emph{library level}
+--- in a package --- not inside \texttt{Main}.
+
+\subsection{Creating and attaching an interrupt handler}
+
+An interrupt handler is a \emph{protected procedure} bound to an interrupt. The
+protected object's \texttt{Interrupt\_Priority} is the hardware level it runs at
+(and the ceiling that serialises it), and \texttt{pragma Attach\_Handler} wires
+it up at elaboration --- no run-time call (\S\ref{ch:registers} and the Interrupts
+chapter):
+
+\begin{lstlisting}
+   protected Handler with Interrupt_Priority => Device_L3_Priority is
+   private
+      procedure ISR;
+      pragma Attach_Handler (ISR, Device_L3_0);   -- bound to the L3 device slot
+   end Handler;
+\end{lstlisting}
+
+For GPIO pins the HAL wraps that boilerplate: \texttt{ESP32S3.GPIO.Interrupts}
+owns the one GPIO interrupt source, routes it to the level-3 slot, and demuxes by
+pin to per-pin callbacks. You just register a callback with a trigger:
+
+\begin{lstlisting}
+   Enable (Pin => 0, On => Falling_Edge, Action => On_Edge'Access);
+\end{lstlisting}
+
+A handler --- protected \texttt{ISR} or HAL callback --- runs in \emph{interrupt
+context} at the slot's ceiling. Keep it tiny, and do not call a lower-ceiling
+protected object or block. The idiom is to record the event (bump an
+\texttt{Atomic}, or \texttt{Set} a \texttt{Suspension\_Object}) and let an
+ordinary task do the real work.
+
+\subsection{Worked example: counting falling edges on GPIO0}
+
+Putting both together: a counter that increments on every falling edge of GPIO0,
+with a task that reports it once a second. The interrupt callback is the only
+writer of \texttt{Edges} (the level-3 ISR cannot re-enter itself), so an
+\texttt{Atomic} \texttt{Natural} written there and read by the task needs no lock.
+Everything is library-level, so it is legal on the \texttt{embedded} profile.
+
+\begin{lstlisting}
+with Ada.Real_Time;           use Ada.Real_Time;
+with Ada.Text_IO;             use Ada.Text_IO;
+with ESP32S3.GPIO;            use ESP32S3.GPIO;
+with ESP32S3.GPIO.Interrupts; use ESP32S3.GPIO.Interrupts;
+
+package body Edge_Demo is
+
+   Edges : Natural := 0 with Atomic;     -- written by the ISR, read by the task
+
+   --  Runs in interrupt context (level-3 ceiling): do the minimum.
+   procedure On_Edge is
+   begin
+      Edges := Edges + 1;                -- sole writer -> the inc is safe
+   end On_Edge;
+
+   --  A normal task, activated automatically at start-up.
+   task Reporter;
+   task body Reporter is
+   begin
+      loop
+         delay until Clock + Seconds (1);
+         Put_Line ("GPIO0 falling edges:" & Natural'Image (Edges));
+      end loop;
+   end Reporter;
+
+begin
+   --  Package elaboration: configure the pin and attach the interrupt.
+   Configure (0, Mode => Input, Pull => Pull_Up);          -- pulled-up input
+   Enable (Pin => 0, On => Falling_Edge, Action => On_Edge'Access);
+end Edge_Demo;
+\end{lstlisting}
+
+\paragraph{Reading it line by line.} For a reader new to Ada, here is every
+construct in the example:
+
+\begin{description}[style=nextline]
+\item[\texttt{with Ada.Real\_Time;}] names a unit this code \emph{depends on} and
+  makes its declarations available --- like an \texttt{\#include}, but semantic:
+  the compiler records the dependency rather than pasting text. The four
+  \texttt{with}s pull in timing (\texttt{Ada.Real\_Time}), console output
+  (\texttt{Ada.Text\_IO}), the GPIO driver, and its interrupt child.
+\item[\texttt{use Ada.Real\_Time;}] makes that unit's names usable \emph{without}
+  the package prefix (see below). \texttt{with} grants access; \texttt{use} grants
+  short names.
+\item[\texttt{package body Edge\_Demo is}] begins the implementation of a package
+  called \texttt{Edge\_Demo}. A package groups related declarations; everything up
+  to \texttt{end Edge\_Demo;} belongs to it. Because it is a top-level
+  (\emph{library-level}) package, the task it declares is legal under the Jorvik
+  profile.
+\item[\texttt{Edges : Natural := 0 with Atomic;}] declares a variable. The colon
+  separates the name from its type; \texttt{Natural} is the predefined type of
+  integers $\geq 0$; \texttt{:= 0} sets its initial value (\texttt{:=} is
+  \emph{assignment}; plain \texttt{=} is the equality \emph{test}). \texttt{with
+  Atomic} is an aspect making each read or write a single indivisible access.
+\item[\texttt{-- \ldots}] a comment: \texttt{--} runs to the end of the line.
+\item[\texttt{procedure On\_Edge is \ldots\ begin \ldots\ end On\_Edge;}] defines a
+  \emph{procedure} --- a subprogram that returns no value --- taking no
+  parameters. The statements between \texttt{begin} and \texttt{end} run when it
+  is called. Repeating the name after \texttt{end} is optional but conventional.
+\item[\texttt{Edges := Edges + 1;}] an assignment statement: evaluate
+  \texttt{Edges + 1} and store it back. Statements end with a semicolon.
+\item[\texttt{task Reporter;}] declares a \emph{task} --- an independent thread of
+  control. This line creates it; it will start on its own (no ``start'' call).
+\item[\texttt{task body Reporter is \ldots\ loop \ldots\ end loop; \ldots}] the
+  task's code. \texttt{loop \ldots\ end loop;} repeats indefinitely.
+\item[\texttt{delay until Clock + Seconds (1);}] suspends the task until an
+  \emph{absolute} instant: the current time (\texttt{Clock}) plus one second
+  (\texttt{Seconds (1)} is a time span). \texttt{delay until} waits to a point in
+  time; plain \texttt{delay X} would wait a duration.
+\item[\texttt{Put\_Line ("\ldots" \& Natural'Image (Edges));}] prints a line.
+  \texttt{\&} concatenates strings, and \texttt{Natural'Image (Edges)} converts
+  the number to text. The apostrophe introduces an \emph{attribute} --- a built-in
+  query on a type or object; \texttt{'Image} is ``the textual image of this
+  value.''
+\item[\texttt{begin \ldots\ end Edge\_Demo;}] a package body may end with an
+  executable part. It runs \emph{once, automatically}, when the package is
+  elaborated at start-up (before \texttt{Main}). Here it brings up the hardware.
+\item[\texttt{Configure (0, Mode => Input, Pull => Pull\_Up);}] calls the GPIO
+  driver. \texttt{0} is a positional argument (the pin); \texttt{Mode => Input}
+  and \texttt{Pull => Pull\_Up} are \emph{named} associations
+  (\texttt{name => value}), so the call documents which parameter is which.
+\item[\texttt{Enable (\ldots, Action => On\_Edge'Access);}] registers the
+  interrupt. \texttt{On\_Edge'Access} is the \texttt{'Access} attribute --- a
+  reference to the \texttt{On\_Edge} procedure --- which the HAL stores and calls
+  from the ISR on each falling edge.
+\end{description}
+
+\paragraph{Why \texttt{use} makes it readable.} A \texttt{use} clause makes a
+package's names directly visible, so you write \texttt{Configure},
+\texttt{Falling\_Edge} and \texttt{Put\_Line} instead of their full paths. Without
+it, the same two setup lines would read:
+
+\begin{lstlisting}
+   ESP32S3.GPIO.Configure (0, Mode => ESP32S3.GPIO.Input,
+                              Pull => ESP32S3.GPIO.Pull_Up);
+   ESP32S3.GPIO.Interrupts.Enable
+     (Pin => 0, On => ESP32S3.GPIO.Interrupts.Falling_Edge,
+      Action => On_Edge'Access);
+\end{lstlisting}
+
+The package path repeats on nearly every name and buries the intent. With
+\texttt{use} the code reads in the language of the problem --- ``configure pin 0
+as a pulled-up input; enable a falling-edge interrupt'' --- while the \texttt{with}
+clauses still record exactly where those names come from. The trade-off is that a
+name's origin is less explicit, and two \texttt{use}d packages could in principle
+declare the same name; in a small, focused unit like this the clarity gain wins,
+and you can always write a single name in full where it aids understanding.
+
+The application's \texttt{Main} need only \texttt{with Edge\_Demo;} and stay
+alive; \texttt{Reporter} and the interrupt are running before \texttt{Main}'s
+first statement. Each time GPIO0 goes high$\rightarrow$low (release of a pull-up
+button, say) the ISR bumps \texttt{Edges}, and the reporter prints the running
+total --- a complete interrupt-driven counter in a couple of dozen lines, with no
+RTOS, no manual ISR vectoring, and no explicit task start.
+
+\section{Real-time tasks: periodic and time-driven}
+\label{sec:realtime}\index{real-time tasks}
+
+For periodic work use \texttt{Ada.Real\_Time} --- a \emph{monotonic} clock that
+never jumps --- not \texttt{Ada.Calendar}. The canonical cyclic task computes its
+\emph{next} release as an absolute instant and \texttt{delay until}s it, so timing
+error does not accumulate:
+
+\begin{lstlisting}
+   task body Sampler is
+      Period : constant Time_Span := Milliseconds (10);
+      Next   : Time := Clock;             -- first release = now
+   begin
+      loop
+         Read_And_Process;
+         Next := Next + Period;           -- the next absolute instant
+         delay until Next;                -- no drift, however long the body took
+      end loop;
+   end Sampler;
+\end{lstlisting}
+
+Because \texttt{Next} advances by exactly \texttt{Period} regardless of how long
+\texttt{Read\_And\_Process} ran, the task holds its average rate with no cumulative
+jitter --- the crucial difference from a naive \texttt{delay Period}, which slips
+by the body's run time every cycle. Two more tools are available on all profiles:
+
+\begin{itemize}
+  \item \texttt{Time\_Span} arithmetic (\texttt{Milliseconds},
+        \texttt{Microseconds}, \texttt{To\_Duration}) for expressing intervals
+        exactly;
+  \item \texttt{Ada.Real\_Time.Timing\_Events} --- register a procedure to run at
+        a future instant without dedicating a task, handy for a one-shot timeout.
+\end{itemize}
+
+\texttt{Ada.Calendar} exists too, for wall-clock dates, but its absolute form is
+unsuited as a scheduling base (see the Limitations chapter) and on the bare
+runtime it is anchored only to boot. Schedule with \texttt{Ada.Real\_Time}.
+
+\section{Waiting for an event --- and timing out}
+\label{sec:waiting}\index{waiting for an event}
+
+Two questions come up constantly in firmware: how do I \emph{wait} for something
+to happen --- a GPIO pin to change, a byte to arrive on the UART --- and how do I
+\emph{give up} after a while? There are two ways to wait (poll, or block until an
+interrupt wakes you), and the clean way to bound the wait with a timeout differs
+across the three profiles, because the leaner two forbid the \texttt{select}
+statement.
+
+\subsection{Polling (any profile)}
+
+The simplest wait re-checks a condition in a loop, backing off with
+\texttt{delay until} so other tasks run; a deadline turns it into a timeout. To
+wait for a UART byte:
+
+\begin{lstlisting}
+with Ada.Real_Time; use Ada.Real_Time;
+with ESP32S3.UART;  use ESP32S3.UART;
+
+function Wait_For_Byte (S : Session; Timeout : Time_Span) return Boolean is
+   Deadline : constant Time := Clock + Timeout;
+begin
+   while Available (S) = 0 loop
+      if Clock >= Deadline then
+         return False;                       -- gave up
+      end if;
+      delay until Clock + Milliseconds (1);  -- back off; let other tasks run
+   end loop;
+   return True;                              -- a byte is waiting
+end Wait_For_Byte;
+\end{lstlisting}
+
+The same shape waits on a GPIO level --- replace \texttt{Available (S) = 0} with
+\texttt{not ESP32S3.GPIO.Read (Pin)}. Polling works on \emph{every} profile and
+needs only \texttt{Ada.Real\_Time}; the cost is the CPU spent re-checking.
+
+Rather than hand-roll the deadline loop each time, the HAL bundles it as
+\texttt{ESP32S3.Wait.Until\_True} (lock-free, all profiles): give it a condition
+function and a timeout and it returns \texttt{True} on success or \texttt{False}
+on timeout.
+
+\begin{lstlisting}
+with ESP32S3.Wait;
+function Byte_Ready return Boolean is (Available (S) > 0);
+...
+if ESP32S3.Wait.Until_True (Byte_Ready'Access, Milliseconds (200)) then
+   Read (S, Buf, N);     -- a byte arrived in time
+end if;
+\end{lstlisting}
+
+\subsection{Blocking until an interrupt signals you (any profile)}
+
+Better, when the wait may be long or power matters: sleep until the hardware wakes
+you. Attach an interrupt handler that signals a \texttt{Suspension\_Object}, and
+suspend the task on it:
+
+\begin{lstlisting}
+with Ada.Synchronous_Task_Control;  use Ada.Synchronous_Task_Control;
+with ESP32S3.GPIO.Interrupts;
+
+Edge_Seen : Suspension_Object;
+
+procedure On_Edge is               -- runs in interrupt context: keep it tiny
+begin
+   Set_True (Edge_Seen);
+end On_Edge;
+...
+ESP32S3.GPIO.Interrupts.Enable
+  (Pin => 0, On => ESP32S3.GPIO.Interrupts.Falling_Edge, Action => On_Edge'Access);
+...
+Suspend_Until_True (Edge_Seen);    -- the task sleeps here until the edge fires
+\end{lstlisting}
+
+This burns no CPU while waiting. But \texttt{Suspend\_Until\_True} has no timeout
+of its own --- and \emph{that} is where the profiles diverge.
+
+\subsection{Timing out: three profiles, three approaches}
+
+\textbf{Jorvik (light-tasking).} No \texttt{select} and no exception propagation,
+so the timeout is a \emph{value} and the wait blocks on a protected entry whose
+barrier opens on either the event or a deadline. The deadline is an
+\texttt{Ada.Real\_Time.Timing\_Events} handler; the task genuinely sleeps, and on
+return a flag says which fired:
+
+\begin{lstlisting}
+with Ada.Real_Time.Timing_Events; use Ada.Real_Time.Timing_Events;
+
+protected Gate is
+   procedure Signal;                            -- from the interrupt callback
+   procedure Expire (E : in out Timing_Event);  -- the deadline handler
+   entry Wait (Timed_Out : out Boolean);
+private
+   Occurred, Expired : Boolean := False;
+end Gate;
+
+protected body Gate is
+   procedure Signal is begin Occurred := True; end Signal;
+   procedure Expire (E : in out Timing_Event) is begin Expired := True; end Expire;
+   entry Wait (Timed_Out : out Boolean) when Occurred or Expired is
+   begin
+      Timed_Out := not Occurred;
+      Occurred := False;  Expired := False;     -- re-arm for next time
+   end Wait;
+end Gate;
+
+--  Use: the interrupt callback calls Gate.Signal; the caller arms a deadline.
+declare
+   Deadline : Timing_Event;
+   Late     : Boolean;
+begin
+   Set_Handler (Deadline, Clock + Milliseconds (500), Gate.Expire'Access);
+   Gate.Wait (Late);          -- sleeps until the edge OR 500 ms, whichever first
+   if Late then ... else ... end if;
+end;
+\end{lstlisting}
+
+\textbf{embedded.} The same Jorvik primitives (still no \texttt{select}), but
+exceptions now propagate --- so a timeout reads naturally as a \emph{catchable
+exception}, giving linear code, with any controlled handles released on the way
+out:
+
+\begin{lstlisting}
+Timeout_Error : exception;
+
+procedure Wait_For_Byte (S : Session; Timeout : Time_Span) is
+   Deadline : constant Time := Clock + Timeout;
+begin
+   while Available (S) = 0 loop
+      if Clock >= Deadline then
+         raise Timeout_Error with "no byte within the deadline";
+      end if;
+      delay until Clock + Milliseconds (1);
+   end loop;
+end Wait_For_Byte;
+...
+begin
+   Wait_For_Byte (S, Milliseconds (200));
+   Read (S, Buf, N);                 -- a byte is here
+exception
+   when Timeout_Error =>             -- handle the timeout in one place
+      ...
+end;
+\end{lstlisting}
+
+(You can raise the same exception from the \texttt{Gate.Wait} barrier above
+instead of polling, if you would rather sleep than spin.)
+
+\textbf{full.} Full Ada gives the timeout directly, as a \emph{timed entry call}:
+the task blocks on the entry and a \texttt{delay} races it --- no helper deadline,
+no polling. The protected object only needs the event half:
+
+\begin{lstlisting}
+protected Gate is
+   procedure Signal;          -- from the interrupt callback
+   entry Wait;
+private
+   Occurred : Boolean := False;
+end Gate;
+
+protected body Gate is
+   procedure Signal is begin Occurred := True; end Signal;
+   entry Wait when Occurred is begin Occurred := False; end Wait;
+end Gate;
+
+--  Use: whichever happens first wins.
+select
+   Gate.Wait;                              -- the event arrived
+   ...
+or
+   delay until Clock + Milliseconds (500); -- the timeout
+   ...
+end select;
+\end{lstlisting}
+
+(Use \texttt{delay until} --- an \emph{absolute} time --- here: on this port a
+\emph{relative} \texttt{delay} as a \texttt{select} trigger has a known gap, see
+the Limitations chapter.) \texttt{full} also offers \texttt{select \dots\ then
+abort} to put a deadline around an \emph{arbitrary} computation, not just an entry
+call --- abandoning it if it overruns.
+
+\textbf{Choosing.} Poll for a short, infrequent wait or the leanest code;
+interrupt-signalled blocking is better when the wait may be long or power matters.
+For the timeout: a status value on Jorvik, a catchable exception on embedded, and
+the \texttt{select}\,/\,\texttt{delay} timed entry call on full.
+
+\section{Concurrency patterns}
+\label{sec:concurrency}\index{concurrency patterns}
+
+A few protected-object shapes recur often enough to be worth naming. All work on
+every tasking profile; the Jorvik restrictions (one entry per protected object,
+one caller queued at a time) shape them but do not prevent them.
+
+\textbf{Producer/consumer over a bounded buffer.} The classic decoupling: one
+task (or an interrupt) produces items, another consumes them, with a protected
+ring buffer between. The consumer's \texttt{Get} is an \emph{entry} whose barrier
+holds it until something is available --- no polling.
+
+\begin{lstlisting}
+protected Queue is
+   procedure Put (X : Item);          -- producer side (also callable from an ISR)
+   entry     Get (X : out Item);      -- consumer side: blocks while empty
+private
+   Buf        : Item_Array (0 .. 15);
+   Count      : Natural := 0;
+   Head, Tail : Natural := 0;
+end Queue;
+
+protected body Queue is
+   procedure Put (X : Item) is
+   begin
+      if Count < Buf'Length then      -- (full -> drop; or count an overflow)
+         Buf (Tail) := X;
+         Tail := (Tail + 1) mod Buf'Length;
+         Count := Count + 1;
+      end if;
+   end Put;
+
+   entry Get (X : out Item) when Count > 0 is
+   begin
+      X := Buf (Head);
+      Head := (Head + 1) mod Buf'Length;
+      Count := Count - 1;
+   end Get;
+end Queue;
+\end{lstlisting}
+
+The consumer task just loops \texttt{Queue.Get (X)}; it sleeps on the barrier when
+the queue is empty and wakes the instant \texttt{Put} adds an item. (Under Jorvik,
+exactly one consumer task may queue on \texttt{Get} at a time --- which is the
+usual one-producer/one-consumer arrangement.)
+
+\textbf{A signal / mailbox.} The degenerate one-slot case is a handoff: an
+interrupt deposits a value and a task collects it. It is the
+``protected entry'' half of the waiting pattern (\S\ref{sec:waiting}) carrying a
+payload --- a \texttt{procedure Post (V)} from the ISR and an
+\texttt{entry Take (V : out \ldots)} barriered on ``something posted.''
+
+\textbf{DMA double-buffering (ping-pong).} For a continuous stream --- audio in
+over I2S, samples to a DAC --- you cannot stop to process between transfers. Use
+\emph{two} buffers: while the GDMA fills (or drains) buffer~A, the CPU processes
+buffer~B; when the transfer completes you swap, so the peripheral is never idle.
+The completion interrupt signals the processing task (a suspension object or a
+queue of ``buffer ready'' indices) and points the next transfer at the other
+buffer. The protected object owns the ``which buffer is the hardware's'' state;
+the task owns the other. This keeps a real-time stream gap-free with bounded,
+analysable hand-off.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=8mm and 30mm]
+\node[blk, fill=green!9, text width=3.0cm]  (a1) {Buffer A --- DMA fills};
+\node[blk, below=of a1, text width=3.0cm]   (b1) {Buffer B --- CPU works};
+\node[blk, right=of a1, fill=green!9, text width=3.0cm] (b2) {Buffer B --- DMA fills};
+\node[blk, below=of b2, text width=3.0cm]   (a2) {Buffer A --- CPU works};
+\draw[flow] (a1.east) -- (a2.west);     % A: DMA -> CPU
+\draw[flow] (b1.east) -- (b2.west);     % B: CPU -> DMA
+\node[font=\scriptsize, fill=white, inner sep=1pt] at ($(b1)!0.5!(b2)$) {swap on DMA-done IRQ};
+\node[font=\scriptsize] at ($(a1.north)!0.5!(b1.south)-(2.4cm,0)$) {phase 1};
+\node[font=\scriptsize] at ($(b2.north)!0.5!(a2.south)+(2.4cm,0)$) {phase 2};
+\end{tikzpicture}
+\caption{DMA double-buffering: the peripheral always has one buffer while the CPU
+works the other; the completion interrupt swaps their roles (the crossing), so the
+stream never stalls.}
+\label{fig:pingpong}
+\end{figure}
+
+\textbf{Why protected objects, not flags.} Each of these could be hacked with a
+shared \texttt{Volatile} flag, but the protected object gives you the barrier (no
+polling), mutual exclusion (no torn reads across cores), and a priority ceiling
+(bounded blocking) for free --- the points the Encapsulation chapter
+(Chapter~\ref{ch:encap}) makes about \texttt{protected}.
+
+\section{Watchdogs and recovery}
+\label{sec:watchdogs}\index{watchdog}
+
+A watchdog is a hardware timer that resets the chip unless the software keeps
+``feeding'' it --- the last line of defence against a hang that no exception or
+check can catch (a wild loop, a deadlock, a stuck peripheral). The ESP32-S3 has
+several: the two timer-group main watchdogs (TG0/TG1 MWDT), the RTC watchdog
+(RWDT), and the RTC \emph{super}-watchdog (a hardware backstop).
+
+\textbf{The bare boot leaves them off.} The ROM and the second-stage bootloader
+arm watchdogs during boot, but this runtime's startup \emph{disables} them (so a
+long elaboration or a debugger pause is not cut short). So by default a bare-metal
+app runs with \emph{no} active watchdog --- a hang will sit forever rather than
+recover. That is fine while developing (and is why a wedged example does not
+reset on its own), but a deployed device usually wants protection.
+
+\textbf{Arming the RTC watchdog.} To get auto-recovery, enable the RWDT with a
+timeout and feed it from a place that only runs while the system is healthy. The
+registers are key-locked; the sequence is unlock, configure, feed, re-lock:
+
+\begin{lstlisting}
+--  RTC watchdog registers (overlaid as plain words).
+Key     : constant := 16#50D8_3AA1#;
+Config0 : Unsigned_32 with Volatile, Address => To_Address (16#6000_8098#), Import;
+Config1 : Unsigned_32 with Volatile, Address => To_Address (16#6000_809C#), Import;
+Feed    : Unsigned_32 with Volatile, Address => To_Address (16#6000_80AC#), Import;
+Wprot   : Unsigned_32 with Volatile, Address => To_Address (16#6000_80B0#), Import;
+
+procedure Arm (Timeout_Cycles : Unsigned_32) is   -- RTC-slow-clk (~63 kHz) cycles
+begin
+   Wprot   := Key;                       -- unlock
+   Config1 := Timeout_Cycles;
+   Config0 := 2**31                      -- WDT_EN
+            or (3 * 2**28)               -- stage 0 action = reset the main system
+            or (7 * 2**16) or (7 * 2**13);  -- reset-pulse lengths
+   Feed    := 2**31;
+   Wprot   := 0;                         -- re-lock
+end Arm;
+
+procedure Pet is begin Wprot := Key; Feed := 2**31; Wprot := 0; end Pet;
+\end{lstlisting}
+
+\textbf{Feed on progress, not on a timer.} The robust idiom is to pet the dog from
+points that only execute when work is actually advancing --- the main loop body, a
+completed transaction --- not from a periodic task that would keep petting even if
+the real work has stalled. The ACATS test harness in this project does exactly
+this: it arms the RWDT (\,$\approx$19\,s) and feeds it on every progress line, so a
+test that deadlocks stops feeding and is reset, while a slow-but-progressing test
+survives.
+
+\textbf{The super-watchdog} is a separate hardware backstop that a deep-sleep wake
+can leave armed; \texttt{ESP32S3.RTC.Disable\_Super\_Watchdog} turns it off when an
+app means to stay awake (the RTC driver also re-feeds it automatically after a
+deep-sleep wake). Between an armed RWDT for hang-recovery, the precise
+stack-overflow watchpoint (the Debugging chapter), and a last-chance handler for
+the unrecoverable case, a deployed app has a layered safety net.
+
+\section{Dual-core (SMP) programming}
+\label{sec:smp}\index{SMP}
+
+The ESP32-S3 has two cores and the runtime schedules across both. Two ordinary-Ada
+facilities put them to use.
+
+\textbf{Pin a task to a core} with the \texttt{CPU} aspect (\texttt{CPU => 1} is
+the first core, \texttt{2} the second); omit it and the task may run on either:
+
+\begin{lstlisting}
+   task Beat0 with Priority => Priority'Last - 1, CPU => 1;
+   task Beat1 with Priority => Priority'Last - 1, CPU => 2;   -- the other core
+\end{lstlisting}
+
+\textbf{Share data with a protected object} --- it works \emph{across} cores, not
+just between tasks on one core. A protected \emph{entry} can even hand a caller
+from one core to the other: in the \texttt{esp32s3\_smp} example a producer on
+core 1 blocks in \texttt{entry Get when Full}, and serving the entry wakes it
+through the inter-core interrupt. The locking is the same priority-ceiling monitor
+(Chapter~\ref{ch:encap}); the runtime adds the cross-core wake-up underneath.
+
+\begin{lstlisting}
+   protected Mailbox is
+      procedure Put (V : Integer);
+      entry     Get (V : out Integer);   -- blocks until Full; may serve cross-core
+   private
+      Item : Integer;
+      Full : Boolean := False;
+   end Mailbox;
+\end{lstlisting}
+
+Two cautions specific to this target: time comes from a \emph{shared} hardware
+timer (the SYSTIMER), not each core's own cycle counter, so \texttt{Clock} agrees
+across cores; and the USB-serial-JTAG console is not robust for two tasks printing
+at once --- funnel diagnostics through one task. With those in mind, an SMP
+application is just ordinary tasks, pinned where you want them, sharing through
+protected objects.
+

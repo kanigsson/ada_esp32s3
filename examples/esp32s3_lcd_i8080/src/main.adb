@@ -1,0 +1,77 @@
+--  Ada LCD (i80 8-bit parallel) self-test on the bare-metal ESP32-S3 (no IDF)
+--  =========================================================================
+--  Exercises the reusable HAL LCD driver (ESP32S3.LCD), the LCD half of the
+--  LCD_CAM controller, driving an 8-bit Intel-8080 parallel bus over GDMA:
+--    * DMA-transmit a byte buffer and confirm the transfer completes;
+--    * free-run the pixel clock and GPIO-sample it to verify its frequency.
+--  No wiring (the pixel-clock pad is just sampled by GPIO.Read).
+with Interfaces;   use Interfaces;
+with Interfaces.C; use Interfaces.C;
+with Ada.Real_Time; use Ada.Real_Time;
+
+with ESP32S3.LCD;  use ESP32S3.LCD;
+with ESP32S3.GPIO;
+
+with System.BB.CPU_Primitives.Multiprocessors;
+pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
+
+procedure Main is
+   procedure Banner;
+   pragma Import (C, Banner, "native_lcd_banner");
+   procedure Tx_Result (Bytes, Done, Ok : int);
+   pragma Import (C, Tx_Result, "native_lcd_tx");
+   procedure Clk_Result (Set_Khz, Meas_Khz, Ok : int);
+   pragma Import (C, Clk_Result, "native_lcd_clk");
+   procedure Done;
+   pragma Import (C, Done, "native_lcd_done");
+
+   --  Data bus D0..D7 on GPIO 4..11; pixel clock on GPIO 13.
+   Pclk_Pin : constant ESP32S3.GPIO.Pin_Id := 13;
+   D_Pins   : constant Data_Pins := (4, 5, 6, 7, 8, 9, 10, 11);
+
+   Set_Khz : constant := 200;               --  200 kHz pixel clock for the test
+
+   --  4000 bytes, one byte per PCLK -> a ~20 ms transfer at 200 kHz, long enough
+   --  to time the pixel clock off the runtime wall clock.
+   type Buffer is array (0 .. 3_999) of Unsigned_8;
+   Buf : Buffer;
+begin
+   delay until Clock + Milliseconds (200);
+   Banner;
+
+   for I in Buffer'Range loop
+      Buf (I) := Unsigned_8 ((I * 3 + 1) mod 256);
+   end loop;
+
+   Setup (Pclk_Hz => Set_Khz * 1000);
+
+   declare
+      S    : Session;
+      Ok   : Boolean;
+      T0   : Time;
+      Secs : Float;
+      Meas : Integer;
+   begin
+      Acquire (S);
+      Configure_Pins (S, D_Pins, Pclk => Pclk_Pin);   --  route pads on held ctrl
+      T0 := Clock;
+      Transmit (S, Buf'Address, Buffer'Length, Ok);     --  blocks until done
+      Secs := Float (To_Duration (Clock - T0));
+      Release (S);
+
+      --  trans-done proves the DMA -> LCD data path; one byte per PCLK, so the
+      --  byte rate IS the pixel-clock rate.
+      Tx_Result (Buffer'Length, Boolean'Pos (Ok), Boolean'Pos (Ok));
+
+      Meas := (if Secs = 0.0 then 0
+               else Integer (Float (Buffer'Length) / Secs / 1000.0));
+      Clk_Result (Set_Khz, int (Meas),
+                  Boolean'Pos (Ok and then abs (Meas - Set_Khz) <= 20));
+   end;
+
+   Done;
+
+   loop
+      delay until Clock + Seconds (3600);
+   end loop;
+end Main;

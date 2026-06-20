@@ -1,0 +1,31 @@
+name = "xtensa_dynconfig"
+description = "Xtensa GCC toolchain plugins"
+version = "0.1.0-dev"
+
+authors = ["Vadim Godunko"]
+maintainers = ["Vadim Godunko <vgodunko@gmail.com>"]
+maintainers-logins = ["godunko"]
+licenses = "Apache-2.0 WITH LLVM-exception"
+tags = ["xtensa", "esp32", "esp32s3"]
+
+project-files = ["dummy.gpr"]
+auto-gpr-with = false
+
+[configuration]
+generate_ada = false
+generate_c = false
+generate_gpr = false
+
+[environment]
+XTENSA_GNU_CONFIG.set = "${CRATE_ROOT}/xtensa-dynconfig/xtensa_esp32s3.so"
+
+[[actions]]
+type = "pre-build"
+command = ["bash", "./scripts/setup.sh"]
+
+[[actions]]
+type = "pre-build"
+command = ["make", "-C", "xtensa-dynconfig", "CC=gcc"]
+
+[[depends-on]]
+gnat = "*"

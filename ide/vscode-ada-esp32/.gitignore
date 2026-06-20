@@ -1,0 +1,5 @@
+node_modules/
+out/
+*.vsix
+# ...but track the committed, installable build (./x install-ide uses it)
+!vscode-ada-esp32.vsix

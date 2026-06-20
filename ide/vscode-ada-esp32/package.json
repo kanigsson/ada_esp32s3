@@ -1,0 +1,143 @@
+{
+  "name": "vscode-ada-esp32",
+  "displayName": "Ada ESP32-S3 (x dispatcher)",
+  "description": "Status-bar build / flash / monitor / debug for the bare-metal Ada ESP32-S3 examples, driving the repo's ./x dispatcher (no ESP-IDF).",
+  "version": "0.1.0",
+  "publisher": "motium",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rowsail/ada-bare-metal-esp32s3"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:x",
+    "workspaceContains:board.ads",
+    "onCommand:ada-esp32.newProject"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ada-esp32.newProject",
+        "title": "New Project",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.selectExample",
+        "title": "Select Example",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.selectPort",
+        "title": "Select Serial Port",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.selectProfile",
+        "title": "Select Runtime Profile",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.build",
+        "title": "Build",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.flash",
+        "title": "Flash",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.buildFlash",
+        "title": "Build + Flash",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.run",
+        "title": "Build, Flash and Monitor",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.monitor",
+        "title": "Monitor",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.debug",
+        "title": "Debug",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.boardConfig",
+        "title": "Board Configuration",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.clean",
+        "title": "Clean",
+        "category": "Ada ESP32"
+      },
+      {
+        "command": "ada-esp32.killOpenocd",
+        "title": "Kill all OpenOCD (release captured serial/JTAG ports)",
+        "category": "Ada ESP32"
+      }
+    ],
+    "configuration": {
+      "title": "Ada ESP32",
+      "properties": {
+        "ada-esp32.defaultPort": {
+          "type": "string",
+          "default": "/dev/ttyACM0",
+          "description": "Default serial port used until one is selected from the status bar."
+        },
+        "ada-esp32.defaultExample": {
+          "type": "string",
+          "default": "",
+          "description": "Default example (full dir, e.g. esp32s3_gpio0_blink). Empty = prompt on first use."
+        },
+        "ada-esp32.defaultProfile": {
+          "type": "string",
+          "enum": ["auto", "light-tasking", "embedded", "full"],
+          "default": "auto",
+          "description": "Default runtime profile for build/run/debug. 'auto' = the example's own profile."
+        },
+        "ada-esp32.confirmClean": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before Clean."
+        },
+        "ada-esp32.debugDualCore": {
+          "type": "boolean",
+          "default": false,
+          "description": "Debug both cores (SMP). Default (off) debugs core 0 only — required for the breakpoint at app_main to be reached reliably, because under the debugger core 1 otherwise free-runs into a ROM fault during boot. Core 1 still runs in hardware; turn this on only when you need to set breakpoints in core-1 code."
+        },
+        "ada-esp32.sdkPath": {
+          "type": "string",
+          "default": "",
+          "description": "STANDALONE projects only (a folder with build.sh + app.gpr, opened on its own): absolute path to the ESP32-S3 Ada SDK checkout (the repo with ./x and tools/). Used to find esp32-ada, OpenOCD, and GDB. If empty, the extension falls back to $ESP32S3_ADA_SDK, then to `esp32-ada` on PATH. Ignored when the SDK repo itself is the workspace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "npm run compile -- --sourcemap --watch",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package -o vscode-ada-esp32.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.9.3"
+  }
+}

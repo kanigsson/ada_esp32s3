@@ -1,0 +1,304 @@
+\chapter{Anatomy of an Ada Application}
+\label{ch:anatomy}
+
+An Ada program for the ESP32-S3 is not a flat blob. It is a stack of layers, each
+written in Ada (with a thin sliver of Xtensa assembly at the very bottom). Knowing
+the layers explains what links into your binary, what runs before \texttt{Main},
+and where each feature comes from.
+
+\section{The layers, top to bottom}
+
+\begin{description}[style=nextline]
+\item[Your application.] One or more Ada packages and a main procedure
+  (\texttt{Main}). It \texttt{with}s the peripheral HAL (\texttt{ESP32S3.*}) and,
+  if it uses tasks or protected objects, those language features directly.
+\item[The HAL (\texttt{libs/esp32s3\_hal}).] Hand-written driver packages over a
+  generated register layer (\texttt{ESP32S3\_Registers.*}). Optional --- a program
+  can poke registers itself --- but it is where all the device knowledge lives.
+\item[The GNAT binder output.] \texttt{gnatbind} generates a package
+  (\texttt{b\_\_main}) that elaborates every unit in the right order and calls
+  \texttt{Main}. Its \texttt{adainit}/\texttt{adafinal} bracket your program.
+\item[The Ada runtime (RTS).] The \texttt{System.*} and \texttt{Ada.*} bodies:
+  secondary stack, exceptions (if enabled), \texttt{Ada.Text\_IO} over the
+  USB-serial console, and --- crucially --- the tasking kernel (GNARL/GNARLI):
+  tasks, protected objects, delays, scheduling.
+\item[Board support.] The silicon-specific bottom of the runtime: the Xtensa
+  windowed \emph{context switch}, \emph{interrupt entry/exit} vectors, the
+  \emph{clock/alarm tick}, SMP scheduling and the inter-core interrupt. This is
+  Ada plus a little assembly (\texttt{start.S}, \texttt{highint5.S},
+  \texttt{context.S}). This is the layer an off-the-shelf RTOS would otherwise
+  provide --- here it is ours.
+\item[The 2nd-stage bootloader.] Before any of the above runs, our own minimal
+  loader (a ZFP-Ada \texttt{boot\_main} + an assembly prologue + a thin C PSRAM
+  shim) maps the flash cache/MMU and brings up the octal PSRAM, then jumps to the
+  application image. It replaces the chip vendor's stock second-stage bootloader.
+\item[The mask ROM.] The chip's on-chip ROM loads the 2nd-stage bootloader from
+  flash at reset.
+\end{description}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=2mm]
+\node[layer, fill=blue!9] (app)  {Your application --- \texttt{Main} + packages};
+\node[layer, below=of app]  (hal)  {Peripheral HAL: \texttt{ESP32S3.*} over generated \texttt{ESP32S3\_Registers.*}};
+\node[layer, below=of hal]  (bind) {GNAT binder --- \texttt{adainit} / \texttt{adafinal}, calls \texttt{Main}};
+\node[layer, below=of bind] (rts)  {Ada runtime: \texttt{System.*}, \texttt{Ada.*}, tasking kernel (GNARL)};
+\node[layer, below=of rts]  (bsp)  {Board support: context switch, interrupt vectors, tick, SMP\, (\texttt{*.S})};
+\node[layer, below=of bsp]  (boot) {2nd-stage bootloader --- cache/MMU, octal PSRAM};
+\node[layer, below=of boot, fill=gray!12] (rom) {Mask ROM --- loads the bootloader at reset};
+\end{tikzpicture}
+\caption{The layers of an Ada application, from your code down to the chip's ROM.
+Everything above the ROM is Ada (with a little Xtensa assembly in board support).}
+\label{fig:layers}
+\end{figure}
+
+\section{What runs before \texttt{Main}}
+
+At power-on: ROM $\rightarrow$ our 2nd-stage bootloader (cache/MMU + PSRAM)
+$\rightarrow$ \texttt{start.S} (selects the 240\,MHz PLL, sets up the stack and
+the interrupt vectors, and on the SMP examples releases the second core)
+$\rightarrow$ the runtime's startup, which calls \texttt{adainit} (elaboration)
+$\rightarrow$ your \texttt{Main}. There is no vendor startup shim and no
+third-party RTOS scheduler --- the Ada runtime is the only scheduler, and it is
+linked from source.
+
+\begin{figure}[ht]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=7mm]
+\node[blk] (rom)   {ROM};
+\node[blk, right=of rom]   (boot)  {2nd-stage\\bootloader\\\scriptsize cache, PSRAM};
+\node[blk, right=of boot]  (start) {\texttt{start.S}\\\scriptsize PLL, vectors,\\\scriptsize core 1};
+\node[blk, right=of start] (init)  {\texttt{adainit}\\\scriptsize elaboration};
+\node[blk, right=of init]  (main)  {\texttt{Main}};
+\draw[flow] (rom)--(boot);   \draw[flow] (boot)--(start);
+\draw[flow] (start)--(init); \draw[flow] (init)--(main);
+\end{tikzpicture}}
+\caption{Reset to \texttt{Main}.}
+\label{fig:boot}
+\end{figure}
+
+\section{A minimal application}
+
+\begin{lstlisting}
+with Ada.Real_Time; use Ada.Real_Time;
+with ESP32S3.GPIO;
+
+procedure Main is
+   Led : constant ESP32S3.GPIO.Pin_Id := 2;
+begin
+   ESP32S3.GPIO.Configure (Led, Mode => ESP32S3.GPIO.Output);
+   loop
+      ESP32S3.GPIO.Toggle (Led);
+      delay until Clock + Milliseconds (250);
+   end loop;
+end Main;
+\end{lstlisting}
+
+\texttt{delay until} is served by the board-support tick; \texttt{ESP32S3.GPIO} is
+the HAL; everything links against the runtime crate.
+
+\chapter{The Runtime Profiles}
+\label{ch:profiles}
+
+The runtime is offered in three \emph{profiles}, selected by the environment
+variable \texttt{ESP32S3\_RTS\_PROFILE} when the crate is built. They trade
+language features against footprint and certifiability. The same application
+source can often build under more than one; the HAL drivers that use finalization
+are restricted to the richer two.
+
+\begin{longtable}{p{2.6cm} p{11.3cm}}
+\textbf{Profile} & \textbf{What it gives you} \\ \hline
+\endhead
+\texttt{light-tasking} &
+  The Ravenscar/Jorvik subset (\texttt{pragma Profile (Jorvik)}). Tasks,
+  protected objects, \texttt{delay until}, priorities --- but with restrictions
+  the compiler enforces: \texttt{No\_Finalization}, \texttt{No\_Exception\_%
+  Propagation}, \texttt{No\_Secondary\_Stack}, and a heap-less bump allocator.
+  Smallest and most analysable; a raised exception is fatal (resets the board).
+  HAL drivers that need none of those (GPIO, RNG, Temperature, SDMMC, Touch,
+  RTC, crypto) build here. \\
+\texttt{embedded} &
+  Still Jorvik, but exception-capable: full exception propagation with messages,
+  controlled-type \emph{finalization} (RAII), a secondary stack, and a real
+  first-fit heap. This is the default target for most of the HAL and for the
+  ext4 filesystem. The RAII driver handles (SPI/I2C/UART sessions, GDMA/LEDC/RMT/
+  \dots\ channels) live here. \\
+\texttt{full} &
+  Complete Ada tasking with no Jorvik restrictions: dynamic task creation, task
+  hierarchies, selective \texttt{accept}/rendezvous, \texttt{abort} and
+  asynchronous transfer of control. Built on a fully ported GNARL kernel.
+  Experimental (work in progress), but real rendezvous and \texttt{abort} run on
+  the silicon. \\
+\end{longtable}
+
+\section{Choosing a profile}
+
+\begin{itemize}
+\item Certifiable, deterministic, minimal-footprint firmware, or code that must
+  never allocate: \texttt{light-tasking}.
+\item Most applications --- you want exceptions, RAII handles, the secondary
+  stack, a heap, and the full HAL including the filesystem: \texttt{embedded}.
+\item Code that genuinely needs dynamic tasks, rendezvous or \texttt{abort}:
+  \texttt{full}.
+\end{itemize}
+
+The selection happens at build time. An example's \texttt{build.sh} sets it:
+
+\begin{lstlisting}[style=sh]
+export ESP32S3_RTS_PROFILE=embedded   # or light-tasking / full
+\end{lstlisting}
+
+Because the HAL keys its object directory by profile, the same shared driver tree
+is safely reused across profiles without stale objects.
+
+\chapter{Building and Running on the ESP32-S3}
+\label{ch:build}
+
+\section{Prerequisites}
+
+\begin{itemize}
+\item The Alire-managed GNAT cross-toolchain for the target
+  (\texttt{gnat\_xtensa\_esp32\_elf}) and \texttt{gprbuild}; these are fetched by
+  Alire and discovered automatically by the build scripts.
+\item A USB cable to the board's built-in USB-serial-JTAG port (it appears as
+  \texttt{/dev/ttyACM0}).
+\item Nothing else: no external SDK or build system. An Ada \texttt{esp\_flash}
+  host tool (built with the Alire \texttt{gnat\_native} toolchain) packages and
+  writes the image.
+\end{itemize}
+
+\section{The \texttt{./x} helper}
+
+From the repository root, the \texttt{./x} script builds, flashes, monitors and
+debugs any example by name:
+
+\begin{lstlisting}[style=sh]
+./x build  esp32s3_gpio0_blink            # cross-compile + link + package app.bin
+./x flash  esp32s3_gpio0_blink -p /dev/ttyACM0
+./x run    esp32s3_gpio0_blink -p /dev/ttyACM0   # build + flash + serial monitor
+\end{lstlisting}
+
+\section{What a build does}
+
+\texttt{build.sh} sets the profile and heap size, then \texttt{bare\_build.sh}:
+
+\begin{enumerate}
+\item regenerates/selects the runtime crate for the chosen profile
+  (\texttt{gen\_runtime.sh}; how that works, and how to port it, is
+  Chapter~\ref{ch:runtime-build});
+\item compiles the Ada application against the pinned runtime with
+  \texttt{gprbuild}, producing a relocatable \texttt{ada\_app.o}
+  (\texttt{Main} renamed to \texttt{\_ada\_main});
+\item compiles the shared bare boot (\texttt{start.S}, the interrupt vectors,
+  the heap and a freestanding libc) and the example's C console glue;
+\item links everything against the linker scripts into \texttt{app.elf}; and
+\item packages \texttt{app.bin} (image header + segments).
+\end{enumerate}
+
+\texttt{flash.sh} writes the 2nd-stage bootloader, the partition table and
+\texttt{app.bin} over USB-serial.
+
+The last two steps --- turning the linked \texttt{app.elf} into a flashable
+\texttt{app.bin}, and writing it to the chip --- are handled by two small
+\emph{host} tools written in native Ada (built with the Alire
+\texttt{gnat\_native} toolchain), so the whole build/flash path needs only the
+Alire toolchain and the committed vendored blobs.
+
+\section{Packaging and flashing: two Ada host tools}
+
+\subsection{\texttt{esp\_elf2image} --- ELF to flash image}
+
+\texttt{examples/common/bare/elf2image} converts \texttt{app.elf} into the
+ESP32-S3 flash image \texttt{app.bin} --- the exact on-flash format the chip's
+ROM and our second-stage bootloader expect (flash mode \texttt{dio}, freq
+\texttt{80m}, size \texttt{2MB}). The generated image boots unmodified on
+hardware across every example. The packaging is more than a flat copy:
+
+\begin{itemize}
+  \item \textbf{Segments} are the ELF's allocated \texttt{PROGBITS} sections,
+        merged where contiguous and each padded to a multiple of four.
+  \item A \textbf{24-byte header} --- the 8-byte common part (\texttt{magic 16\#E9\#},
+        segment count, the \texttt{dio}/\texttt{2MB}/\texttt{80m} flash byte, the
+        entry point) plus a 16-byte extended part (\texttt{chip\_id=9},
+        \texttt{wp\_pin=16\#EE\#}, \texttt{hash\_appended=1}).
+  \item \textbf{Flash (IROM/DROM) segments aligned to 64\,KB}, with the RAM
+        segments written \emph{interleaved as the alignment padding} (then a zero
+        \texttt{PADDING} segment for the remainder) --- the exact scheme the
+        bootloader's MMU mapping relies on.
+  \item An \textbf{XOR checksum} (seed \texttt{16\#EF\#}) as the last byte of a
+        16-aligned block, and finally a \textbf{SHA-256} of the whole image
+        appended (computed by an in-tree \texttt{sha256.adb}).
+\end{itemize}
+
+The flash parameters (\texttt{dio}/\texttt{80m}/\texttt{2MB}, chip = ESP32-S3) are
+fixed to match the bare boot; they are constants at the top of the source.
+
+\subsection{\texttt{esp\_flash} --- writing it to the chip}
+
+\texttt{examples/common/bare/espflash} writes the image over the chip's
+\emph{ROM} serial bootloader.
+It is 100\,\% Ada: the OS serial interface (open, termios raw mode, the
+\texttt{TIOCM*} DTR/RTS modem lines, poll, read, write) is bound directly to libc
+through \texttt{Interfaces.C} --- there is no C source. (\texttt{GNAT.Serial\_-
+Communications} would cover the byte I/O but not the DTR/RTS control the reset
+needs, so the tool binds \texttt{ioctl(TIOCMBIS/TIOCMBIC)} itself.) The sequence
+is the standard ROM protocol, with no RAM stub and no compression:
+
+\begin{enumerate}
+  \item \textbf{Reset into download mode} --- the USB-JTAG DTR/RTS pulse.
+  \item \textbf{SYNC} --- the \texttt{16\#07\# 16\#07\# 16\#12\# 16\#20\#} + 32$\times$\texttt{16\#55\#}
+        handshake until the ROM answers.
+  \item \textbf{SPI attach} and \textbf{set-params} (the flash geometry).
+  \item Per file, \textbf{flash\_begin} (erase) then \textbf{flash\_data} in
+        \texttt{16\#400\#}-byte blocks (the last padded with \texttt{16\#FF\#}), each
+        carrying the ROM XOR checksum (seed \texttt{16\#EF\#}).
+  \item \textbf{flash\_end}, then a \textbf{hard reset to run} (suppressible with
+        \texttt{--no-reset} for capture workflows like the ACATS sweep, which
+        does its own reset).
+\end{enumerate}
+
+Every command is a \texttt{<direction, op, length, checksum>} packet in SLIP
+framing (\texttt{16\#C0\#} delimiters, \texttt{16\#DB\#} escaping) over the serial port.
+A typical invocation writes the three images at their flash offsets:
+
+\begin{lstlisting}[style=sh]
+esp_flash -p /dev/ttyACM0 --flash-size 2MB \
+  0x0     bootloader.bin \
+  0x8000  partition-table.bin \
+  0x10000 app.bin
+\end{lstlisting}
+
+Note that \texttt{esp\_flash} writes \emph{flash} only; the external PSRAM is not
+flashed --- the 2nd-stage bootloader maps it at runtime. On hardware a $\sim$225\,KB
+image flashes in about three seconds (ROM speed, no stub).
+
+\section{Starting your own project}
+
+The \texttt{esp32-ada} launcher scaffolds a fresh application in any empty
+directory (no runtime sources are copied --- it pins the crate):
+
+\begin{lstlisting}[style=sh]
+. export.sh                 # put esp32-ada on PATH
+mkdir my_app && cd my_app
+esp32-ada new               # scaffold build.sh, the .gpr, src/main.adb, board.ads
+# edit src/main.adb ...
+esp32-ada run -p /dev/ttyACM0
+\end{lstlisting}
+
+Each project owns a \texttt{config/board.ads} that states the flash and PSRAM
+sizes (used to size the image header and build/select the bootloader):
+
+\begin{lstlisting}
+package Board is
+   Flash_Size : constant := 2 * 1024 * 1024;   --  2 MB
+   PSRAM_Size : constant := 2 * 1024 * 1024;   --  mapped at 16#3D00_0000#
+end Board;
+\end{lstlisting}
+
+\section{Console output}
+
+The runtime wires \texttt{Ada.Text\_IO} to the built-in USB-serial-JTAG console,
+so \texttt{Put\_Line} reaches \texttt{/dev/ttyACM0}. The examples additionally use
+a tiny C glue layer calling the ROM \texttt{esp\_rom\_printf} for formatted status
+lines. Either way, \texttt{./x run} opens a monitor so you see the output live.

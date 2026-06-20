@@ -1,0 +1,662 @@
+\chapter{DMA, PWM, Audio, Pulse and Analog Peripherals}
+\label{ch:hal2}
+
+These drivers follow the \emph{claim-a-handle} pattern: a peripheral with several
+identical units hands out a limited, controlled handle through a protected pool.
+You \texttt{Claim} a unit, use it through the handle, and it is reclaimed when the
+handle leaves scope.
+
+\section{GDMA --- general DMA}\index{GDMA driver}
+
+\begin{lstlisting}
+procedure Claim (C : in out Channel; Peri : Peripheral);
+procedure Copy  (C : Channel; Dst, Src : System.Address; Length : Natural);
+procedure Start (C : Channel; Dir : Direction; ...);  --  peripheral transfers
+function  Done  (C : Channel; Dir : Direction) return Boolean;
+procedure Wait  (C : Channel; Dir : Direction);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Peri}] which peripheral the channel serves --- \texttt{Mem2Mem} (a
+  plain memory copy) or a real peripheral: \texttt{SPI2}, \texttt{SPI3},
+  \texttt{UHCI0}, \texttt{I2S0}, \texttt{I2S1}, \texttt{LCD\_CAM}, \texttt{AES},
+  \texttt{SHA}, \texttt{ADC\_DAC}, \texttt{RMT}. The pool has five channels.
+\item[\texttt{Dir}] transfer direction: \texttt{Mem\_To\_Periph} or
+  \texttt{Periph\_To\_Mem}.
+\item[\texttt{Dst}, \texttt{Src}, \texttt{Length}] destination/source
+  \texttt{'Address}es and a byte count, \texttt{1\,..\,4095}.
+\end{description}
+
+\textbf{Example 1 --- memory-to-memory copy.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.GDMA; use ESP32S3.GDMA;
+procedure GDMA_Copy is
+   C   : Channel;
+   Src : aliased array (0 .. 255) of Interfaces.Unsigned_8 := (others => 16#5A#);
+   Dst : aliased array (0 .. 255) of Interfaces.Unsigned_8 := (others => 0);
+begin
+   Claim (C, Peri => Mem2Mem);                --  a free channel for mem2mem
+   Copy  (C, Dst'Address, Src'Address, 256);  --  blocking DMA copy; Dst = Src
+end GDMA_Copy;                                 --  C is released on scope exit
+\end{lstlisting}
+
+\textbf{Example 2 --- the RAII guarantee.} Claiming all five channels and then
+one more raises (the pool is exhausted); each goes back automatically:
+\begin{lstlisting}
+with ESP32S3.GDMA; use ESP32S3.GDMA;
+procedure GDMA_RAII is
+   A, B, C2, D, E : Channel;
+begin
+   Claim (A, Mem2Mem); Claim (B, Mem2Mem); Claim (C2, Mem2Mem);
+   Claim (D, Mem2Mem); Claim (E, Mem2Mem);          --  all five claimed
+end GDMA_RAII;                                       --  all five reclaimed here
+\end{lstlisting}
+(The SPI and I2S drivers use the peripheral \texttt{Start}/\texttt{Wait} path
+internally, so most applications use GDMA only for memory copies.)
+
+\section{MCPWM --- motor-control PWM}\index{MCPWM driver}
+
+\begin{lstlisting}
+procedure Setup (Unit : MCPWM_Unit);
+procedure Claim (C : in out Channel; Unit : MCPWM_Unit; Index : Channel_Index);
+procedure Configure_Channel (C : Channel; Freq : Positive; Pin : Pin_Id;
+                             Complement_Pin : Optional_Pin := No_Pin;
+                             Dead_Time_Ns   : Natural := 0);
+procedure Start (C : Channel);   procedure Set_Duty (C : Channel; Percent : Duty_Percent);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Unit}] \texttt{MCPWM0} or \texttt{MCPWM1}.
+\item[\texttt{Index}] generator channel within the unit: \texttt{Ch0},
+  \texttt{Ch1} or \texttt{Ch2}.
+\item[\texttt{Freq}] PWM frequency in Hz.
+\item[\texttt{Pin}] the output pad.
+\item[\texttt{Complement\_Pin}] optional inverted output for a half-bridge
+  (\texttt{Optional\_Pin}, default \texttt{No\_Pin}).
+\item[\texttt{Dead\_Time\_Ns}] gap inserted between the complementary edges, in
+  nanoseconds; default \texttt{0}.
+\item[\texttt{Percent}] duty cycle, \texttt{0.0\,..\,100.0}.
+\end{description}
+
+\textbf{Example 1 --- 20\,kHz at 25\,\% on one pin.}
+\begin{lstlisting}
+with ESP32S3.MCPWM; use ESP32S3.MCPWM;
+procedure MCPWM_Simple is
+   C : Channel;
+begin
+   Setup (MCPWM0);
+   Claim (C, MCPWM0, Ch0);
+   Configure_Channel (C, Freq => 20_000, Pin => 4);
+   Set_Duty (C, 25.0);
+   Start (C);
+end MCPWM_Simple;
+\end{lstlisting}
+
+\textbf{Example 2 --- a complementary pair with 500\,ns dead-time (half-bridge).}
+\begin{lstlisting}
+with ESP32S3.MCPWM; use ESP32S3.MCPWM;
+procedure MCPWM_Pair is
+   C : Channel;
+begin
+   Setup (MCPWM0);
+   Claim (C, MCPWM0, Ch0);
+   Configure_Channel (C, Freq => 20_000, Pin => 4,
+                      Complement_Pin => 5, Dead_Time_Ns => 500);
+   Set_Duty (C, 60.0);
+   Start (C);
+end MCPWM_Pair;
+\end{lstlisting}
+The driver also offers a carrier (\texttt{Set\_Carrier} --- \texttt{Prescale}
+\texttt{0\,..\,15}, \texttt{Duty\_Eighths} \texttt{1\,..\,7}, \texttt{First\_Pulse}
+\texttt{0\,..\,15}) and fault/trip-zone protection: \texttt{Configure\_Fault}
+binds a \texttt{Fault\_Input} (\texttt{Fault0\,..\,2}) to a pad, and
+\texttt{Protect\_Channel} sets the \texttt{Fault\_Mode} (\texttt{One\_Shot} or
+\texttt{Cycle\_By\_Cycle}) and \texttt{Trip\_Action} (\texttt{No\_Change},
+\texttt{Force\_Low} or \texttt{Force\_High}).
+
+\section{I2S --- digital audio over GDMA}\index{I2S driver}
+
+\begin{lstlisting}
+type I2S_Mode is (Standard, PDM);
+procedure Setup (Port : I2S_Port; Sample_Rate : Positive := 16_000;
+                 Bits : Sample_Bits := Bits_16; Mode : I2S_Mode := Standard);
+procedure Configure_Pins (Port : I2S_Port;
+                          Bclk, Ws, Dout, Din : Optional_Pin := No_Pin);
+procedure Acquire (S : in out Session; Port : I2S_Port);
+procedure Write (S : Session; Tx : System.Address; Length : Natural);
+procedure Read  (S : Session; Rx : System.Address; Length : Natural);
+procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Port}] \texttt{I2S0} or \texttt{I2S1}.
+\item[\texttt{Sample\_Rate}] frames per second (\texttt{Positive}); default
+  \texttt{16\_000}.
+\item[\texttt{Bits}] sample width: \texttt{Bits\_8}, \texttt{Bits\_16} (default),
+  \texttt{Bits\_24} or \texttt{Bits\_32}.
+\item[\texttt{Mode}] data path: \texttt{Standard} (default --- plain I2S/TDM) or
+  \texttt{PDM} (the sigma-delta converters; see below).
+\item[\texttt{Bclk}, \texttt{Ws}, \texttt{Dout}, \texttt{Din}] the bit-clock,
+  word-select, data-out and data-in lines (\texttt{Optional\_Pin};
+  \texttt{Dout}/\texttt{Din} default \texttt{No\_Pin}).
+\item[\texttt{Tx}, \texttt{Rx}, \texttt{Length}] buffer \texttt{'Address}es and a
+  byte count, \texttt{1\,..\,4095}.
+\end{description}
+
+\textbf{Example 1 --- play a buffer of samples.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.I2S; use ESP32S3.I2S;
+procedure I2S_Play is
+   S    : Session;
+   Tone : aliased array (0 .. 255) of Interfaces.Integer_16 := (others => 0);
+begin
+   Setup (I2S0, Sample_Rate => 44_100, Bits => Bits_16);
+   Configure_Pins (I2S0, Bclk => 4, Ws => 5, Dout => 6);
+   Acquire (S, I2S0);
+   Write (S, Tone'Address, Tone'Length * 2);  --  2 bytes per 16-bit sample
+end I2S_Play;
+\end{lstlisting}
+
+\textbf{Example 2 --- wiring-free full-duplex loopback self-test.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.I2S; use ESP32S3.I2S;
+procedure I2S_Loopback is
+   S  : Session;
+   Tx : aliased array (0 .. 63) of Interfaces.Unsigned_8 := (others => 16#5A#);
+   Rx : aliased array (0 .. 63) of Interfaces.Unsigned_8 := (others => 0);
+begin
+   Setup (I2S0);
+   Enable_Loopback (I2S0, Pad => 7);          --  TX folded to RX on one pad
+   Acquire (S, I2S0);
+   Transfer (S, Tx'Address, Rx'Address, 64);  --  Rx = Tx
+end I2S_Loopback;
+\end{lstlisting}
+
+\subsection{PDM mode: the hardware PCM\,$\leftrightarrow$\,PDM converters}
+
+\texttt{Mode => PDM} routes the data path through the sigma-delta converters
+instead of the plain serial framer. PDM (pulse-density modulation) is the
+sigma-delta sibling of PWM: a 1-bit oversampled stream whose \emph{density} of
+ones encodes the analog level. The S3 I2S converts in both directions, and the
+DMA still moves ordinary PCM, so only the on-wire format changes:
+
+\begin{itemize}
+  \item \textbf{TX} (\texttt{PCM2PDM}) turns each PCM sample into a 1-bit stream
+        --- feed it to a class-D amplifier or an RC low-pass for analog audio out
+        (the S3 has no analog DAC, so this is how you get one).
+  \item \textbf{RX} (\texttt{PDM2PCM}) decimates a 1-bit PDM input back to PCM.
+        PDM is the format \emph{emitted} by digital \textbf{PDM microphones} and
+        some PDM-output \textbf{ADCs}; the converter turns their bitstream into the
+        PCM samples your program reads. In PDM the receiver is the clock master:
+        it drives the device clock out on \texttt{Ws} and reads the bitstream in on
+        \texttt{Din}.
+\end{itemize}
+
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.I2S; use ESP32S3.I2S;
+procedure PDM_Mic is
+   S  : Session;
+   Rx : aliased array (0 .. 511) of Interfaces.Integer_16 := (others => 0);
+begin
+   Setup (I2S0, Sample_Rate => 16_000, Bits => Bits_16, Mode => PDM);
+   Configure_Pins (I2S0, Bclk => No_Pin, Ws => 5, Dout => No_Pin, Din => 6);
+   Acquire (S, I2S0);
+   Read (S, Rx'Address, Rx'Length * 2);       --  PDM mic -> PCM
+end PDM_Mic;
+\end{lstlisting}
+
+\textbf{A note on verifying PDM.} Every other HAL driver self-tests with no
+external hardware; PDM is the exception, and the reason is instructive. There is
+no on-chip loopback for the converters --- the \texttt{SIG\_LOOPBACK} bit only
+shares the \emph{standard}-I2S WS and BCK, not the bit timing between
+\texttt{PCM2PDM} and \texttt{PDM2PCM} --- so an internal
+\texttt{PCM}\,$\rightarrow$\,\texttt{PDM}\,$\rightarrow$\,\texttt{PCM} loop
+recovers nothing. Nor can a static level
+synthesised from a GPIO (a pull resistor or a driven pin) stand in for a mic: the
+decimator's mandatory high-pass filter strips DC, so a constant 1 or 0 is rejected.
+Genuine PDM verification needs a real device producing a toggling bitstream, so
+the \texttt{esp32s3\_i2s\_pdm} example is a microphone-capture demo rather than a
+self-test.
+
+\section{LEDC --- LED / general PWM}\index{LEDC driver}
+
+\begin{lstlisting}
+procedure Claim (C : in out Channel; Index : Channel_Index);
+procedure Configure (C : in out Channel; Freq : Positive; Pin : Pin_Id;
+                     Bits : Resolution := 10);
+procedure Set_Duty (C : Channel; Percent : Duty_Percent);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Index}] channel \texttt{0\,..\,7} (\texttt{Channel\_Index}).
+\item[\texttt{Freq}] PWM frequency in Hz.
+\item[\texttt{Pin}] the output pad.
+\item[\texttt{Bits}] duty resolution in bits, \texttt{1\,..\,14}
+  (\texttt{Resolution}); default \texttt{10}. More bits give finer duty steps but a
+  lower maximum frequency.
+\item[\texttt{Percent}] duty cycle, \texttt{0.0\,..\,100.0}.
+\end{description}
+
+\textbf{Example 1 --- 5\,kHz at 50\,\%.}
+\begin{lstlisting}
+with ESP32S3.LEDC; use ESP32S3.LEDC;
+procedure LEDC_Simple is
+   C : Channel;
+begin
+   Claim (C, 0);
+   Configure (C, Freq => 5_000, Pin => 2);
+   Set_Duty (C, 50.0);
+end LEDC_Simple;
+\end{lstlisting}
+
+\textbf{Example 2 --- fade an LED.}
+\begin{lstlisting}
+with Ada.Real_Time; use Ada.Real_Time;
+with ESP32S3.LEDC;   use ESP32S3.LEDC;
+procedure LEDC_Fade is
+   C : Channel;
+begin
+   Claim (C, 0);
+   Configure (C, Freq => 5_000, Pin => 2);
+   for D in 0 .. 100 loop
+      Set_Duty (C, Duty_Percent (D));
+      delay until Clock + Milliseconds (10);
+   end loop;
+end LEDC_Fade;
+\end{lstlisting}
+
+\section{RMT --- remote-control pulse TX/RX (IR, WS2812)}\index{RMT driver}
+
+\begin{lstlisting}
+type RMT_Symbol is record
+   Level0, Level1 : Boolean := False; Duration0, Duration1 : Tick_Count := 0;
+end record;
+procedure Configure (C : in out TX_Channel; Resolution_Hz : Positive; Pin : Pin_Id);
+procedure Transmit  (C : TX_Channel; Symbols : Symbol_Array);
+procedure Configure (C : in out RX_Channel; Resolution_Hz : Positive; Pin : Pin_Id);
+procedure Start (C : RX_Channel);
+procedure Receive (C : RX_Channel; Into : out Symbol_Array; Count : out Natural);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Index}] channel \texttt{0\,..\,3} --- four TX channels
+  (\texttt{TX\_Index}) and four RX (\texttt{RX\_Index}), separate pools.
+\item[\texttt{Resolution\_Hz}] the tick clock: one \texttt{Tick\_Count} unit lasts
+  \texttt{1/Resolution\_Hz} seconds.
+\item[\texttt{Pin}] the carrier pad.
+\item[\texttt{Idle\_Ticks}] (RX) the silence that ends a frame,
+  \texttt{0\,..\,32\_767}; default \texttt{2\_000}.
+\item[\texttt{Symbols} / \texttt{Into}] a \texttt{Symbol\_Array} of
+  \texttt{RMT\_Symbol}s, each holding two level+duration halves;
+  \texttt{Duration0}/\allowbreak\texttt{Duration1} are \texttt{Tick\_Count}
+  (\texttt{0\,..\,32\_767}). One TX burst is at most 47 symbols.
+\item[\texttt{Count}] (\texttt{Receive}) \texttt{out} count of symbols captured.
+\end{description}
+
+\textbf{Example 1 --- transmit a pulse burst (1\,\textmu s resolution).}
+\begin{lstlisting}
+with ESP32S3.RMT; use ESP32S3.RMT;
+procedure RMT_Tx is
+   Tx    : TX_Channel;
+   Burst : constant Symbol_Array :=
+     ((Level0 => True,  Duration0 => 10, Level1 => False, Duration1 => 10),
+      (Level0 => True,  Duration0 => 20, Level1 => False, Duration1 => 20));
+begin
+   Claim (Tx, 0);
+   Configure (Tx, Resolution_Hz => 1_000_000, Pin => 4);
+   Transmit (Tx, Burst);
+end RMT_Tx;
+\end{lstlisting}
+
+\textbf{Example 2 --- receive into a buffer (e.g. an IR remote).}
+\begin{lstlisting}
+with ESP32S3.RMT; use ESP32S3.RMT;
+procedure RMT_Rx is
+   Rx   : RX_Channel;
+   Syms : Symbol_Array (0 .. 63);
+   N    : Natural;
+begin
+   Claim (Rx, 0);
+   Configure (Rx, Resolution_Hz => 1_000_000, Pin => 5);
+   Start (Rx);
+   Receive (Rx, Syms, N);   --  Syms (0 .. N-1) are the captured pulses
+end RMT_Rx;
+\end{lstlisting}
+
+\section{PCNT --- pulse / edge counter}\index{PCNT driver}
+
+\begin{lstlisting}
+procedure Configure (U : in out Unit; Pin : Pin_Id; Both_Edges : Boolean := False);
+function  Count (U : Unit) return Integer;   procedure Clear (U : Unit);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Index}] unit \texttt{0\,..\,3} (\texttt{Unit\_Index}).
+\item[\texttt{Pin}] the input pad whose edges are counted.
+\item[\texttt{Both\_Edges}] \texttt{False} (default) counts rising edges only;
+  \texttt{True} counts both (double resolution).
+\item[\texttt{Count}] returns the signed counter (16-bit, wraps at $\pm$32768).
+\end{description}
+
+\textbf{Example 1 --- count rising edges on a pin.}
+\begin{lstlisting}
+with Ada.Text_IO;  use Ada.Text_IO;
+with ESP32S3.PCNT; use ESP32S3.PCNT;
+procedure PCNT_Count is
+   U : Unit;
+begin
+   Claim (U, 0);
+   Configure (U, Pin => 6);
+   Clear (U);
+   --  ... pulses arrive ...
+   Put_Line ("edges =" & Integer'Image (Count (U)));
+end PCNT_Count;
+\end{lstlisting}
+
+\textbf{Example 2 --- count both edges (double the resolution).}
+\begin{lstlisting}
+with ESP32S3.PCNT; use ESP32S3.PCNT;
+procedure PCNT_Both is
+   U : Unit;
+begin
+   Claim (U, 0);
+   Configure (U, Pin => 6, Both_Edges => True);
+end PCNT_Both;
+\end{lstlisting}
+
+\section{SDM --- sigma-delta density output}\index{SDM driver}
+
+\begin{lstlisting}
+procedure Configure (C : in out Channel; Pin : Pin_Id;
+                     Carrier_Hz : Positive := 1_000_000);
+procedure Set_Density (C : Channel; Percent : Density_Percent);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Index}] channel \texttt{0\,..\,7} (\texttt{Channel\_Index}).
+\item[\texttt{Pin}] the output pad.
+\item[\texttt{Carrier\_Hz}] the desired pulse-stream (carrier) frequency in Hz;
+  default \texttt{1\_000\_000}. The modulator divides the APB clock
+  ($\approx$80\,MHz) by an integer \texttt{1\,..\,256}, so the achieved rate is
+  the nearest \texttt{APB/N} --- roughly \texttt{312\_500\,..\,80\_000\_000}\,Hz,
+  rounded for you. A higher carrier sits further above your RC low-pass cutoff and
+  smooths to a cleaner level; the exact value rarely matters.
+\item[\texttt{Percent}] target density, \texttt{0.0\,..\,100.0}.
+\end{description}
+
+\textbf{Example 1 --- a 25\,\% density bitstream (analog-ish level via an RC filter).}
+\begin{lstlisting}
+with ESP32S3.SDM; use ESP32S3.SDM;
+procedure SDM_Density is
+   C : Channel;
+begin
+   Claim (C, 0);
+   Configure (C, Pin => 7, Carrier_Hz => 1_000_000);
+   Set_Density (C, 25.0);
+end SDM_Density;
+\end{lstlisting}
+
+\textbf{Example 2 --- breathe an LED by sweeping density.}
+\begin{lstlisting}
+with Ada.Real_Time; use Ada.Real_Time;
+with ESP32S3.SDM;    use ESP32S3.SDM;
+procedure SDM_Breathe is
+   C : Channel;
+begin
+   Claim (C, 0);
+   Configure (C, Pin => 7);
+   for P in 0 .. 100 loop
+      Set_Density (C, Density_Percent (P));
+      delay until Clock + Milliseconds (10);
+   end loop;
+end SDM_Breathe;
+\end{lstlisting}
+
+\section{TWAI --- CAN 2.0}\index{TWAI driver}
+
+\begin{lstlisting}
+subtype Standard_Id is Interfaces.Unsigned_32 range 0 .. 16#7FF#;        -- 11-bit
+subtype Extended_Id is Interfaces.Unsigned_32 range 0 .. 16#1FFF_FFFF#;  -- 29-bit
+type Standard_Frame is record   -- 11-bit id (CAN 2.0A)
+   Id : Standard_Id := 0; Remote : Boolean := False;   -- Remote => RTR request
+   Length : Data_Length := 0; Data : Data_Bytes := (others => 0);
+end record;
+type Extended_Frame is record   -- 29-bit id (CAN 2.0B)
+   Id : Extended_Id := 0; Remote : Boolean := False;
+   Length : Data_Length := 0; Data : Data_Bytes := (others => 0);
+end record;
+procedure Setup (Mode : Bus_Mode := Normal; Bit_Rate : Positive := 125_000);
+procedure Acquire (S : in out Session);
+procedure Send (S : Session; F : Standard_Frame);   -- overloaded on the frame type
+procedure Send (S : Session; F : Extended_Frame);
+function  Available   (S : Session) return Boolean; -- a frame is waiting
+function  Is_Extended (S : Session) return Boolean; -- ... and it is 29-bit
+procedure Receive (S : Session; F : out Standard_Frame; Got : out Boolean);
+procedure Receive (S : Session; F : out Extended_Frame; Got : out Boolean);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Mode}] \texttt{Normal} (default), \texttt{Listen\_Only} (receive
+  without ACKing) or \texttt{Self\_Test} (ACK its own frames --- the wiring-free
+  loopback).
+\item[\texttt{Bit\_Rate}] bus speed in bits/s; default \texttt{125\_000} (e.g.
+  \texttt{250\_000}, \texttt{500\_000}, \texttt{1\_000\_000}).
+\item[\texttt{Tx}, \texttt{Rx}] the bus pads (\texttt{Optional\_Pin}).
+\item[\texttt{F} (\texttt{Standard\_Frame} / \texttt{Extended\_Frame})] the frame:
+  \texttt{Id} (range-checked to its width --- \texttt{Standard\_Id}
+  \texttt{0\,..\,16\#7FF\#} or \texttt{Extended\_Id}
+  \texttt{0\,..\,16\#1FFF\_FFFF\#}), \texttt{Length} (\texttt{0\,..\,8} bytes),
+  \texttt{Data} (an 8-byte array), and \texttt{Remote} --- \texttt{False} (default)
+  for a data frame, \texttt{True} for a remote-transmission request (RTR), which
+  carries \texttt{Id} and \texttt{Length} but no \texttt{Data}. \texttt{Send} is
+  overloaded on the frame type.
+\item[\texttt{Got}] (\texttt{Receive}) \texttt{out Boolean} --- \texttt{True} if a
+  frame of the requested width was read.
+\item[\texttt{Pad}] (\texttt{Enable\_Loopback}) the single self-test pad.
+\end{description}
+
+\textbf{Standard vs.\ extended frames.} A CAN identifier is either 11-bit
+(standard) or 29-bit (extended, CAN 2.0B). The two are distinct frame types, so
+the id is range-checked to its width and \texttt{Send} is overloaded --- you
+cannot put a 29-bit id in a standard frame. On receive the \emph{sender} picks
+the width, so you peek first: \texttt{Available} reports a waiting frame,
+\texttt{Is\_Extended} reports its width, and you call the matching
+\texttt{Receive} overload (Example 2). Orthogonal to the width, \texttt{Remote}
+marks a \emph{remote-transmission request} (RTR): a frame that carries an id and a
+length but no data, asking whichever node owns that id to reply with the data.
+Set it on either frame type; a received frame reports it.
+
+\textbf{Example 1 --- send a standard and an extended frame.}
+\begin{lstlisting}
+with ESP32S3.TWAI; use ESP32S3.TWAI;
+procedure TWAI_Send is
+   S : Session;
+begin
+   Setup (Mode => Normal, Bit_Rate => 500_000);
+   Acquire (S);                          --  own the controller, then route pins
+   Configure_Pins (S, Tx => 4, Rx => 5);
+   Send (S, Standard_Frame'(Id => 16#123#, Remote => False, Length => 2,
+                            Data => (16#DE#, 16#AD#, others => 0)));
+   Send (S, Extended_Frame'(Id => 16#14AB_CDE#, Remote => False, Length => 1,
+                            Data => (0 => 16#42#, others => 0)));  -- type picks Send
+   Send (S, Standard_Frame'(Id => 16#7A5#, Remote => True,        -- RTR: request
+                            Length => 8, Data => (others => 0)));  -- 8 bytes, none sent
+end TWAI_Send;
+\end{lstlisting}
+
+\textbf{Example 2 --- self-test loopback (no transceiver, no wiring).}
+\begin{lstlisting}
+with ESP32S3.TWAI; use ESP32S3.TWAI;
+procedure TWAI_Selftest is
+   S   : Session;
+   RE  : Extended_Frame;
+   Got : Boolean := False;
+begin
+   Setup (Mode => Self_Test);
+   Acquire (S);
+   Enable_Loopback (S, Pad => 4);
+   Send (S, Extended_Frame'(Id => 16#14AB_CDE#, Remote => False, Length => 1,
+                            Data => (0 => 16#42#, others => 0)));
+   if Available (S) and then Is_Extended (S) then
+      Receive (S, RE, Got);   --  Got, RE.Id = 16#14AB_CDE#, RE.Remote = False
+   end if;
+end TWAI_Selftest;
+\end{lstlisting}
+
+\section{Timer --- general-purpose timers}\index{Timer driver}
+
+\begin{lstlisting}
+procedure Configure (T : in out Timer; Tick_Hz : Positive := 1_000_000);
+procedure Start (T : Timer);  function Value (T : Timer) return Ticks;
+procedure Set_Alarm (T : Timer; At_Ticks : Ticks);
+function  Alarm_Fired (T : Timer) return Boolean;  procedure Clear_Alarm (T : Timer);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Index}] \texttt{0} or \texttt{1} (\texttt{Timer\_Index} --- the two
+  timer groups TIMG0/TIMG1).
+\item[\texttt{Tick\_Hz}] counter rate in Hz; default \texttt{1\_000\_000}
+  (1 tick = 1\,\textmu s).
+\item[\texttt{At\_Ticks} / \texttt{Value}] a 54-bit count (\texttt{Ticks}, an
+  \texttt{Unsigned\_64}); \texttt{Set\_Alarm} fires when the counter reaches
+  \texttt{At\_Ticks}.
+\end{description}
+
+\textbf{Example 1 --- measure an elapsed interval in microseconds.}
+\begin{lstlisting}
+with Ada.Text_IO;   use Ada.Text_IO;
+with ESP32S3.Timer; use ESP32S3.Timer;
+procedure Timer_Measure is
+   T       : Timer;
+   Start_T : Ticks;
+begin
+   Claim (T, 0);
+   Configure (T, Tick_Hz => 1_000_000);   --  1 tick = 1 us
+   Start (T);
+   Start_T := Value (T);
+   --  ... work ...
+   Put_Line ("elapsed us =" & Ticks'Image (Value (T) - Start_T));
+end Timer_Measure;
+\end{lstlisting}
+
+\textbf{Example 2 --- a one-shot alarm 50\,ms out.}
+\begin{lstlisting}
+with ESP32S3.Timer; use ESP32S3.Timer;
+procedure Timer_Alarm is
+   T : Timer;
+begin
+   Claim (T, 0);
+   Configure (T, Tick_Hz => 1_000_000);
+   Start (T);
+   Set_Alarm (T, Value (T) + 50_000);
+   loop exit when Alarm_Fired (T); end loop;
+   Clear_Alarm (T);
+end Timer_Alarm;
+\end{lstlisting}
+
+\section{LCD --- 8-bit i80 parallel master}\index{LCD driver}
+
+\begin{lstlisting}
+procedure Setup (Pclk_Hz : Positive := 1_000_000);
+procedure Configure_Pins (Data : Data_Pins; Pclk : Optional_Pin);
+procedure Acquire (S : in out Session);
+procedure Transmit (S : Session; Tx : System.Address; Length : Natural;
+                    Ok : out Boolean);
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Pclk\_Hz}] pixel clock in Hz; default \texttt{1\_000\_000} (the
+  achieved value is \texttt{20\,MHz} divided by an integer).
+\item[\texttt{Data}] a \texttt{Data\_Pins} value --- an 8-element array of
+  \texttt{Optional\_Pin} for the data lines D0\,..\,D7.
+\item[\texttt{Pclk} / \texttt{Pclk\_Pad}] the pixel-clock pad.
+\item[\texttt{Tx}, \texttt{Length}] frame-buffer \texttt{'Address} and a byte
+  count, \texttt{1\,..\,4095}.
+\item[\texttt{Ok}] \texttt{out Boolean} --- \texttt{True} on a completed transfer.
+\end{description}
+
+\textbf{Example 1 --- push a frame buffer to a parallel display.}
+\begin{lstlisting}
+with Interfaces;
+with ESP32S3.LCD; use ESP32S3.LCD;
+procedure LCD_Frame is
+   S  : Session;
+   Ok : Boolean;
+   FB : aliased array (0 .. 3999) of Interfaces.Unsigned_8 := (others => 16#FF#);
+begin
+   Setup (Pclk_Hz => 200_000);
+   Configure_Pins (Data => (1, 2, 3, 4, 5, 6, 7, 8), Pclk => 9);
+   Acquire (S);
+   Transmit (S, FB'Address, FB'Length, Ok);
+end LCD_Frame;
+\end{lstlisting}
+
+\textbf{Example 2 --- expose the pixel clock on a pad (for a scope).}
+\begin{lstlisting}
+with ESP32S3.LCD; use ESP32S3.LCD;
+procedure LCD_Clk is
+begin
+   Enable_Clock_Out (Pclk_Pad => 9);
+end LCD_Clk;
+\end{lstlisting}
+
+\section{ADC --- SAR analog input}\index{ADC driver}
+
+\begin{lstlisting}
+procedure Claim (R : in out Reader; Unit : ADC_Unit);
+function Read (R : Reader; Ch : Channel_Index; Atten : Attenuation := Db_12)
+   return Raw_Value;                              --  0 .. 4095 (12-bit)
+\end{lstlisting}
+
+\textbf{Parameters.}
+\begin{description}[style=nextline]
+\item[\texttt{Unit}] \texttt{ADC1} or \texttt{ADC2}.
+\item[\texttt{Ch}] channel \texttt{0\,..\,9} (\texttt{Channel\_Index}); each maps to
+  a fixed pad.
+\item[\texttt{Atten}] input attenuation, trading range for resolution:
+  \texttt{Db\_0} ($\sim$1.1\,V full scale), \texttt{Db\_2\_5} ($\sim$1.5\,V),
+  \texttt{Db\_6} ($\sim$2.2\,V) or \texttt{Db\_12} ($\sim$3.3\,V, default).
+\item[returns] a \texttt{Raw\_Value}, \texttt{0\,..\,4095} (12-bit).
+\end{description}
+
+\textbf{Example 1 --- read a 12-bit sample.}
+\begin{lstlisting}
+with Ada.Text_IO; use Ada.Text_IO;
+with ESP32S3.ADC; use ESP32S3.ADC;
+procedure ADC_Read_Sample is
+   R : Reader;
+   V : Raw_Value;
+begin
+   Claim (R, ADC1);
+   V := Read (R, Ch => 0);     --  0 .. 4095 at full (12 dB) attenuation
+   Put_Line (Raw_Value'Image (V));
+end ADC_Read_Sample;
+\end{lstlisting}
+
+\textbf{Example 2 --- a lower attenuation for a small signal.}
+\begin{lstlisting}
+with Ada.Text_IO; use Ada.Text_IO;
+with ESP32S3.ADC; use ESP32S3.ADC;
+procedure ADC_Atten is
+   R : Reader;
+   V : Raw_Value;
+begin
+   Claim (R, ADC1);
+   V := Read (R, Ch => 3, Atten => Db_0);   --  ~0..1.1 V full scale
+   Put_Line (Raw_Value'Image (V));
+end ADC_Atten;
+\end{lstlisting}

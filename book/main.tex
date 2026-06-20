@@ -1,0 +1,160 @@
+\documentclass[11pt,twoside]{book}
+
+%  Double-sided layout: chapters open on a recto (right) page, and the inner
+%  (spine) margin is wider than the outer to leave room for binding.
+\usepackage[a4paper,twoside,inner=1.25in,outer=0.85in,top=1in,bottom=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp}
+%  Body text + math in a Times New Roman equivalent (URW Nimbus Roman, the
+%  metric-compatible Times clone); works under pdflatex.  Code listings keep a
+%  monospace font.
+\usepackage{mathptmx}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tocloft}
+%  Two-digit chapter numbers make section numbers like "15.10" wider than the
+%  default ToC number box, so they collide with the heading.  Widen the number
+%  boxes (and shift the matching indents) to leave a clear gap.
+\setlength{\cftchapnumwidth}{2.0em}
+\setlength{\cftsecindent}{2.0em}
+\setlength{\cftsecnumwidth}{3.2em}
+\setlength{\cftsubsecindent}{5.2em}
+\setlength{\cftsubsecnumwidth}{4.0em}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, calc}
+\usepackage{makeidx}
+\makeindex
+
+%  Long inline-code wrapping (so fully-qualified Ada names do not run into the
+%  margin).  (3) microtype tightens spacing and emergencystretch lets TeX relax
+%  a line rather than overrun.  (1) \texttt is taught to break after the natural
+%  separators of a qualified name --- '.', '_' and '/'.  '_' is the macro \_ in
+%  our source, handled by redefinition; '.' and '/' are ordinary characters, so
+%  \texttt activates them before reading its argument (this works for the normal
+%  \texttt{...} call; where the text was already tokenised, e.g. a section title,
+%  it simply adds no extra break point).
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+\makeatletter
+\newcommand*\bm@dbrk{\discretionary{}{}{}}
+\begingroup
+  \catcode`\.\active \catcode`\/\active
+  \gdef\bm@ttbreaks{\catcode`\.\active \catcode`\/\active}%
+  \gdef.{\char`\.\bm@dbrk}%
+  \gdef/{\char`\/\bm@dbrk}%
+\endgroup
+\let\bm@origtexttt\texttt
+\protected\def\texttt{\begingroup\bm@ttbreaks\bm@grabtt}
+\def\bm@grabtt#1{\bm@origtexttt{\def\_{\textunderscore\bm@dbrk}#1}\endgroup}
+\makeatother
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!60!black,
+            pdftitle={Bare-Metal Ada on the ESP32-S3},
+            pdfauthor={The ada-bare-metal-esp32s3 project}}
+
+\definecolor{kw}{rgb}{0.10,0.10,0.55}
+\definecolor{cmt}{rgb}{0.30,0.45,0.30}
+\definecolor{str}{rgb}{0.55,0.10,0.10}
+\definecolor{bg}{gray}{0.97}
+
+\lstset{
+  language=Ada,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{kw}\bfseries,
+  commentstyle=\color{cmt}\itshape,
+  stringstyle=\color{str},
+  showstringspaces=false,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{gray!40},
+  backgroundcolor=\color{bg},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  numbers=none,
+  morekeywords={overriding,aliased,synchronized,interface,limited,protected,
+                requeue,tagged,until,with}
+}
+% A non-Ada style for shell snippets.
+\lstdefinestyle{sh}{language=bash, basicstyle=\ttfamily\small,
+  keywordstyle=\color{kw}, frame=single, backgroundcolor=\color{bg},
+  breaklines=true, showstringspaces=false}
+
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{16pt}{\Huge}
+
+%  A short "if you come from C / ESP-IDF" aside, set off in a light frame.
+\newcommand{\cnote}[1]{%
+  \par\smallskip\noindent
+  \fbox{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{%
+    \small\textbf{From C / ESP-IDF:}\ #1}}%
+  \par\smallskip}
+
+%  Common TikZ box styles for the diagrams.
+\tikzset{
+  blk/.style   = {draw, rounded corners=2pt, align=center, font=\small,
+                  minimum height=7mm, inner sep=4pt, fill=blue!4},
+  layer/.style = {draw, align=center, font=\small, minimum height=8mm,
+                  text width=10.5cm, fill=blue!4},
+  flow/.style  = {-{Stealth[length=2.4mm]}, thick},
+}
+
+\begin{document}
+
+\frontmatter
+\begin{titlepage}
+  \centering
+  \vspace*{1.5cm}
+  \includegraphics[height=4.5cm]{Ada.pdf}\par
+  \vspace{1.2cm}
+  {\Huge\bfseries Bare-Metal Ada on the ESP32-S3\par}
+  \vspace{1cm}
+  {\Large A practical guide to the runtime, the peripheral HAL,\\
+   and a pure-Ada ext4 filesystem\par}
+  \vspace{2cm}
+  {\large Written in Ada, with a little Xtensa assembly.\par}
+  \vfill
+  {\large\ttfamily github.com/rowsail/ada-bare-metal-esp32s3\par}
+\end{titlepage}
+
+\tableofcontents
+
+\mainmatter
+
+\input{ch_foundations}
+\input{ch_getting_started}
+\input{ch_anatomy}
+\input{ch_debugging}
+%  Language + hardware techniques BEFORE the HAL that uses them, then the
+%  encapsulation features the drivers are built from.
+\input{ch_lang}
+\input{ch_hardware}
+\input{ch_encapsulation}
+\input{ch_hal}
+\input{ch_hal2}
+\input{ch_hal3}
+\input{ch_driver_design}
+\input{ch_tasking}
+\input{ch_storage}
+\input{ch_acats_sweep}
+%  Under-the-hood: how the runtime is built, how the chip boots, then the
+%  scheduler internals it all leads into.
+\input{ch_runtime_build}
+\input{ch_bootloader}
+\input{ch_context_switch}
+\input{ch_interrupts}
+\input{ch_limitations}
+
+\appendix
+\input{ch_appendix}
+\input{ch_glossary}
+\input{ch_references}
+
+\printindex
+
+\end{document}

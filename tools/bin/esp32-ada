@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#
+#  esp32-ada -- build/flash/run/debug a STANDALONE bare-metal Ada ESP32-S3 app
+#  that lives in its own folder anywhere on disk (not inside the SDK tree).
+#
+#  Setup once per shell:   . /path/to/sdk/export.sh   (sets ESP32S3_ADA_SDK + PATH)
+#
+#  Usage (run from inside a project folder):
+#    esp32-ada init [DIR]            scaffold a new project (DIR or the cwd)
+#    esp32-ada build  [-P PROFILE]   build -> app.bin (PROFILE: light-tasking|
+#                                    embedded|full; default = light-tasking)
+#    esp32-ada flash  [-p PORT]      build (if needed) + flash over USB ROM
+#    esp32-ada run    [-p PORT] [-P PROFILE]   build + flash + monitor
+#    esp32-ada monitor [-p PORT]     open the serial console (115200)
+#    esp32-ada clean                 remove build artifacts
+#    esp32-ada config [...]          show/set flash + PSRAM size (this project's
+#                                    board.ads)
+#    esp32-ada debug  [-p PORT]      on-chip debug (OpenOCD + GDB)
+#    esp32-ada kill-openocd          kill every OpenOCD (release captured ports)
+#    esp32-ada install-ide           install the VS Code extension (committed .vsix; no Node)
+#    esp32-ada install-vim           symlink the Vim/Neovim plugin (auto-updates on git pull)
+#
+#  PORT defaults to $ESPPORT or /dev/ttyACM0.  A project is any folder with
+#  build.sh + app.gpr (what `init` creates).  `-C DIR` runs as if from DIR.
+#
+set -euo pipefail
+
+die () { echo "esp32-ada: $*" >&2; exit 1; }
+
+# Locate the SDK: prefer $ESP32S3_ADA_SDK (export.sh), else derive from this
+# script's own location (tools/bin/esp32-ada -> SDK root) so it self-bootstraps.
+SELF="$(cd "$(dirname "$0")" && pwd)"
+SDK="${ESP32S3_ADA_SDK:-$(cd "$SELF/../.." && pwd)}"
+[ -f "$SDK/x" ] || die "can't find the SDK (set ESP32S3_ADA_SDK / source export.sh)"
+export ESP32S3_ADA_SDK="$SDK"
+
+# Reuse x's helpers (monitor_tool, serial_from_port, find_gdb, cmd_config,
+# cmd_kill_openocd, the profile/size helpers).  x's dispatch is guarded, so sourcing
+# only defines them.
+# shellcheck disable=SC1091
+source "$SDK/x"
+die () { echo "esp32-ada: $*" >&2; exit 1; }   # re-override: x (sourced) redefined it
+
+# -- project-dir helpers ------------------------------------------------------
+proj_dir () {   # the current project dir, validated
+    [ -f "build.sh" ] && [ -f "app.gpr" ] && { pwd; return; }
+    die "not an esp32-ada project here (need ./build.sh + ./app.gpr) -- cd into one, or 'esp32-ada init'"
+}
+
+# -- scaffold -----------------------------------------------------------------
+do_init () {
+    local dir="${1:-.}" name
+    mkdir -p "$dir"
+    dir="$(cd "$dir" && pwd)"
+    name="$(basename "$dir")"
+    [ -e "$dir/app.gpr" ] && die "$dir already has an app.gpr (won't overwrite)"
+    mkdir -p "$dir/src" "$dir/main"
+
+    # Every project owns its board.ads at its root (flash + PSRAM size; no global config).
+    cp "$SDK/examples/common/bare/config/board.ads.template" "$dir/board.ads"
+
+    cat > "$dir/app.gpr" <<'EOF'
+with "esp32s3_rts.gpr";
+with "esp32s3_hal.gpr";   --  reusable HAL: ESP32S3.GPIO + the svd register layer
+
+--  Bare-metal Ada application for the dual-core ESP32-S3 runtime.  Builds the
+--  Ada into a relocatable object (ada_app.o) the bare-boot link pulls in.
+--  Both `with`s resolve by name via GPR_PROJECT_PATH (set by the SDK's export.sh)
+--  -- no path to the SDK is baked into this file.  Add more libraries the same way:
+--  `with "<name>.gpr";` for anything under the SDK's libs/.
+project App is
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj";
+   for Main use ("main.adb");
+
+   package Builder is
+      for Executable ("main.adb") use "ada_app.o";
+   end Builder;
+
+   package Binder is
+      for Switches ("Ada") use ("-D8k", "-Q2", "-Mada_main");
+   end Binder;
+
+   package Compiler is
+      for Switches ("Ada") use ("-O2", "-g");
+   end Compiler;
+
+   package Linker is
+      for Default_Switches ("Ada") use ("-Wl,-r", "-nostdlib");
+   end Linker;
+end App;
+EOF
+
+    cat > "$dir/src/main.adb" <<'EOF'
+pragma Warnings (Off);
+with Ada.Real_Time; use Ada.Real_Time;
+
+--  Bring up core 1 (pull the SMP slave-start entry into the link closure).
+with System.BB.CPU_Primitives.Multiprocessors;
+pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
+
+--  Minimal bare-metal Ada application.  The runtime comes up on both cores
+--  (the bare-boot prints "[C] Ada runtime up on both cores"); this environment
+--  task then idles.  Start adding code: library-level tasks (Jorvik requires
+--  them at library level; pin with CPU => 1 for core 0, CPU => 2 for core 1),
+--  protected interrupt handlers, peripheral drivers.  The reusable HAL is already
+--  on tap (app.gpr `with`s esp32s3_hal.gpr): e.g. `with ESP32S3.GPIO;` then
+--  ESP32S3.GPIO.Configure / Set / Clear.  See the SDK's examples/esp32s3_gpio0_blink.
+procedure Main is
+begin
+   loop
+      delay until Clock + Seconds (3600);
+   end loop;
+end Main;
+EOF
+
+    cat > "$dir/main/glue.c" <<EOF
+/* $name: example-specific C natives go here.  The SDK's shared bare-boot brings
+   the GNARL runtime up on both cores, so a new project can leave this empty.
+   Add the C functions your Ada imports (esp_rom_printf helpers, peripheral
+   pokes, ...) here. */
+typedef int ${name//[^a-zA-Z0-9_]/_}_no_natives;   /* avoid an empty translation unit */
+EOF
+
+    cat > "$dir/build.sh" <<'EOF'
+#!/bin/bash
+# IDF-free build via the SDK's shared bare-boot (no idf.py).
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SDK="${ESP32S3_ADA_SDK:?source the SDK export.sh first}"
+exec bash "$SDK/examples/common/bare/bare_build.sh" "$HERE" "_ada_main"
+EOF
+
+    cat > "$dir/flash.sh" <<'EOF'
+#!/bin/bash
+# Flash via the SDK's 2nd-stage bootloader + app.bin.  $1 = serial port.
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SDK="${ESP32S3_ADA_SDK:?source the SDK export.sh first}"
+exec bash "$SDK/examples/common/bare/bare_flash.sh" "$HERE" "$1"
+EOF
+
+    cat > "$dir/main/build_ada.sh" <<'EOF'
+#!/bin/bash
+# Build this app's Ada (app.gpr) against the SDK's pinned runtime into a
+# relocatable app_main.o for the bare-boot link.
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"        # main/
+EX="$(cd "$HERE/.." && pwd)"                 # project dir
+SDK="${ESP32S3_ADA_SDK:?source the SDK export.sh first}"
+RTCRATE="$SDK/crates/esp32s3_rts"
+DYNDIR="$SDK/crates/xtensa-dynconfig"
+DYNCFG="$DYNDIR/xtensa-dynconfig/xtensa_esp32s3.so"
+GNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_xtensa_esp32_elf_*/bin 2>/dev/null | sort -V | tail -1)"
+GPR="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
+export PATH="$GPR:$GNAT:$PATH"
+[ -f "$DYNCFG" ] || alr -C "$DYNDIR" build
+export XTENSA_GNU_CONFIG="$(realpath "$DYNCFG")"
+export GPR_PROJECT_PATH="$RTCRATE${GPR_PROJECT_PATH:+:$GPR_PROJECT_PATH}"
+bash "$RTCRATE/gen_runtime.sh"
+( cd "$EX" && gprbuild -p -P app.gpr )
+cp "$EX/obj/ada_app.o" "$HERE/app_main.o"
+echo "[build_ada] done: $HERE/app_main.o"
+EOF
+
+    cat > "$dir/.gitignore" <<'EOF'
+/obj/
+/.noidf/
+/app.bin
+/app.elf
+/app.map
+/main/app_main.o
+EOF
+
+    # Minimal VS Code support: ALS project + tasks driving esp32-ada.
+    mkdir -p "$dir/.vscode"
+    #  Unquoted heredoc: $SDK is baked in so the "Ada ESP32" status-bar extension
+    #  finds the SDK (esp32-ada / OpenOCD / GDB) with no env or PATH setup -- just
+    #  open this folder in VS Code and the build/flash/debug icons work.
+    cat > "$dir/.vscode/settings.json" <<EOF
+{
+  // Ada Language Server: this project's gpr. \`with "esp32s3_rts.gpr"\` resolves
+  // via GPR_PROJECT_PATH -- launch your editor from a shell that sourced the
+  // SDK export.sh so ALS inherits it.
+  "ada.projectFile": "app.gpr",
+
+  // Where the "Ada ESP32" toolbar extension finds the SDK (esp32-ada, OpenOCD,
+  // GDB) for this standalone project.  Baked in by \`esp32-ada init\`; edit if the
+  // SDK moves.
+  "ada-esp32.sdkPath": "$SDK"
+}
+EOF
+    cat > "$dir/.vscode/tasks.json" <<'EOF'
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "esp32-ada: build", "type": "shell", "command": "esp32-ada build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": {
+        "owner": "ada", "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": { "regexp": "^(.+?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                     "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5 } } },
+    { "label": "esp32-ada: flash", "type": "shell", "command": "esp32-ada flash", "problemMatcher": [] },
+    { "label": "esp32-ada: run",   "type": "shell", "command": "esp32-ada run",   "problemMatcher": [] }
+  ]
+}
+EOF
+
+    chmod +x "$dir/build.sh" "$dir/flash.sh" "$dir/main/build_ada.sh"
+    echo "esp32-ada: created project in $dir"
+    echo "   edit:                    $dir/src/main.adb"
+    echo "   build + flash + run:     cd $dir && esp32-ada run"
+}
+
+# -- actions on the current project -------------------------------------------
+do_build () {
+    local prof="light-tasking"
+    while [ $# -gt 0 ]; do case "$1" in -P|--profile) prof="$2"; shift 2;; *) shift;; esac; done
+    valid_profile "$prof"
+    local p; p="$(proj_dir)"
+    ( cd "$p" && env $(prof_env "$prof") bash build.sh )
+}
+do_flash () {
+    local port="${ESPPORT:-/dev/ttyACM0}"
+    while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
+    local p; p="$(proj_dir)"
+    ( cd "$p" && bash flash.sh "$port" )
+    local s; s="$(serial_from_port "$port")"
+    [ -n "$s" ] && printf '%s\n' "$s" > "$SDK/tools/.jtag_serial"   # pin debug to this board
+}
+do_run () {
+    local port="${ESPPORT:-/dev/ttyACM0}" prof="light-tasking"
+    while [ $# -gt 0 ]; do case "$1" in
+        -p|--port) port="$2"; shift 2;;
+        -P|--profile) prof="$2"; shift 2;;
+        *) shift;; esac
+    done
+    do_build --profile "$prof"; do_flash -p "$port"; do_monitor -p "$port"
+}
+do_monitor () {
+    local port="${ESPPORT:-/dev/ttyACM0}"
+    while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
+    [ -e "$port" ] || die "no such port: $port (set -p or \$ESPPORT)"
+    echo "esp32-ada: monitor $port @ $BAUD (Ctrl-C / Ctrl-A K to quit)" >&2
+    monitor_tool "$port"
+}
+do_config () {   # show/set THIS project's board.ads (reuses x's set/read helpers)
+    local p ads tmp; p="$(proj_dir)"
+    ads="$p/board.ads"; [ -f "$ads" ] || ads="$p/config/board.ads"
+    [ -f "$ads" ] || die "no board.ads in this project"
+    case "${1:-show}" in
+        show|"") printf 'Flash_Size  %s bytes\nPSRAM_Size  %s bytes\n' \
+                     "$(read_const "$ads" Flash_Size)" "$(read_const "$ads" PSRAM_Size)" ;;
+        --json) tmp="$(mktemp -d)"; bash "$CFG/gen_board_config.sh" "$ads" "$tmp" >/dev/null
+                . "$tmp/board_config.env"; rm -rf "$tmp"
+                printf '{"flash_size":%s,"flash_size_str":"%s","psram_size":%s,"psram_pages":%s}\n' \
+                       "$BOARD_FLASH_SIZE" "$BOARD_FLASH_SIZE_STR" "$BOARD_PSRAM_SIZE" "$BOARD_PSRAM_PAGES" ;;
+        flash-size) set_const "$ads" Flash_Size "${2:?usage: esp32-ada config flash-size <SIZE>}" ;;
+        psram-size) set_const "$ads" PSRAM_Size "${2:?usage: esp32-ada config psram-size <SIZE>}" ;;
+        *) die "config: unknown '$1' (show|--json|flash-size|psram-size)" ;;
+    esac
+}
+do_clean () {
+    local p; p="$(proj_dir)"
+    rm -rf "$p/obj" "$p/.noidf" "$p/build"
+    rm -f "$p/app.bin" "$p/app.elf" "$p/app.map" "$p/main/app_main.o"
+    echo "esp32-ada: cleaned $p"
+}
+do_debug () {
+    local port="${ESPPORT:-/dev/ttyACM0}"
+    while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
+    local p elf gdb ocd_log ocd_pid; p="$(proj_dir)"; elf="$p/app.elf"
+    [ -f "$elf" ] || die "no $elf -- run 'esp32-ada build' first"
+    gdb="$(find_gdb)"
+    ocd_log="$(mktemp)"
+    echo "esp32-ada: starting OpenOCD (single-core) ..." >&2
+    ESPPORT="$port" ESP_ONLYCPU=1 bash "$SDK/tools/openocd.sh" >"$ocd_log" 2>&1 &
+    ocd_pid=$!
+    trap '[ -n "${ocd_pid:-}" ] && kill "$ocd_pid" 2>/dev/null; rm -f "$ocd_log"' EXIT
+    for _ in $(seq 1 50); do
+        grep -q "Listening on port 3333" "$ocd_log" 2>/dev/null && break
+        kill -0 "$ocd_pid" 2>/dev/null || { sed 's/^/openocd: /' "$ocd_log" >&2; die "OpenOCD exited (see above)"; }
+        sleep 0.2
+    done
+    echo "esp32-ada: GDB -> :3333 on $(basename "$p")  (armed tbreak app_main; 'c' to run)" >&2
+    "$gdb" "$elf" -ex "target remote :3333" -ex "monitor reset halt" -ex "tbreak app_main" || true
+}
+
+# -- dispatch -----------------------------------------------------------------
+# -C DIR: act as if launched from DIR (before the subcommand).
+if [ "${1:-}" = "-C" ]; then cd "${2:?usage: esp32-ada -C DIR ...}"; shift 2; fi
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    init)            do_init "$@" ;;
+    build)           do_build "$@" ;;
+    flash)           do_flash "$@" ;;
+    run)             do_run "$@" ;;
+    monitor|mon)     do_monitor "$@" ;;
+    clean)           do_clean "$@" ;;
+    config|cfg)      do_config "$@" ;;         # this project's board.ads (root)
+    debug)           do_debug "$@" ;;
+    get-debug-tools) cmd_get_debug_tools "$@" ;;
+    kill-openocd)    cmd_kill_openocd "$@" ;;  # from x (sourced)
+    install-ide)     cmd_install_ide "$@" ;;   # install the VS Code extension (no Node)
+    build-ide)       cmd_build_ide "$@" ;;     # (maintainer) rebuild the .vsix
+    install-vim)     cmd_install_vim "$@" ;;   # symlink the Vim/Neovim plugin
+    ""|-h|--help|help)
+        sed -n '3,24p' "$0" | sed 's/^#  \{0,1\}//; s/^#//' ;;
+    *) die "unknown command '$cmd' (try 'esp32-ada help')" ;;
+esac

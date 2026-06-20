@@ -1,0 +1,28 @@
+--- b/gnarl/a-reatim.adb	2026-06-15 16:25:06.775625840 -0400
++++ a/gnarl/a-reatim.adb	2026-06-15 16:25:06.795625998 -0400
+@@ -620,10 +620,22 @@
+    ------------------
+ 
+    function To_Time_Span (D : Duration) return Time_Span is
++      Ticks : constant LLI :=
++        Mul_Div (To_Integer (D), OSI.Ticks_Per_Second, Duration_Units);
+    begin
+-      return
+-        Time_Span
+-          (Mul_Div (To_Integer (D), OSI.Ticks_Per_Second, Duration_Units));
++      --  ESP32-S3 port fix: a NONZERO Duration must not underflow to a ZERO
++      --  Time_Span.  The clock tick (Time_Unit = 1/240 MHz ~= 4.17 ns) is
++      --  COARSER than Duration'Small (1 ns), so Mul_Div rounds a sub-tick
++      --  Duration to 0.  Returning 0 for nonzero D breaks code that scales up
++      --  from the smallest Duration: ACATS CXD8002 does
++      --    Delay_Amount := To_Time_Span (Duration'Small);   -- 0 here!
++      --    loop ... Delay_Amount := Delay_Amount * 2;        -- 0*2 stays 0
++      --  -> infinite loop.  Round a nonzero D away from zero to the smallest
++      --  representable Time_Span (1 tick) so the scale-up terminates.
++      if Ticks = 0 and then D /= 0.0 then
++         return Time_Span (if D > 0.0 then 1 else -1);
++      end if;
++      return Time_Span (Ticks);
+    end To_Time_Span;
+ 
+ begin

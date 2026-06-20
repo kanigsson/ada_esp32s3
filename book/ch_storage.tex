@@ -1,0 +1,256 @@
+\chapter{Mass Storage: SD Cards and the ext4 Filesystem}
+\label{ch:storage}
+
+The final layer is mass storage: two block drivers for SD cards, and a complete
+pure-Ada ext2/3/4 filesystem (a reimplementation of lwext4) that sits on top of
+them and mounts real \texttt{mkfs.ext4} cards.
+
+\section{SD\_SPI --- an SD card over the SPI master}
+
+\texttt{ESP32S3.SD\_SPI} talks to an SD/SDHC card in SPI mode, layered on the
+task-safe SPI driver. The chip-select is an ordinary GPIO so it can be held across
+a whole command. Blocks are 512-byte logical sectors (LBA addressing); SDSC and
+SDHC are detected and handled internally.
+
+\begin{lstlisting}
+type Block is array (0 .. 511) of Interfaces.Unsigned_8;
+type Status is (OK, No_Card, Unusable, Init_Timeout, Read_Error, Write_Error);
+procedure Setup (C : out Card; Host : ESP32S3.SPI.SPI_Host;
+                 Sclk, Mosi, Miso, Cs : Pin_Id;
+                 Init_Clock_Hz : Positive := 400_000;
+                 Data_Clock_Hz : Positive := 8_000_000);
+procedure Initialize (C : in out Card; Result : out Status);
+procedure Read_Block  (C : in out Card; LBA : Block_Address;
+                       Data : out Block; Result : out Status);
+procedure Write_Block (C : in out Card; LBA : Block_Address;
+                       Data : Block; Result : out Status);
+\end{lstlisting}
+
+\textbf{Example 1 --- bring up a card and read sector 0.}
+\begin{lstlisting}
+with ESP32S3.SD_SPI; use ESP32S3.SD_SPI;
+with ESP32S3.SPI;
+procedure SD_Init is
+   C   : Card;
+   St  : Status;
+   Sec : Block;
+begin
+   Setup (C, ESP32S3.SPI.SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
+   Initialize (C, St);
+   if St = OK then
+      Read_Block (C, LBA => 0, Data => Sec, Result => St);   --  the MBR sector
+   end if;
+end SD_Init;
+\end{lstlisting}
+
+\textbf{Example 2 --- a non-destructive read / write-back / re-read round-trip.}
+\begin{lstlisting}
+with ESP32S3.SD_SPI; use ESP32S3.SD_SPI;
+with ESP32S3.SPI;
+procedure SD_Roundtrip is
+   C          : Card;
+   St         : Status;
+   Orig, Back : Block;
+begin
+   Setup (C, ESP32S3.SPI.SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
+   Initialize (C, St);
+   Read_Block  (C, 16#2000#, Orig, St);     --  read a scratch sector
+   Write_Block (C, 16#2000#, Orig, St);     --  write the same bytes back
+   Read_Block  (C, 16#2000#, Back, St);     --  re-read; Back = Orig, no data lost
+end SD_Roundtrip;
+\end{lstlisting}
+
+\section{SDMMC --- the native SD/MMC host}
+
+\texttt{ESP32S3.SDMMC} drives the dedicated SDHOST controller (clock + command +
+1- or 4-bit data) in PIO mode --- faster than SPI mode, and with no DMA or
+finalization it works under every profile. The API mirrors \texttt{SD\_SPI}.
+
+\begin{lstlisting}
+procedure Setup (C : out Card; On : Slot; Clk, Cmd, D0 : Pin_Id;
+                 D1, D2, D3 : Optional_Pin := No_Pin;
+                 Width : Bus_Width := Width_1; ...);
+procedure Initialize (C : in out Card; Result : out Status);
+procedure Read_Block  (C : in out Card; LBA : Block_Address; Data : out Block;
+                       Result : out Status);
+\end{lstlisting}
+
+\textbf{Example --- 4-bit bus, read a sector.}
+\begin{lstlisting}
+with ESP32S3.SDMMC; use ESP32S3.SDMMC;
+procedure SDMMC_Read is
+   C   : Card;
+   St  : Status;
+   Sec : Block;
+begin
+   Setup (C, On => Slot1, Clk => 14, Cmd => 15, D0 => 2, D1 => 4, D2 => 12,
+          D3 => 13, Width => Width_4);
+   Initialize (C, St);
+   if St = OK then
+      Read_Block (C, 0, Sec, St);
+   end if;
+end SDMMC_Read;
+\end{lstlisting}
+
+\section{The ext4 filesystem}
+
+\texttt{ESP32S3.Ext4} is a pure-Ada ext2/3/4 implementation with a JBD2 journal
+(Chapter overview in \texttt{libs/esp32s3\_hal/src/ext4/README.md}). It reads
+default \texttt{mkfs.ext4} cards (extents, 64-bit, HTree directories,
+\texttt{metadata\_csum} verification), writes ext2/3/non-csum filesystems, and
+recovers a dirty journal on mount. It needs the \texttt{embedded} or \texttt{full}
+profile.
+
+\subsection{Connecting a block device}
+
+The filesystem talks to a small block-device abstraction (\texttt{ESP32S3.%
+Block\_Dev.Device}). An adapter turns an initialised SD card into one with a
+single call --- the \texttt{Make} below appears in each complete example that
+follows:
+
+\begin{lstlisting}
+with ESP32S3.Block_Dev;
+with ESP32S3.Block_Dev.SD_SPI_Source;
+--  ... given an initialised "Card : aliased ESP32S3.SD_SPI.Card" ...
+   Dev : constant ESP32S3.Block_Dev.Device :=
+           ESP32S3.Block_Dev.SD_SPI_Source.Make (Card'Access);
+\end{lstlisting}
+
+\subsection{Mounting and reading}
+
+A \texttt{Mount} is a controlled handle: it flushes and closes on scope exit, and
+\texttt{Open} automatically replays a dirty journal on a writable mount. The
+complete example brings up the card, wraps it, mounts read-only, then reads a
+file:
+
+\begin{lstlisting}
+with ESP32S3.SPI;
+with ESP32S3.SD_SPI;
+with ESP32S3.Block_Dev;
+with ESP32S3.Block_Dev.SD_SPI_Source;
+with ESP32S3.Ext4;
+with ESP32S3.Ext4.FS;
+with ESP32S3.Ext4.Inode;
+procedure EXT4_Read is
+   use type ESP32S3.SD_SPI.Status;
+   Card : aliased ESP32S3.SD_SPI.Card;
+   St   : ESP32S3.SD_SPI.Status;
+begin
+   ESP32S3.SD_SPI.Setup (Card, ESP32S3.SPI.SPI2,
+                         Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
+   ESP32S3.SD_SPI.Initialize (Card, St);
+   if St /= ESP32S3.SD_SPI.OK then
+      return;
+   end if;
+   declare
+      Dev  : constant ESP32S3.Block_Dev.Device :=
+               ESP32S3.Block_Dev.SD_SPI_Source.Make (Card'Access);
+      M    : ESP32S3.Ext4.FS.Mount;
+      I    : ESP32S3.Ext4.Inode.Info;
+      Buf  : ESP32S3.Ext4.Byte_Array (0 .. 255);
+      Last : Natural;
+   begin
+      M.Open (Dev, Read_Only => True);
+      M.Stat (M.Lookup ("/etc/hello.txt"), I);  --  resolve a path -> its inode
+      M.Read_File (I, Offset => 0, Into => Buf, Last => Last);
+      --  Buf (0 .. Last - 1) holds the first Last bytes of the file
+   end;   --  M finalizes: flush + close
+end EXT4_Read;
+\end{lstlisting}
+
+\textbf{Listing a directory.} \texttt{Iterate} calls a visitor for each entry.
+The card bring-up is identical to the example above; the body is:
+
+\begin{lstlisting}
+   declare
+      Dev  : constant ESP32S3.Block_Dev.Device :=
+               ESP32S3.Block_Dev.SD_SPI_Source.Make (Card'Access);
+      M    : ESP32S3.Ext4.FS.Mount;
+      Root : ESP32S3.Ext4.Inode.Info;
+      procedure Show (Name : String;
+                      Ino  : ESP32S3.Ext4.Inode_Number;
+                      File_Type : ESP32S3.Ext4.U8) is
+      begin
+         Put_Line ("  " & Name);
+      end Show;
+   begin
+      M.Open (Dev, Read_Only => True);
+      M.Stat (M.Lookup ("/"), Root);
+      M.Iterate (Root, Show'Access);
+   end;
+\end{lstlisting}
+
+\subsection{Writing}
+
+On a non-\texttt{metadata\_csum} filesystem (ext2/3, or
+\texttt{mke2fs -O \textasciicircum metadata\_csum}) the filesystem can be modified.
+The full POSIX-like set is available: \texttt{Create\_File}, \texttt{Write\_File},
+\texttt{Truncate}, \texttt{Mkdir}, \texttt{Rmdir}, \texttt{Unlink},
+\texttt{Rename} and hard \texttt{Link}.
+
+\begin{lstlisting}
+   declare
+      Dev : constant ESP32S3.Block_Dev.Device :=
+              ESP32S3.Block_Dev.SD_SPI_Source.Make (Card'Access);
+      M   : ESP32S3.Ext4.FS.Mount;
+      N   : ESP32S3.Ext4.Inode_Number;
+   begin
+      M.Open (Dev, Read_Only => False);
+      N := M.Create_File ("/", "log.txt");
+      M.Write_File (N, (Character'Pos ('h'), Character'Pos ('i'), 10));
+      M.Mkdir ("/", "data");
+      M.Close;          --  flush + close (or let M finalize)
+   end;
+\end{lstlisting}
+
+\subsection{Crash-safe transactions}
+
+For atomicity, group an operation behind \texttt{Commit}: the dirty metadata and
+the superblock are written to the journal (durably), the RECOVER flag is set ---
+the commit barrier --- then the metadata is checkpointed to its final locations
+and the flag cleared. A power loss after the barrier is recovered forward by the
+next \texttt{Open} (or by any other ext4 implementation, including the Linux
+kernel); a loss before it has no effect.
+
+\begin{lstlisting}
+   --  Payload : constant ESP32S3.Ext4.Byte_Array := (16#41#, 16#42#, 16#43#);
+   N := M.Create_File ("/", "important.txt");
+   M.Write_File (N, Payload);
+   M.Commit;         --  one atomic, journaled, crash-safe transaction
+\end{lstlisting}
+
+\subsection{Errors}
+
+Filesystem operations raise: the standard \texttt{Ada.IO\_Exceptions} names
+(\texttt{Name\_Error} for a missing path, \texttt{Use\_Error}, \texttt{Device\_%
+Error}, \texttt{End\_Error}) plus filesystem-specific \texttt{Unsupported\_%
+Feature}, \texttt{Bad\_Checksum}, \texttt{Corrupt}, \texttt{No\_Space},
+\texttt{Not\_Empty} and \texttt{Read\_Only}. Wrap calls in a handler so a bad card
+or a missing file never escapes a task:
+
+\begin{lstlisting}
+begin
+   M.Stat (M.Lookup ("/maybe/missing"), I);
+exception
+   when ESP32S3.Ext4.Name_Error => Put_Line ("not found");
+   when ESP32S3.Ext4.Bad_Checksum => Put_Line ("corrupt metadata");
+end;
+\end{lstlisting}
+
+\subsection{How it is validated}
+
+Because the filesystem is pure logic over the block interface, it is developed and
+tested host-native (x86) against real \texttt{mke2fs} images, with the Linux
+kernel and \texttt{e2fsck} as the oracle: every read is byte-compared to the
+source file, every mutation is checked with \texttt{e2fsck -fn}, and journal
+replay and commit are cross-checked against the kernel's own recovery. The same
+code cross-compiles for the ESP32-S3 and runs over the SD drivers above. See
+\texttt{tests/ext4\_host/} and \texttt{libs/esp32s3\_hal/src/ext4/REFERENCES.md}.
+
+\vfill
+\noindent\rule{\linewidth}{0.4pt}\\[4pt]
+\textit{The whole stack --- runtime, peripheral HAL, and filesystem --- is one
+coherent body of Ada: strong types from the register up, the same RAII and
+task-safety patterns in every driver, and a filesystem validated against the
+Linux kernel, all running on both cores of the ESP32-S3 on its own bare-metal
+runtime.}

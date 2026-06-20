@@ -1,0 +1,147 @@
+\chapter{Full-Profile Limitations (and Why They Rarely Bite)}
+
+The \texttt{full} profile is a complete GNARL tasking runtime rebuilt on bare
+metal --- no Ravenscar restrictions, with rendezvous, protected objects with
+entries, dynamic and nested tasks, dynamic priorities, task attributes,
+exception propagation, \texttt{abort}, and \texttt{Ada.Interrupts} handlers all
+running on hardware. A handful of rough edges remain. This chapter lists them
+honestly and, for each, explains why it seldom matters for a real embedded
+program. The short version: the gaps cluster at the margins of the language ---
+constructs a startup-time, fixed-task-set application almost never reaches --- and
+each has a clean workaround or is explicitly permitted by the Reference Manual.
+
+\section{Toolchain-bound: asynchronous \texttt{select} with a relative delay}
+
+A \texttt{select \ldots\ delay D; then abort \ldots\ end select} (the relative,
+\texttt{Duration}-triggered form of asynchronous transfer of control, ACATS
+\texttt{C974*}) does not compile under \texttt{full}. This is \emph{not} a runtime
+gap: under \texttt{Configurable\_Run\_Time} the GNAT front end emits a call that
+passes a \texttt{Duration} to \texttt{Enqueue\_RT (T : Real\_Time.Time)}, which,
+crossed with this port's \texttt{type Time}, does not type-check. Fixing it is a
+compiler change or a deep \texttt{Real\_Time.Time} redesign, not an RTS unit we
+can add.
+
+\textbf{Why it rarely bites.} The \emph{absolute} form (\texttt{select \ldots\
+delay until T}) and ATC triggered by an \emph{entry call} both work. A relative
+timeout is sugar for ``compute \texttt{Clock + D}, then wait until that instant'',
+which the absolute form expresses directly. Timed operations are also commonly
+written with a guard plus \texttt{Ada.Real\_Time} arithmetic, untouched by this.
+
+\section{RM-permitted: aborting a pure CPU loop}
+
+\texttt{abort} of a task blocked at any \emph{abort-completion point} ---
+a \texttt{delay}, an entry call, a rendezvous --- works and is HW-verified
+(\texttt{'Terminated} flips, the task unwinds cleanly). The one case that does
+\emph{not} take effect is a task spinning in a tight computational loop with no
+completion point at all: it keeps running until it next reaches one.
+
+\textbf{Why it rarely bites.} This is explicitly allowed --- ARM 9.8 only
+requires abort to take effect at completion points, and a loop with no such point
+is permitted to run on. Delivering it anyway would mean injecting an exception
+into a preempted task from the timer ISR, which (as the context-switch and
+interrupts chapters describe) is deep, windowed-Xtensa, shared-kernel surgery
+for a behavior the standard does not mandate. In practice any loop that
+does I/O, delays, or calls an entry is abortable; a genuinely tight numeric
+kernel that must be cancellable can poll a \texttt{Volatile} flag.
+
+\section{\texttt{Configurable\_Run\_Time} finalization}
+
+Because \texttt{system.ads} sets \texttt{Configurable\_Run\_Time => True}, the
+front end does not generate \emph{library-level} finalization. Two consequences:
+
+\begin{itemize}
+  \item A \emph{library-level} controlled object's \texttt{Finalize} runs only if
+        the object is finalized at scope exit, not as part of program shutdown.
+  \item Consequently, the \emph{implicit} restore-on-finalization of a
+        \emph{library-level} interrupt-handler protected object does not run
+        automatically at shutdown. (Both the static \texttt{pragma Attach\_Handler}
+        path \emph{and} the full dynamic \texttt{Ada.Interrupts} operations ---
+        \texttt{Attach\_Handler}, \texttt{Detach\_Handler}, \texttt{Exchange\_-
+        Handler}, \texttt{Current\_Handler} --- are now supported and
+        HW-verified; see the Interrupts chapter. Only this one implicit-restore
+        case is outstanding.)
+\end{itemize}
+
+\textbf{Why it rarely bites.} Scope-level finalization --- the overwhelmingly
+common case (a controlled object in a subprogram or block) --- works normally.
+Library-level objects live for the entire life of the program anyway, so on an
+embedded target that never exits there is nothing to finalize. And interrupt
+handlers are wired up once at elaboration and stay for the life of the system, so
+the missing implicit restore-at-shutdown never matters in practice; explicit
+\texttt{Detach\_Handler} works if you do need it.
+
+\section{\texttt{Ada.Calendar} year range stops at 2099}
+
+The bare \texttt{Ada.Calendar} declares \texttt{Year\_Number} as
+\texttt{1901\,..\,2099} (the Ada~95 bound), whereas Ada~2005 onward --- and the
+modern ACATS \texttt{C96004} --- require \texttt{2399}. This is not a one-line
+subtype change: the bare runtime's Calendar uses a \emph{Julian-day fixed-point}
+time representation deliberately sized so the 1901--2099 span fits in 64 bits at
+sub-second precision. Stretching the range to 2399 (roughly five centuries)
+overflows that representation --- which is exactly why mainline GNAT abandoned the
+Julian-day Calendar for an integer-nanosecond one. Reaching 2399 would mean
+swapping in a new time base across the whole Calendar, on a unit shared by the
+\texttt{embedded} and \texttt{full} profiles, at the risk of the Calendar tests
+that already pass.
+
+\textbf{Why it rarely bites.} The gap is the years 2100--2399. Everything within
+1901--2099 --- which comfortably covers the service life of any device this
+runtime will ever run on --- is fully conformant: arithmetic, formatting,
+\texttt{Split}/\texttt{Time\_Of}, and \texttt{delay until} on a
+\texttt{Calendar.Time} are all HW-verified (see the ACATS chapter). The cost of
+closing it is a Calendar rewrite; the benefit is dates after the year 2099.
+
+\section{Per-task heap reclamation under task churn}
+
+A terminated task's primary stack is returned to the heap, but a program that
+\emph{churns} tasks --- creating and destroying them in a tight loop --- can still
+exhaust the heap: the reclamation of the per-task resources is not yet fully
+race-free against the terminating thread, and the bare allocator fragments. The
+underlying cause is that the kernel has no explicit ``retire this thread'' step;
+the design for fixing it is recorded in the project notes.
+
+\textbf{Why it rarely bites.} Idiomatic embedded Ada creates a \emph{fixed} set
+of tasks at startup and runs them for the life of the system --- the fixed-set
+case never churns and never leaks. Dynamic create/destroy in a hot loop is an
+unusual pattern on a microcontroller; where it is needed, a task pool (allocate
+once, reuse) sidesteps the issue entirely.
+
+\section{Minor robustness edges}
+
+\begin{itemize}
+  \item \textbf{Lowering the running task's priority below a ready peer} can hang
+        the caller (a bare-kernel reschedule edge). Raising priority, or staying
+        the highest, works. \emph{Why it rarely bites:} priority is normally set
+        once at task creation; the dynamic-lowering-below-peers pattern is rare,
+        and priority \emph{ceilings} (the common dynamic case) go up, not down.
+  \item \textbf{\texttt{Ada.Text\_IO} over the USB-Serial-JTAG console} is not
+        robust for two tasks printing concurrently. \emph{Why it rarely bites:}
+        this is a console-transport detail, not the tasking kernel --- route
+        diagnostic output through one task, or use a real UART (the UART driver
+        is task-safe).
+\end{itemize}
+
+\section{Architectural: \texttt{Interrupt\_Priority'Last} and the kernel tick}
+
+A task declared at \texttt{Interrupt\_Priority'Last} masks the kernel's own
+Xtensa level-5 tick and cross-core IPI, deadlocking its activation (ACATS
+\texttt{CXD1006}; see the ACATS chapter). The kernel owns the top hardware level
+and shares it with the highest Ada interrupt priority.
+
+\textbf{Why it rarely bites.} Only the single \emph{topmost} interrupt priority
+collides. Any priority below it --- including every priority the peripheral HAL
+drivers use for their device interrupts --- is unaffected, and ordinary tasks use
+\texttt{Priority}, not \texttt{Interrupt\_Priority}, at all. A handler simply
+should not claim the one ceiling reserved for the scheduler.
+
+\section{The common case is clean}
+
+None of the above touches the path a typical full-tasking program actually walks:
+declare a fixed set of tasks and protected objects at startup; rendezvous and
+share data through protected entries; use absolute delays and timing events;
+attach interrupt handlers statically; finalize controlled objects at scope exit;
+abort at completion points. That path is implemented and hardware-verified. The
+limitations are real, but they live at the edges --- toolchain corners, an
+RM-permitted abort case, and patterns (library-level finalization, task churn,
+dynamic priority lowering) that idiomatic embedded code seldom uses --- and every
+one has either a clean workaround or standing permission from the language.

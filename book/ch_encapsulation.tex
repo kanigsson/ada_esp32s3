@@ -1,0 +1,270 @@
+\chapter{Encapsulation, Ownership and Concurrency}
+\label{ch:encap}
+
+Four Ada features let an interface control, in the type system itself, what client
+code is allowed to do --- and together they make a peripheral driver that is
+misuse-resistant by construction. \texttt{private} hides a type's representation;
+\texttt{limited} forbids copying it; \texttt{controlled} gives it automatic setup
+and teardown; \texttt{protected} serialises access to it. None costs more at run
+time than the discipline you would otherwise have to write and remember by hand,
+and each turns a class of ``be careful to\ldots'' rules into a compiler-enforced
+guarantee. This chapter explains each keyword with small examples and its embedded
+payoff; the \emph{Writing a Task-Safe Peripheral Driver} chapter shows them
+combined in the real HAL.
+
+\section{\texttt{private} types: hiding the representation}\index{private types}
+
+A private type is declared in two halves. The visible part of a package gives the
+type a name and the operations on it; the \emph{private part} --- everything after
+the word \texttt{private} --- gives its real definition. Client code may use the
+name and call the operations, but cannot see or touch the components.
+
+\begin{lstlisting}
+package Counters is
+   type Counter is private;             -- clients see only this and the ops
+   procedure Bump  (C : in out Counter);
+   function  Value (C : Counter) return Natural;
+private
+   type Counter is record               -- the real definition, hidden
+      N : Natural := 0;
+   end record;
+end Counters;
+\end{lstlisting}
+
+A user can declare a \texttt{Counter}, \texttt{Bump} it and read its
+\texttt{Value}, but cannot write \texttt{C.N}, cannot rely on it being a record,
+and will not break if the representation later changes. This is the difference
+between a \texttt{struct} in a public C header --- whose fields anyone may scribble
+on --- and a genuinely opaque handle.
+
+\textbf{Embedded payoff.} The representation of a driver handle (which host it
+owns, a DMA-descriptor pointer, a hardware index) is hidden, so application code
+cannot corrupt it and the driver author stays free to change it.
+
+\section{\texttt{private} child packages: sealing the unsafe layer}
+
+Visibility extends to whole packages. A child package declared \texttt{private} is
+visible only inside its own family's bodies; application code cannot even
+\emph{name} it in a \texttt{with} clause. The HAL uses this to seal the only code
+that touches registers:
+
+\begin{lstlisting}
+private package ESP32S3.SPI.Engine is   -- un-with-able from an application
+   --  the raw, lock-free register driver: the ONLY code that pokes SPI.
+   ...
+end ESP32S3.SPI.Engine;
+\end{lstlisting}
+
+The public \texttt{ESP32S3.SPI} package \texttt{with}s the engine in its body and
+mediates every operation. \textbf{Embedded payoff.} ``Poke the registers
+directly'' is not merely discouraged --- it is \emph{unwritable}: a
+\texttt{with ESP32S3.SPI.Engine;} in an application fails to compile, so the unsafe
+core is reachable only through the safe fa\c{c}ade.
+
+\section{\texttt{limited} types: values that cannot be copied}\index{limited types}
+
+A limited type has no assignment (\texttt{:=}) and no predefined equality
+(\texttt{=}). You can declare one, pass it (by reference) and operate on it, but
+you cannot copy it. Make a type limited when a value stands for a \emph{unique}
+thing that must not be duplicated --- a handle to a single hardware resource, a
+lock, an open session:
+
+\begin{lstlisting}
+   type Session is limited private;     -- a SPI bus session
+   ...
+   A, B : Session;
+   B := A;       -- COMPILE ERROR: Session is limited, it cannot be copied
+\end{lstlisting}
+
+If you \emph{could} copy a handle, two copies would each believe they own the bus;
+releasing one would leave the other dangling. \texttt{limited} makes that bug
+impossible to write. It is the real shape of the SPI \texttt{Session}, the GDMA
+\texttt{Channel}, the ADC \texttt{Reader}, the LEDC/PCNT \texttt{Channel} and the
+rest of the HAL's ownership handles.
+
+\section{\texttt{controlled} types and RAII: deterministic teardown}\index{controlled types}\index{RAII}
+
+\texttt{Ada.Finalization.Controlled} --- and its non-copyable sibling
+\texttt{Limited\_Controlled} --- give a type three hooks the runtime calls
+\emph{automatically}: \texttt{Initialize} when an object comes into being,
+\texttt{Finalize} when it leaves scope (\emph{including} when an exception unwinds
+the scope), and \texttt{Adjust} after a copy (for the non-limited kind). That is
+RAII: a resource's lifetime is tied to an object's scope.
+
+\begin{lstlisting}
+   type Session is new Ada.Finalization.Limited_Controlled with record
+      Host : ...;
+   end record;
+   overriding procedure Finalize (S : in out Session);   -- auto-release the bus
+\end{lstlisting}
+
+\begin{lstlisting}
+   declare
+      S : Session;                  -- Initialize
+   begin
+      Acquire (S, Host => SPI2);    -- take the bus
+      Transfer (S, ...);
+   end;                             -- Finalize runs HERE: the bus is released,
+                                    -- even if Transfer raised an exception
+\end{lstlisting}
+
+\textbf{Embedded payoff.} You \emph{cannot forget} to release a DMA channel,
+unlock a bus, or power down a peripheral --- the release is bound to the scope and
+happens on every exit path, with no leak, deterministic timing, and no
+\texttt{goto cleanup} ladder. \texttt{limited} + \texttt{controlled} is the
+project's standard handle: limited stops you copying the owner, controlled
+guarantees it is released. (The real SPI \texttt{Session}'s overriding
+\texttt{Finalize} is commented ``auto-release on scope exit'' for exactly this.)
+
+\cnote{ESP-IDF hands you an opaque handle and a matching \texttt{*\_delete} /
+\texttt{*\_free} you must remember to call on every path (including the error
+ones). A controlled \texttt{Session} releases itself when it leaves scope --- even
+when an exception unwinds past it --- so the leak and the missed-cleanup bug
+cannot happen.}
+
+\section{\texttt{protected} types and objects: race-free sharing}\index{protected objects}
+
+A protected object is data plus operations with mutual exclusion built in --- a
+monitor. Only one task at a time runs a protected \emph{procedure} or
+\emph{entry}; the compiler generates the locking, and on this runtime the lock is
+a \emph{priority ceiling}, so worst-case blocking is bounded (real-time
+friendly). There are three kinds of operation:
+
+\begin{itemize}
+  \item a protected \textbf{function} reads the state and may run concurrently
+        with other functions (a shared read);
+  \item a protected \textbf{procedure} reads and writes with exclusive access
+        (one caller at a time);
+  \item a protected \textbf{entry} is a procedure with a Boolean \emph{barrier};
+        a caller blocks until the barrier is open (condition synchronisation).
+\end{itemize}
+
+\begin{lstlisting}
+   protected Counter is
+      procedure Bump;                  -- exclusive write
+      function  Value return Natural;  -- shared read
+   private
+      N : Natural := 0;
+   end Counter;
+
+   protected body Counter is
+      procedure Bump is begin N := N + 1; end Bump;
+      function  Value return Natural is (N);
+   end Counter;
+\end{lstlisting}
+
+\texttt{Counter.Bump} from one task and \texttt{Counter.Value} from another never
+race --- no \texttt{Volatile}, no hand-rolled critical section. The HAL uses
+exactly this to arbitrate a shared peripheral: a per-port \texttt{protected Guard}
+(or \texttt{Pool}, or \texttt{Lock}) hands out ownership so two tasks cannot drive
+the same controller at once, and an interrupt handler is itself a protected
+procedure (the Interrupts chapter). \textbf{Embedded payoff.} Shared state across
+tasks, cores and interrupt handlers is correct by construction, with bounded,
+analysable blocking.
+
+\section{The four together: a misuse-proof driver}
+
+Combined, these keywords make a peripheral that is hard to misuse even on purpose:
+
+\begin{itemize}
+  \item the registers live in a \texttt{private} child --- you cannot see or poke
+        them;
+  \item the public handle is \texttt{limited} --- you cannot copy ownership;
+  \item it is \texttt{controlled} --- you cannot forget to release it;
+  \item access is \texttt{protected} --- you cannot race it.
+\end{itemize}
+
+That is precisely the HAL's task-safe driver skeleton; the \emph{Writing a
+Task-Safe Peripheral Driver} chapter builds one end to end (Engine $+$ Session
+$+$ Guard). The payoff is that a whole class of embedded bugs --- a dangling
+handle, a forgotten unlock, a double-driven bus, a torn shared counter --- becomes
+a compile error or a structural impossibility instead of a field failure.
+
+\section{Related keywords}
+
+A few neighbours round out the family. Each is shown with a small example.
+
+\paragraph{\texttt{constant} --- a value that never changes.} A constant is given
+its value once and can never be assigned again; the compiler may place it in
+read-only memory (flash), saving RAM. A constant with no type --- a \emph{named
+number} --- is a pure compile-time value.
+
+\begin{lstlisting}
+   Max_Pins : constant := 48;                 -- named number (no type, no storage)
+   Sine     : constant array (0 .. 255) of Integer := ( ... );  -- table, in flash
+   --  Sine (K) := 0;  -- COMPILE ERROR: Sine is constant
+\end{lstlisting}
+
+In embedded code lookup tables, calibration data and configuration are
+\texttt{constant} so they live in flash, not in scarce RAM.
+
+\paragraph{\texttt{aliased} --- an object you may point at.} By default you cannot
+take \texttt{'Access} of a declared object (the accessibility rules guard against
+dangling pointers). Marking it \texttt{aliased} permits it --- needed when, say, a
+DMA buffer must be handed to a descriptor by reference.
+
+\begin{lstlisting}
+   Buf  : aliased DMA_Buffer;          -- 'Access may now be taken
+   Desc.Src := Buf'Access;             -- give the DMA engine a pointer to it
+\end{lstlisting}
+
+\paragraph{\texttt{renames} --- a new name for an existing thing.} A renaming
+declaration introduces an \emph{alias}: a second name that denotes the \emph{same}
+entity --- no copy, no new object is made. It works for objects, components,
+subprograms, packages and exceptions.
+
+\begin{lstlisting}
+   --  alias a deeply-nested register field: short name, same storage
+   Ctrl : Unsigned_32 renames Periph.SPI2.User.Control;
+   Ctrl := 16#1#;                      -- writes Periph.SPI2.User.Control
+
+   --  alias a package to shorten a long path (just this one name, unlike `use`)
+   package GE renames ESP32S3.GPIO;
+   GE.Toggle (2);
+
+   --  alias a subprogram -- give an operation a local or operator name
+   function "+" (L, R : Vector) return Vector renames Vectors.Add;
+\end{lstlisting}
+
+For an object or component the alias shares the original's storage --- writing
+through \texttt{Ctrl} above writes the real register field --- so \texttt{renames}
+is the way to name one specific deeply-qualified thing once and use the short name
+afterwards. Note how it differs from \texttt{use} (\S\ref{ch:registers}):
+\texttt{use} makes \emph{all} of a package's names directly visible, whereas
+\texttt{renames} introduces exactly \emph{one} new name and says precisely what it
+stands for --- so it shortens a single long reference without the wholesale
+visibility (and possible name clashes) that \texttt{use} brings.
+
+\paragraph{\texttt{tagged} --- records with inheritance and dispatch.} A tagged
+type can be \emph{extended} (a derived type adds components) and its primitive
+operations can \emph{dispatch} at run time: a call through a class-wide value
+\texttt{T'Class} selects the right override for the actual object.
+
+\begin{lstlisting}
+   type Sensor is tagged record Id : Natural; end record;
+   function Read (S : Sensor) return Integer;
+
+   type Temp_Sensor is new Sensor with record Pin : Pin_Id; end record;  -- extends
+   overriding function Read (S : Temp_Sensor) return Integer;            -- override
+\end{lstlisting}
+
+A call \texttt{Read (S)} where \texttt{S} is \texttt{Sensor'Class} dispatches to
+\texttt{Temp\_Sensor}'s \texttt{Read} if that is the actual type. It is used
+sparingly in embedded code (the \texttt{embedded}-profile demo shows library-level
+tagged dispatch) because a dispatching call is an indirect call.
+
+\paragraph{\texttt{abstract} --- a type or operation with no implementation.} An
+abstract type cannot be instantiated, and an abstract operation has no body ---
+every concrete descendant \emph{must} provide one. This is how Ada expresses an
+interface: a contract that says ``every sensor shall have a \texttt{Read}.''
+
+\begin{lstlisting}
+   type Sensor is abstract tagged null record;
+   function Read (S : Sensor) return Integer is abstract;  -- no body; must override
+   --  S : Sensor;  -- COMPILE ERROR: Sensor is abstract
+\end{lstlisting}
+
+These are reached for less often than \texttt{private} /\texttt{limited} /
+\texttt{protected} /\texttt{controlled}, but knowing them completes the picture of
+how Ada lets the \emph{declaration} of a type state what may --- and may not --- be
+done with it.

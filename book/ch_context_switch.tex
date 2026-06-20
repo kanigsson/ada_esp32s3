@@ -1,0 +1,252 @@
+\chapter{The Context Switch}
+\label{ch:context-switch}
+
+Every preemptive runtime turns on one small, brutal piece of code: the routine
+that freezes one task's CPU state, thaws another's, and jumps. On a flat
+register machine that routine is tedious but obvious. On the Xtensa LX7, with its
+\emph{windowed} register file and a hardware FPU bolted on the side, it is neither
+\textemdash{} and getting it wrong produces failures that look like anything but a
+broken context switch. This chapter walks through the mechanism end to end: where
+it lives, the state it must preserve, the two completely different ways it is
+entered, and how the trickier parts were verified on hardware.
+
+\section{Where it lives}
+
+The switch spans three files, two languages, and the boundary between the generic
+GNARL kernel and this CPU port:
+
+\begin{itemize}
+  \item \texttt{crates/bb-runtimes/xtensa/context\_switch.S} \textemdash{} the
+        register-level switch itself, in hand-written Xtensa assembly. It is
+        copied verbatim into each profile's runtime tree
+        (\texttt{<profile>-esp32s3/gnarl/context\_switch.S}) when
+        \texttt{gen\_runtime.sh} builds the RTS, so editing the bb-runtimes copy
+        and regenerating is what changes the running behaviour.
+  \item \texttt{System.BB.CPU\_Primitives} (\texttt{s-bbcppr.adb}) \textemdash{}
+        the Ada entry point \texttt{Context\_Switch}, a thin wrapper that picks
+        the per-CPU thread-table slots and calls the assembly. This is the seam
+        the portable kernel sees; every CPU port provides its own.
+  \item \texttt{System.BB.CPU\_Specific} (\texttt{s-bbcpsp.ads}) \textemdash{} the
+        \texttt{Context\_Buffer} record: the per-task saved CPU state, whose field
+        offsets the assembly hard-codes.
+\end{itemize}
+
+Above all of this sits the portable scheduler, \texttt{System.BB.Threads.Queues}
+(\texttt{s-bbthqu.adb}). It never touches a register; it only maintains the ready
+queue and answers one question \textemdash{} \texttt{Context\_Switch\_Needed},
+defined simply as \texttt{First\_Thread /= Running\_Thread}. When the highest
+ready task is not the one on the CPU, the kernel calls
+\texttt{CPU\_Primitives.Context\_Switch} and the machinery below takes over.
+
+\section{The data structures}
+
+Two structures carry the state.
+
+\textbf{The \texttt{Context\_Buffer}}, one per task, is deliberately tiny:
+
+\begin{longtable}{p{3cm} p{1.2cm} p{8cm}}
+\textbf{Field} & \textbf{Off} & \textbf{Meaning} \\ \hline
+\endhead
+\texttt{SP}         & 0  & task stack pointer (top of its spilled frame) \\
+\texttt{PC}         & 4  & resume target: a \texttt{retw} stub, or the new-task trampoline \\
+\texttt{PS}         & 8  & processor state (INTLEVEL, window control, \dots) \\
+\texttt{A0}         & 12 & windowed return address \\
+\texttt{THREADPTR}  & 16 & thread-local-storage base \\
+\texttt{CP\_State}  & 20 & pointer to the FPU/coprocessor save area \\
+\texttt{SAR}        & 24 & shift-amount register \\
+\texttt{LBEG/LEND/LCOUNT} & 28..36 & zero-overhead loop registers \\
+\texttt{Frame\_Kind} & 40 & 0 = solicited, 1 = interrupt (see below) \\
+\end{longtable}
+
+What is conspicuously \emph{absent} is the general register file. That is the
+whole point of the windowed design, and the next section explains why.
+
+\textbf{The thread tables}, \texttt{Running\_Thread\_Table} and
+\texttt{First\_Thread\_Table}, are indexed by CPU (this is a genuine two-core SMP
+target). \texttt{Running} is who is on the core now; \texttt{First} is who the
+scheduler wants there. \texttt{Context\_Switch} passes the \emph{addresses} of
+these two slots to the assembly, which dereferences them to the descriptors whose
+first field is the \texttt{Context\_Buffer}. The switch updates
+\texttt{Running := First} as part of resuming, so the table always names the live
+task.
+
+\section{The windowed-ABI premise}
+
+On the Xtensa windowed ABI a \texttt{call} does not push registers; it
+\emph{rotates} a 64-entry physical register file so the callee sees a fresh
+window. Live data from outer frames stays in the physical registers until the
+file fills, at which point the hardware raises window-overflow exceptions that
+spill the oldest frames to their stacks; returning raises window-underflow
+exceptions that reload them. The implication for a context switch is liberating:
+to save a task, you do not copy sixteen or thirty-two registers \textemdash{} you
+issue \texttt{SPILL\_ALL\_WINDOWS}, which flushes every live frame to that task's
+own stack, and then almost the entire register state lives on the stack. All you
+must record separately is the stack pointer and the handful of special registers
+the window machinery does not cover (\texttt{SAR}, the loop registers, the FPU,
+\texttt{THREADPTR}). Resuming is the mirror image: set the stack pointer, execute
+one \texttt{retw}, and let window-underflow lazily fault the frames back in as the
+task returns up its own call chain. This is why the \texttt{Context\_Buffer} is so
+small, and why this port is closest in spirit to the SPARC (LEON) windowed port
+rather than the flat ARM and RISC-V ones.
+
+\section{Two ways in}
+
+A task can lose the CPU two very different ways, and the switch handles them with
+two different entry points.
+
+\textbf{Cooperative} \textemdash{} the running task blocks (a \texttt{delay
+until}, a protected entry that cannot proceed) or a higher task becomes ready at
+a point where the kernel is already running. The kernel calls
+\texttt{Context\_Switch}, which calls \texttt{\_\_gnat\_context\_switch}. This path
+runs in the task's own context, so it can do the full \texttt{SPILL\_ALL\_WINDOWS}
+and save the outgoing task in \emph{solicited} form.
+
+\textbf{Preemptive} \textemdash{} a level-5 timer or IPI interrupt fires while a
+task is running. The L5 vector (\texttt{highint5.S}) saves the interruptee with
+\texttt{\_xt\_context\_save} into a full \texttt{XT\_STK} interrupt frame, services
+the tick, and \textemdash{} if that made a higher task ready \textemdash{}
+tail-jumps \texttt{\_\_gnat\_preempt\_dispatch} to switch away. This path saves the
+outgoing task in \emph{interrupt} form.
+
+The two must not be mixed, and that is the subtle part. A cooperative
+\texttt{SPILL\_ALL\_WINDOWS} executed from inside an interrupt's borrowed window
+chain corrupts the register windows. So when the kernel decides mid-interrupt that
+a switch is needed, \texttt{Context\_Switch} does \emph{not} switch: it sets a
+per-CPU \texttt{Switch\_Pending} flag and returns. The interrupt epilogue, running
+in the vector's clean single-window context, notices the flag and performs the
+dispatch itself via \texttt{\_\_gnat\_preempt\_dispatch}. (Tracking down a bug here
+\textemdash{} the cooperative spill running in interrupt context, marching the
+stack pointer down one frame per tick until a window spill double-faulted
+\textemdash{} is the story behind several of the comments in \texttt{highint5.S}
+and \texttt{context\_switch.S}, and behind ACATS \texttt{CXD8002}.)
+
+\section{Dual-format dispatch}
+
+Because a task can be saved either way, each \texttt{Context\_Buffer} records its
+\texttt{Frame\_Kind}, and the shared resume code reads it to resume correctly:
+
+\begin{itemize}
+  \item \textbf{Solicited} (\texttt{Frame\_Kind = 0}): the live windows were
+        spilled to the task's stack. Resume by restoring \texttt{SP}, \texttt{SAR},
+        the loop registers and \texttt{PS}, then a single \texttt{retw} \textemdash{}
+        window-underflow reloads the rest.
+  \item \textbf{Interrupt} (\texttt{Frame\_Kind = 1}): the full register state is in
+        an \texttt{XT\_STK} frame at \texttt{SP}. Resume by calling
+        \texttt{\_xt\_context\_restore} and returning with \texttt{rfi}.
+\end{itemize}
+
+Both entry points converge on a single label, \texttt{.Lresume}: it makes
+\texttt{First} the running task, restores the format-independent extra state (FPU,
+\texttt{THREADPTR}), then branches on \texttt{Frame\_Kind} to one of the two
+resume tails. The interrupt tail carries hard-won detail \textemdash{} it forces a
+single clean window (\texttt{WINDOWSTART = 1 << WINDOWBASE}) so a freshly scheduled
+task does not inherit the dispatcher's stale window mask, reloads \texttt{SAR}
+(clobbered by the window-start arithmetic), and returns with \texttt{rfi 5} so
+\texttt{INTLEVEL} stays high until the very last instruction, closing the race
+where a fresh tick preempts a half-restored task.
+
+\section{Walkthrough: a cooperative switch}
+
+A task calls \texttt{delay until}. The kernel marks it blocked, finds a different
+\texttt{First\_Thread}, and calls \texttt{\_\_gnat\_context\_switch} with the two
+slot addresses:
+
+\begin{enumerate}
+  \item \texttt{SPILL\_ALL\_WINDOWS} flushes the task's live frames to its stack.
+  \item Save into the outgoing buffer: \texttt{SP}, \texttt{A0}, \texttt{PS},
+        \texttt{SAR}, the loop registers, \texttt{THREADPTR}, and (if the task owns
+        an FPU save area) \texttt{F0..F15} + \texttt{FCR} + \texttt{FSR}.
+        \texttt{Frame\_Kind := 0}.
+  \item Fall into \texttt{.Lresume}: set \texttt{Running := First}, restore the
+        incoming task's FPU and \texttt{THREADPTR}, and \textemdash{} since the
+        incoming task was itself last saved solicited \textemdash{} restore its
+        \texttt{SP}/\texttt{SAR}/loops/\texttt{PS} and \texttt{retw} into it.
+\end{enumerate}
+
+\section{Walkthrough: a preemptive switch}
+
+The L5 timer fires while a compute task runs:
+
+\begin{enumerate}
+  \item The vector saves the interruptee with \texttt{\_xt\_context\_save} into an
+        \texttt{XT\_STK} frame and services the tick.
+  \item If a higher task is now ready, the epilogue tail-jumps
+        \texttt{\_\_gnat\_preempt\_dispatch} from the vector's clean single window
+        (no spill here \textemdash{} the full state is already in \texttt{XT\_STK}).
+  \item \texttt{\_\_gnat\_preempt\_dispatch} records the interruptee:
+        \texttt{SP} (= the \texttt{XT\_STK} frame), \texttt{THREADPTR}, the FPU,
+        \texttt{Frame\_Kind := 1}.
+  \item \texttt{.Lresume} restores the incoming task's FPU/\texttt{THREADPTR} and
+        resumes it in its own format \textemdash{} solicited via \texttt{retw}, or
+        interrupt via \texttt{\_xt\_context\_restore} + \texttt{rfi}.
+\end{enumerate}
+
+\section{Starting a task that has never run}
+
+A brand-new task has no spilled frames to reload, so its first dispatch cannot use
+\texttt{retw}. \texttt{Initialize\_Context} sets the new buffer's \texttt{PC} field
+to the trampoline \texttt{\_\_gnat\_start\_thread} and stashes the task's entry
+point and argument at the top of its fresh stack. The first time the scheduler
+resumes the task, control lands in the trampoline, which loads the argument and
+\texttt{callx} es the task wrapper \textemdash{} which never returns. The buffer's
+loop registers are zero-initialised (a non-zero \texttt{LCOUNT} would make the
+hardware spuriously loop on first entry) and \texttt{THREADPTR} starts at zero,
+i.e.\ ``no thread-local storage'' until the task sets it.
+
+\section{What state is saved \textemdash{} and what is not}
+
+\begin{longtable}{p{5.5cm} p{2.2cm} p{5.5cm}}
+\textbf{State} & \textbf{Saved?} & \textbf{Notes} \\ \hline
+\endhead
+\texttt{SP}/\texttt{PS}/\texttt{A0}, register windows & always & spill + frame \\
+\texttt{SAR}, \texttt{LBEG}/\texttt{LEND}/\texttt{LCOUNT} & always & loops: \texttt{XCHAL\_HAVE\_LOOPS}=1 \\
+\texttt{THREADPTR} & always & TLS base; per task \\
+\texttt{F0..F15} + \texttt{FCR} + \texttt{FSR} & conditional & only when the task owns a \texttt{CP\_State} area \\
+MAC16 \texttt{ACCLO}/\texttt{ACCHI}/\texttt{Mn} & no & \texttt{XCHAL\_HAVE\_MAC16}=0 \textemdash{} the unit is absent \\
+\end{longtable}
+
+The FPU is handled \emph{eagerly per task}: \texttt{CPENABLE} is enabled globally,
+every task is given a \texttt{CP\_State} save area, and the switch copies all
+sixteen \texttt{F} registers plus \texttt{FCR}/\texttt{FSR} whenever the buffer's
+\texttt{CP\_State} pointer is non-null. \texttt{THREADPTR} was the last addition to
+the list; for some time the field existed in the record but the assembly never
+touched it, leaving all tasks sharing one value \textemdash{} harmless only because
+nothing yet used per-task TLS.
+
+\section{Verifying the hard parts}
+
+The FPU and \texttt{THREADPTR} paths share a verification hazard: a test that
+exercises them na\"ively passes whether or not the switch actually preserves them,
+because the value under test was sitting safely in memory the whole time. A green
+test means nothing unless it is \emph{sensitive} \textemdash{} demonstrably red
+when the property is broken. Both were therefore verified two-sided on the
+\texttt{full} profile: a deliberately broken build must fail, and only then does
+the intact build's success count.
+
+\textbf{FPU.} A low-priority checker holds six floating-point accumulators live in
+registers across a two-million-step loop (each step the exact identity
+\texttt{X := X * Lm * Li}, with \texttt{Lm}=2.0 and \texttt{Li}=0.5 read once from
+\texttt{Volatile} cells so the compiler can neither fold the pair away nor spill
+the accumulators \textemdash{} disassembly confirmed zero memory operations in the
+loop). A higher-priority hog wakes every millisecond and tramples all of
+\texttt{F0..F15}. With the preemptive FPU save disabled the checker logs corruption
+continuously; with it intact, zero corruption across hundreds of preemptions per
+batch.
+
+\textbf{THREADPTR.} A checker task sets \texttt{THREADPTR} to one sentinel; a
+higher-priority hog sets a different one and preempts it (both confirmed on the
+same core). The clean discriminator turned out to be the \emph{hog's} value on
+re-entry, not the checker's \textemdash{} the checker, as the background task,
+reads its own value either way. With the restore disabled the hog comes back
+seeing the checker's sentinel (its own was lost); with the restore intact it keeps
+its own. That asymmetry is the proof the per-task save/restore works.
+
+Two methodology traps recurred and are worth stating once. First, optimisation:
+a value only tests the switch if the compiler keeps it \emph{live in a register}
+across the preemption window \textemdash{} verify that by disassembling the loop,
+not by reading the source. Second, staleness: editing
+\texttt{bb-runtimes/xtensa/context\_switch.S} does not take effect until the
+generated \emph{base} runtime tree is deleted and regenerated, and the only
+trustworthy confirmation that a change is in the running image is to disassemble
+the final linked ELF. Both traps produce a green run from a binary that does not
+contain your change \textemdash{} the most dangerous kind of pass.

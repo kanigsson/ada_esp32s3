@@ -1,0 +1,136 @@
+--- b/gnarl/s-bbthre.ads	2026-06-15 16:25:06.827626253 -0400
++++ a/gnarl/s-bbthre.ads	2026-06-15 16:25:06.863626539 -0400
+@@ -372,6 +372,17 @@
+    pragma Inline (Set_Priority);
+    --  Set the active priority of the executing thread to the given value
+ 
++   procedure Set_Priority (Id : Thread_Id; Priority : Integer);
++   pragma Inline (Set_Priority);
++   --  Cross-task active-priority change of another thread on the current
++   --  CPU (rendezvous inheritance applied to the acceptor by the caller
++   --  before waking it).  No-op for Null / different-CPU / non-raising.
++
++   procedure Yield;
++   pragma Inline (Yield);
++   --  Move the executing thread to the TAIL of the ready queue for its
++   --  active priority (ARM D.2.3 FIFO_Within_Priorities base-priority set).
++
+    function Get_Priority  (Id : Thread_Id) return Integer with
+    --  Get the current active priority of any thread
+ 
+--- b/gnarl/s-bbthre.adb	2026-06-15 16:25:06.827626253 -0400
++++ a/gnarl/s-bbthre.adb	2026-06-15 16:25:06.863626539 -0400
+@@ -336,6 +336,48 @@
+       Protection.Leave_Kernel;
+    end Set_Priority;
+ 
++   ------------------
++   -- Set_Priority --  (cross-task)
++   ------------------
++
++   procedure Set_Priority (Id : Thread_Id; Priority : Integer) is
++   begin
++      Protection.Enter_Kernel;
++
++      --  Minimal cross-task priority RAISE: only a thread NOT on the
++      --  ready queue (Suspended/Delayed) on the current CPU.  We only
++      --  record the active priority -- the target is not in the ready
++      --  queue, so no reorder is needed and NO context switch can happen
++      --  here (the caller may hold RTS locks; a switch mid-rendezvous-
++      --  setup corrupts requeue/abort paths).  Queues.Insert honours the
++      --  recorded priority when the target is woken (ACATS CXD2003).  A
++      --  Runnable target keeps the base-priority path.
++      if Id /= Null_Thread_Id
++        and then Id.State /= Runnable
++        and then Get_CPU (Id) = Get_CPU (Queues.Running_Thread)
++        and then Priority > Id.Active_Priority
++      then
++         Id.Active_Priority := Priority;
++      end if;
++
++      Protection.Leave_Kernel;
++   end Set_Priority;
++
++   -----------
++   -- Yield --
++   -----------
++
++   procedure Yield is
++   begin
++      Protection.Enter_Kernel;
++
++      --  D.2.3: move the running thread to the tail of its active-priority
++      --  ready queue (base-priority set must trail same-priority peers).
++      Queues.Yield (Queues.Running_Thread);
++
++      Protection.Leave_Kernel;
++   end Yield;
++
+    -----------
+    -- Sleep --
+    -----------
+--- b/gnarl/s-osinte.ads	2026-06-15 16:25:06.827626253 -0400
++++ a/gnarl/s-osinte.ads	2026-06-15 16:25:06.863626539 -0400
+@@ -183,6 +183,14 @@
+      renames System.BB.Threads.Set_Priority;
+    --  Set the active priority of the executing thread to the given value
+ 
++   procedure Set_Priority (Id : Thread_Id; Priority : Integer)
++     renames System.BB.Threads.Set_Priority;
++   --  Cross-task active-priority change of another thread on the current CPU
++
++   procedure Yield
++     renames System.BB.Threads.Yield;
++   --  Move the executing thread to the tail of its active-priority queue
++
+    function Get_Priority  (Id : Thread_Id) return Integer
+      renames System.BB.Threads.Get_Priority;
+    --  Get the current base priority of a thread
+--- b/gnarl/s-taprop.adb	2026-06-15 16:25:06.827626253 -0400
++++ a/gnarl/s-taprop.adb	2026-06-15 16:25:06.863626539 -0400
+@@ -293,10 +293,42 @@
+      (T : ST.Task_Id; Prio : System.Any_Priority;
+       Loss_Of_Inheritance : Boolean := False)
+    is
+-      pragma Unreferenced (Loss_Of_Inheritance);
+    begin
+-      pragma Assert (T = Self);
+-      System.OS_Interface.Set_Priority (Integer (Prio));
++      --  Two cases.  T = Self is the common one (ceiling inheritance on a
++      --  PO lock, and the rendezvous loss-of-inheritance restore): change
++      --  the running thread's own active priority.  T /= Self is a
++      --  CROSS-TASK change: the rendezvous caller applying priority
++      --  inheritance to the acceptor before waking it, or
++      --  Ada.Dynamic_Priorities targeting another task.  The BB cross-task
++      --  primitive raises only and on the current CPU only, so a
++      --  different-CPU target or a LOWERING request keeps the
++      --  base-priority / Pending_Priority_Change path the target applies
++      --  itself when it next runs (s-taenca; ACATS CXD4005).
++      if T = Self then
++         System.OS_Interface.Set_Priority (Integer (Prio));
++
++         --  ARM D.2.3: base-priority set -> TAIL of the ready queue (even
++         --  when unchanged) so it trails same-priority peers (CXD2001); a
++         --  priority lowered by loss of inheritance stays at the head
++         --  (rendezvous restore, Loss_Of_Inheritance => True).
++         if not Loss_Of_Inheritance then
++            System.OS_Interface.Yield;
++         end if;
++      elsif Prio > T.Common.Base_Priority then
++         --  Cross-task active-priority change, but ONLY a genuine
++         --  inheritance RAISE -- one that lifts the target ABOVE its own
++         --  base.  This is exactly the rendezvous caller boosting the
++         --  acceptor before waking it, so it is scheduled at the inherited
++         --  priority and a higher-base task already waiting to run is not
++         --  selected ahead of it (ACATS CXD2003).  Gating on Base_Priority
++         --  (not active) discriminates it from the OTHER cross-task callers
++         --  -- task activation re-asserting Base_Priority (s-tasini,
++         --  s-taskin) and Ada.Dynamic_Priorities (writes Common.Base_
++         --  Priority first) -- which set the target to its own base and
++         --  must add no kernel / context-switch checkpoint, or they
++         --  perturb activation ordering (ACATS C954017).
++         System.OS_Interface.Set_Priority (T.Common.LL.Thread, Integer (Prio));
++      end if;
+    end Set_Priority;
+ 
+    ------------------

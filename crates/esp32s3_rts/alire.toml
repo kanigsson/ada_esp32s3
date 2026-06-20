@@ -1,0 +1,31 @@
+name = "esp32s3_rts"
+description = "Dual-core SMP bare-metal Ada runtime for the ESP32-S3 (light-tasking/Jorvik, embedded, full profiles)"
+version = "0.1.0-dev"
+
+authors = ["D. Howells"]
+maintainers = ["D. Howells <dhowells@motium.us>"]
+licenses = "GPL-3.0-or-later WITH GCC-exception-3.1"
+tags = ["embedded", "esp32s3", "xtensa", "ravenscar", "jorvik", "runtime"]
+
+project-files = ["esp32s3_rts.gpr"]
+auto-gpr-with = false
+
+[configuration]
+generate_ada = false
+generate_c = false
+generate_gpr = false
+
+[[depends-on]]
+gnat_xtensa_esp32_elf = "^15"
+xtensa_dynconfig = "*"
+
+[[pins]]
+xtensa_dynconfig = { path = "../xtensa-dynconfig" }
+
+# Generate + archive the light-tasking-esp32s3 RTS before any build that uses
+# it.  Idempotent (the script guards on existing output).  Needs the
+# gnat_xtensa toolchain + gprbuild on PATH (Alire) and XTENSA_GNU_CONFIG set
+# (by the xtensa_dynconfig dependency's [environment]).
+[[actions]]
+type = "pre-build"
+command = ["bash", "gen_runtime.sh"]

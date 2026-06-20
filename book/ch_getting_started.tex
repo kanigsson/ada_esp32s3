@@ -1,0 +1,117 @@
+\chapter{Getting Started}
+\label{ch:getting-started}
+
+This chapter takes you from a fresh clone to an LED blinking under your own Ada,
+in a few commands. The later chapters explain the runtime, the HAL and the
+language techniques; this one just gets you running.
+
+\section{What you need}
+
+\begin{description}[style=nextline]
+\item[An ESP32-S3 board.] Any devkit with the built-in USB-Serial-JTAG port (most
+  of them). One USB cable is enough --- it carries the console \emph{and} the
+  debugger.
+\item[Alire (\texttt{alr}).] The Ada package manager fetches the toolchains the
+  build needs: the \texttt{gnat\_xtensa\_esp32\_elf} cross-compiler, a native
+  \texttt{gnat\_native} (for the host tools), and \texttt{gprbuild}. Install Alire,
+  then make sure its toolchains are on your \texttt{PATH} for the shell you build
+  from.
+\item[Serial-port permission.] On Linux, add yourself to the \texttt{dialout}
+  group (and install the udev rule for the USB-Serial-JTAG, see the debugging
+  chapter) so you can open \texttt{/dev/ttyACM0} without \texttt{sudo}.
+\end{description}
+
+\section{Get the code}
+
+The runtime depends on two git submodules (the \texttt{bb-runtimes} fork that
+carries the ESP32-S3 bareboard runtime, and \texttt{xtensa-dynconfig}), so clone
+\emph{recursively}:
+
+\begin{lstlisting}[style=sh]
+git clone --recurse-submodules \
+    https://github.com/rowsail/ada-bare-metal-esp32s3.git
+cd ada-bare-metal-esp32s3
+#  (if you already cloned without submodules:)
+git submodule update --init --recursive
+\end{lstlisting}
+
+\section{The \texttt{./x} dispatcher}
+
+Everything goes through one script at the repository root. List the examples,
+then build, flash and watch one:
+
+\begin{lstlisting}[style=sh]
+./x list                                   # the available examples + their profiles
+./x run esp32s3_gpio0_blink -p /dev/ttyACM0   # build + flash + serial monitor
+\end{lstlisting}
+
+\texttt{./x run} builds the example, packages it (the Ada \texttt{esp\_elf2image}
+host tool), writes it to the board (the Ada \texttt{esp\_flash} tool, over the
+chip's ROM bootloader), resets, and streams the console. The first build also
+generates the runtime for the chosen profile, so it takes a little longer; later
+ones are incremental. The blink example toggles an LED and prints over the
+console --- your first Ada running bare-metal on the S3.
+
+The pieces are also separate commands when you want them:
+
+\begin{lstlisting}[style=sh]
+./x build   esp32s3_gpio0_blink            # cross-compile + link + package app.bin
+./x flash   esp32s3_gpio0_blink -p /dev/ttyACM0
+./x monitor -p /dev/ttyACM0                # just the serial console (115200)
+./x clean   esp32s3_gpio0_blink
+\end{lstlisting}
+
+\section{Choosing a profile}
+
+Most examples build under more than one runtime profile (Chapter~\ref{ch:profiles}).
+Pass \texttt{--profile} to pick one; \texttt{auto} (the default) uses the
+example's own:
+
+\begin{lstlisting}[style=sh]
+./x run esp32s3_heartbeat --profile embedded -p /dev/ttyACM0
+\end{lstlisting}
+
+\texttt{light-tasking} is the smallest, \texttt{embedded} adds exceptions, RAII
+handles, a heap and the full HAL (the usual choice), and \texttt{full} adds the
+complete Ada tasking model.
+
+\section{Board configuration}
+
+Each project owns a \texttt{config/board.ads} (flash and PSRAM sizes) that sizes
+the image and the second-stage bootloader. Edit it directly, or:
+
+\begin{lstlisting}[style=sh]
+./x config esp32s3_gpio0_blink show
+./x config esp32s3_gpio0_blink flash-size 4MB
+\end{lstlisting}
+
+\section{Debugging}
+
+On-chip debugging needs the pinned OpenOCD + S3 GDB, fetched once; then
+\texttt{./x debug} (or \texttt{F5} in VS Code) halts at your \texttt{Main}:
+
+\begin{lstlisting}[style=sh]
+./x get-debug-tools
+./x debug esp32s3_gpio0_blink              # build, flash, OpenOCD + GDB, rest at Main
+\end{lstlisting}
+
+The Debugging chapter (Chapter~\ref{ch:debug}) covers GDB, decoding a Guru
+Meditation, and the editor integration in full.
+
+\section{Where to go next}
+
+\begin{itemize}
+\item The anatomy of an application and the runtime profiles ---
+  Chapters~\ref{ch:anatomy}--\ref{ch:build}.
+\item The peripheral HAL --- start at Chapter~\ref{ch:hal}; each driver has worked
+  examples you can run with \texttt{./x run}.
+\item The Ada techniques behind it all --- the Ada Language Techniques and
+  Talking to Hardware chapters (Chapters~\ref{ch:embedded}
+  and~\ref{ch:hardware}), including a Terminology section (\S\ref{sec:terms})
+  for unfamiliar terms.
+\end{itemize}
+
+To start your \emph{own} project rather than an in-repo example, the
+\texttt{esp32-ada} launcher scaffolds one in any empty folder (see the tooling
+notes); it gives you the same \texttt{board.ads} and build flow without copying
+the runtime.

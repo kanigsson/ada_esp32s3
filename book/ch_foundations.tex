@@ -1,0 +1,66 @@
+\chapter{Why Ada for Microcontrollers}
+
+Microcontroller firmware lives in a hostile place: a few hundred kilobytes of
+RAM, no operating system to catch mistakes, interrupts that fire between any two
+instructions, and hardware registers whose exact bit layout is law. A bug is not
+a stack trace on a screen --- it is a board that silently locks up in the field.
+Ada was designed for exactly this kind of software, and the language gives the
+firmware author tools that C simply does not have.
+
+\section{The case for Ada}
+
+\begin{description}[style=nextline]
+\item[Strong, range-checked types.] In Ada a ``GPIO pin'' need not be an
+  \texttt{int}. It can be a type that admits \emph{only} the pins the silicon
+  actually exposes; passing a flash-mapped pad becomes a compile error, not a
+  hung chip. Numeric types carry ranges, and the compiler (or a run-time check)
+  enforces them.
+\item[Representation control.] Ada lets you state, in the language, the precise
+  bit and byte layout of a record and the exact address of an object. A hardware
+  register is just an Ada record at a fixed address --- no casts, no macros, no
+  guessing about padding (Sections~\ref{ch:registers} and~\ref{ch:bitfields} of
+  the Talking to Hardware chapter).
+\item[Packages and strong interfaces.] Drivers are packages with a visible
+  specification and a hidden body. The unsafe register pokes can be sealed inside
+  a \emph{private child} that application code literally cannot name.
+\item[Tasking and real-time in the language.] Tasks, protected objects (data
+  guarded by a monitor), \texttt{delay until}, and priorities are part of Ada
+  itself --- not a bolted-on RTOS API. On this port they are implemented by a
+  native Ada runtime that runs directly on the silicon.
+\item[Restriction profiles.] With one pragma you can forbid features that do not
+  belong in certified or tiny firmware (no heap, no recursion in the runtime, no
+  unbounded constructs) and have the compiler \emph{prove} you stayed within the
+  subset --- the Ravenscar and Jorvik profiles (Chapter~\ref{ch:profiles}).
+\item[Contracts.] Preconditions, postconditions and type predicates let you
+  state intent (``this key must be 128 or 256 bits'') and have it checked.
+\end{description}
+
+The result is firmware where a large class of mistakes --- wrong-width register
+writes, out-of-range pins, aliasing of a peripheral by two tasks, forgetting to
+release a DMA channel --- are caught by the compiler or by a cheap run-time
+check, long before they reach silicon.
+
+\section{What this book covers}
+
+This book documents a complete bare-metal stack for the dual-core ESP32-S3
+(Xtensa LX7) written almost entirely in Ada, running directly on the silicon
+with its own runtime, boot path and tooling:
+
+\begin{enumerate}
+\item the Ada language techniques that make register and bit-field programming
+  safe and pleasant (the Ada Language Techniques and Talking to Hardware
+  chapters, Chapters~\ref{ch:embedded} and~\ref{ch:hardware});
+\item the anatomy of an Ada application, from \texttt{Main} down through the
+  runtime to the boot ROM, and the three selectable runtime profiles
+  (Chapters~\ref{ch:anatomy}--\ref{ch:build});
+\item the reusable peripheral HAL --- twenty-plus task-safe drivers --- with the
+  API and worked examples for each (Chapters~\ref{ch:hal}--\ref{ch:hal3});
+\item mass storage: the SD-card block drivers and the pure-Ada ext2/3/4
+  filesystem (Chapter~\ref{ch:storage}).
+\end{enumerate}
+
+Ada terms that may be unfamiliar to a reader coming from C --- \emph{library-level},
+\emph{elaboration}, \emph{aspect}, \emph{protected object} and the like --- are
+defined in the Terminology section of the Ada Language Techniques chapter
+(\S\ref{sec:terms}).
+

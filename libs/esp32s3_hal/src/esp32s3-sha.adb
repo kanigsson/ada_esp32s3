@@ -1,0 +1,157 @@
+with Interfaces;                 use Interfaces;
+with ESP32S3_Registers;          use ESP32S3_Registers;
+with ESP32S3_Registers.SHA;      use ESP32S3_Registers.SHA;
+with ESP32S3_Registers.SYSTEM;
+
+package body ESP32S3.SHA is
+
+   --  Hardware MODE values (512-bit-block variants).
+   SHA_1_Mode   : constant := 0;
+   SHA_224_Mode : constant := 1;
+   SHA_256_Mode : constant := 2;
+
+   --  A full 8-word read buffer; each variant copies out the words it uses.
+   type Word_Buffer is array (0 .. 7) of UInt32;
+
+   --------------------------------------------------------------------------
+   --  The accelerator is one shared resource; serialise the whole operation.
+   --------------------------------------------------------------------------
+
+   protected Engine is
+      procedure Hash (Data  : Byte_Array;
+                      Mode  : UInt32;
+                      Words : out Word_Buffer);
+   private
+      Inited : Boolean := False;
+   end Engine;
+
+   protected body Engine is
+
+      procedure Hash (Data  : Byte_Array;
+                      Mode  : UInt32;
+                      Words : out Word_Buffer)
+      is
+         use ESP32S3_Registers.SYSTEM;
+         Msg     : constant Natural := Data'Length;
+         Bit_Len : constant Unsigned_64 := Unsigned_64 (Msg) * 8;
+         --  Padded length: message + 0x80 + zero pad + 8-byte length, rounded up
+         --  to a whole number of 64-byte blocks.
+         Padded  : constant Natural := ((Msg + 8) / 64 + 1) * 64;
+         Blocks  : constant Natural := Padded / 64;
+
+         --  The padded message byte at absolute index I (0-based).
+         function Padded_Byte (I : Natural) return Unsigned_8 is
+         begin
+            if I < Msg then
+               return Data (Data'First + I);
+            elsif I = Msg then
+               return 16#80#;
+            elsif I >= Padded - 8 then
+               --  big-endian 64-bit bit length in the last 8 bytes
+               return Unsigned_8
+                 (Shift_Right (Bit_Len, 8 * (Padded - 1 - I)) and 16#FF#);
+            else
+               return 0;
+            end if;
+         end Padded_Byte;
+      begin
+         if not Inited then
+            SYSTEM_Periph.PERIP_CLK_EN1.CRYPTO_SHA_CLK_EN := True;
+            SYSTEM_Periph.PERIP_RST_EN1.CRYPTO_SHA_RST    := True;
+            SYSTEM_Periph.PERIP_RST_EN1.CRYPTO_SHA_RST    := False;
+            Inited := True;
+         end if;
+
+         SHA_Periph.MODE := (MODE => MODE_MODE_Field (Mode), others => <>);
+
+         for B in 0 .. Blocks - 1 loop
+            --  Load the 64-byte block as 16 words.
+            for W in 0 .. 15 loop
+               declare
+                  K : constant Natural := B * 64 + W * 4;
+               begin
+                  --  Words are written as the little-endian packing of the byte
+                  --  stream (matches esp-idf's direct word copy on this
+                  --  little-endian core).
+                  SHA_Periph.M_MEM (W) :=
+                    UInt32 (Padded_Byte (K)) or
+                    Shift_Left (UInt32 (Padded_Byte (K + 1)),  8) or
+                    Shift_Left (UInt32 (Padded_Byte (K + 2)), 16) or
+                    Shift_Left (UInt32 (Padded_Byte (K + 3)), 24);
+               end;
+            end loop;
+
+            if B = 0 then
+               SHA_Periph.START := (START => 1, others => <>);
+            else
+               SHA_Periph.CONTINUE := (CONTINUE => 1, others => <>);
+            end if;
+            while SHA_Periph.BUSY.STATE loop
+               null;
+            end loop;
+         end loop;
+
+         --  Read all 8 result words; callers use the prefix they need.
+         for I in 0 .. 7 loop
+            Words (I) := SHA_Periph.H_MEM (I);
+         end loop;
+      end Hash;
+
+   end Engine;
+
+   --  Copy the little-endian bytes of the first N words into a digest.
+   procedure Unpack (Words : Word_Buffer; Into : out Byte_Array) is
+   begin
+      for I in 0 .. Into'Length / 4 - 1 loop
+         declare
+            H : constant UInt32 := Words (I);
+            B : constant Natural := Into'First + I * 4;
+         begin
+            Into (B)     := Unsigned_8 (H and 16#FF#);
+            Into (B + 1) := Unsigned_8 (Shift_Right (H, 8)  and 16#FF#);
+            Into (B + 2) := Unsigned_8 (Shift_Right (H, 16) and 16#FF#);
+            Into (B + 3) := Unsigned_8 (Shift_Right (H, 24) and 16#FF#);
+         end;
+      end loop;
+   end Unpack;
+
+   ------------
+   -- Hash_1 --
+   ------------
+
+   function Hash_1 (Data : Byte_Array) return SHA1_Digest is
+      W : Word_Buffer;
+      D : SHA1_Digest;
+   begin
+      Engine.Hash (Data, SHA_1_Mode, W);
+      Unpack (W, D);
+      return D;
+   end Hash_1;
+
+   --------------
+   -- Hash_224 --
+   --------------
+
+   function Hash_224 (Data : Byte_Array) return SHA224_Digest is
+      W : Word_Buffer;
+      D : SHA224_Digest;
+   begin
+      Engine.Hash (Data, SHA_224_Mode, W);
+      Unpack (W, D);
+      return D;
+   end Hash_224;
+
+   --------------
+   -- Hash_256 --
+   --------------
+
+   function Hash_256 (Data : Byte_Array) return SHA256_Digest is
+      W : Word_Buffer;
+      D : SHA256_Digest;
+   begin
+      Engine.Hash (Data, SHA_256_Mode, W);
+      Unpack (W, D);
+      return D;
+   end Hash_256;
+
+end ESP32S3.SHA;

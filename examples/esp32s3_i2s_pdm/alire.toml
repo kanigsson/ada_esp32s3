@@ -1,0 +1,17 @@
+name = "esp32s3_i2s_pdm"
+description = "Bare-metal Ada I2S PDM microphone capture demo (PDM2PCM converter) on the ESP32-S3"
+version = "0.1.0-dev"
+
+authors = ["D. Howells"]
+maintainers = ["D. Howells <dhowells@motium.us>"]
+licenses = "Apache-2.0 WITH LLVM-exception"
+tags = ["embedded", "esp32s3", "i2s", "pdm", "audio", "dma", "driver", "example"]
+
+project-files = ["i2s_pdm.gpr"]
+
+[[depends-on]]
+esp32s3_rts = "*"
+
+[[pins]]
+esp32s3_rts = { path = "../../crates/esp32s3_rts" }
+xtensa_dynconfig       = { path = "../../crates/xtensa-dynconfig" }

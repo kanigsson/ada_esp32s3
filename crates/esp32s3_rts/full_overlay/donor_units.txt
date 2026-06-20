@@ -1,0 +1,32 @@
+# Portable full-Ada-tasking GNARL units imported at build time from the
+# version-matched host GNAT (gnat_native, same GCC as the cross-compiler).
+# These are NOT committed (same policy as the rest of the generated runtime);
+# gen_runtime.sh copies them into full-esp32s3/gnarl/.  The bareboard OS layer
+# (s-taprop, s-taspri, s-osinte) and the GNULL shims (s-osprim, s-intman, ...)
+# come from full_overlay/gnarl/ and OVERRIDE any same-named donor unit.
+#
+# One unit per line (krunched stem, no extension).  Discovered by closure from
+# the seeds s-taskin / s-tassta / s-tasren.
+s-taskin
+s-tassta
+s-tasren
+s-taenca
+s-tasini
+s-tasuti
+a-tasini
+s-soflin
+s-soliin
+s-solita
+s-stausa
+s-tataat
+s-crtl
+a-retide
+s-tasque
+s-tpobop
+s-tpoben
+a-taside
+s-tposen
+a-taster
+s-tasdeb
+a-dynpri
+a-tasatt

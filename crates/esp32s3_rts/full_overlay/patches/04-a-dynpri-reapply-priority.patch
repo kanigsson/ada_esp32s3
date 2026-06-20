@@ -1,0 +1,16 @@
+--- b/gnarl/a-dynpri.adb	2026-06-15 16:25:06.803626062 -0400
++++ a/gnarl/a-dynpri.adb	2026-06-15 16:25:06.823626222 -0400
+@@ -136,6 +136,13 @@
+       STPO.Unlock (Target);
+ 
+       if STPO.Self = Target and then Yield_Needed then
++         --  ESP32-S3 port fix: STPO.Set_Priority above ran while Target's
++         --  ATCB lock was held; this port's Unlock restores the priority
++         --  saved at lock time, clobbering it.  Re-apply now the lock is
++         --  released so a task's own dynamic Set_Priority actually takes
++         --  effect (ACATS CXD4009).
++         STPO.Set_Priority (Target, Target.Common.Base_Priority);
++
+ 
+          --  Yield is needed to enforce FIFO task dispatching
+ 

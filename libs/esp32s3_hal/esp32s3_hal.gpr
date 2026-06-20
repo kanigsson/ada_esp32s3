@@ -1,0 +1,95 @@
+--  Reusable ESP32-S3 HAL: hand-written peripheral drivers (ESP32S3.*) over the
+--  svd2ada-generated register layer (ESP32S3_Registers.*).
+--
+--  Use it from ANY project with one line -- by name (resolved via GPR_PROJECT_PATH,
+--  set by the SDK's export.sh / bare_build) for standalone projects:
+--
+--     with "esp32s3_hal.gpr";          -- then in your code:  with ESP32S3.GPIO;
+--
+--  or by relative path from an in-repo example (so the Ada Language Server resolves
+--  it with no environment):
+--
+--     with "../../libs/esp32s3_hal/esp32s3_hal.gpr";
+--
+--  Its units compile against the SAME runtime + profile as the consumer.
+--
+--  PROFILE: these drivers TARGET the `embedded` profile, where full exception
+--  propagation lets the contracts (the GPIO valid-pin predicate, enabled by
+--  -gnata below) raise a catchable exception, and lets the task-safe SPI/I2C/UART
+--  Session be a controlled type that auto-releases its host on scope exit.
+--
+--  The lock-free drivers (GPIO, RNG, Temperature) compile under ALL profiles,
+--  including light-tasking.  The RAII-handle drivers (SPI, I2C, UART, GDMA and
+--  MCPWM) use finalization (a controlled Session / Channel / Capture handle),
+--  which light-tasking forbids (No_Finalization), so they are EXCLUDED from the
+--  light-tasking build (Excluded_Source_Files below) -- light-tasking keeps the
+--  lock-free subset.
+with "../../crates/esp32s3_rts/esp32s3_rts.gpr";
+
+project ESP32S3_HAL is
+   --  The profile MUST match the runtime crate's default (esp32s3_rts.gpr also
+   --  defaults to "light-tasking") so an unset ESP32S3_RTS_PROFILE picks the same
+   --  profile for both; a driver-using project selects "embedded" by exporting it
+   --  (its build.sh does, e.g. esp32s3_i2c_loopback).  The drivers TARGET embedded
+   --  -- where -gnata's contract checks raise catchable exceptions -- but still
+   --  compile under light-tasking (see the Compiler case below).
+   type Profile_Kind is ("light-tasking", "embedded", "full");
+   Profile : Profile_Kind := external ("ESP32S3_RTS_PROFILE", "light-tasking");
+
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   --  Per-profile object dir: the HAL is shared across consumers AND profiles, so
+   --  keying obj by profile avoids cross-profile staleness in the shared tree.
+   for Object_Dir use "obj-" & Profile;
+
+   --  These drivers use controlled types (finalization) for RAII handles: the
+   --  SPI/I2C/UART Session, the GDMA Channel (which SPI also depends on), and the
+   --  MCPWM Channel/Capture.  Finalization is unavailable under light-tasking's
+   --  No_Finalization, so they are excluded there; light-tasking keeps GPIO, RNG
+   --  and Temperature.  The ext4 filesystem (src/ext4, ESP32S3.Ext4.*) uses
+   --  exceptions + finalization + secondary stack, so it is an embedded/full-only
+   --  source directory (not visible under light-tasking at all).
+   case Profile is
+      when "light-tasking" =>
+         for Source_Dirs use ("src", "svd");
+         for Excluded_Source_Files use
+           ("esp32s3-spi.ads",         "esp32s3-spi.adb",
+            "esp32s3-spi-engine.ads",  "esp32s3-spi-engine.adb",
+            "esp32s3-i2c.ads",         "esp32s3-i2c.adb",
+            "esp32s3-i2c-engine.ads",  "esp32s3-i2c-engine.adb",
+            "esp32s3-uart.ads",        "esp32s3-uart.adb",
+            "esp32s3-uart-engine.ads", "esp32s3-uart-engine.adb",
+            "esp32s3-gdma.ads",        "esp32s3-gdma.adb",
+            "esp32s3-mcpwm.ads",       "esp32s3-mcpwm.adb",
+            "esp32s3-i2s.ads",         "esp32s3-i2s.adb",
+            "esp32s3-i2s-engine.ads",  "esp32s3-i2s-engine.adb",
+            "esp32s3-ledc.ads",        "esp32s3-ledc.adb",
+            "esp32s3-rmt.ads",         "esp32s3-rmt.adb",
+            "esp32s3-pcnt.ads",        "esp32s3-pcnt.adb",
+            "esp32s3-sdm.ads",         "esp32s3-sdm.adb",
+            "esp32s3-twai.ads",        "esp32s3-twai.adb",
+            "esp32s3-timer.ads",       "esp32s3-timer.adb",
+            "esp32s3-lcd.ads",         "esp32s3-lcd.adb",
+            "esp32s3-adc.ads",         "esp32s3-adc.adb",
+            "esp32s3-sd_spi.ads",      "esp32s3-sd_spi.adb");
+      when "embedded" | "full" =>
+         for Source_Dirs use ("src", "svd", "src/ext4");
+   end case;
+
+   package Compiler is
+      --  -gnata turns on the contract checks (e.g. the GPIO valid-pin predicate)
+      --  at run time -- but only under the exception-capable profiles.  Under
+      --  light-tasking the assertion path would drag in the DWARF unwinder + a
+      --  libc (malloc/free/abort) that the heap-less profile doesn't link, so it
+      --  is omitted there (a light-tasking build keeps the compile-time predicate
+      --  warning but no run-time check).
+      case Profile is
+         when "light-tasking" =>
+            for Default_Switches ("Ada") use ("-O2", "-g");
+         when "embedded" | "full" =>
+            --  -gnat2022: the ext4 filesystem uses Ada 2022 container ('[...]')
+            --  aggregates.
+            for Default_Switches ("Ada") use ("-O2", "-g", "-gnata", "-gnat2022");
+      end case;
+   end Compiler;
+end ESP32S3_HAL;

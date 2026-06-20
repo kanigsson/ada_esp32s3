@@ -1,0 +1,32 @@
+with "../../crates/esp32s3_rts/esp32s3_rts.gpr";
+
+--  Full-profile interrupt-attach regression test.  Builds the Ada.Interrupts /
+--  pragma Attach_Handler protected handlers (src/blink.adb) against the FULL
+--  runtime (ESP32S3_RTS_PROFILE=full, set by build.sh / main/build_ada.sh),
+--  which now provides the bareboard full System.Interrupts.  The full RTS uses
+--  exceptions + finalization + a heap, so the binder requests heap-backed
+--  secondary stacks like the other full-profile examples.
+project Example is
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj";
+   for Main use ("example.adb");
+
+   package Builder is
+      for Executable ("example.adb") use "ada_app.o";
+   end Builder;
+
+   package Binder is
+      for Switches ("Ada") use ("-D16k", "-Q6", "-Mada_main");
+   end Binder;
+
+   package Compiler is
+      for Switches ("Ada") use ("-O2", "-g", "-gnata");
+   end Compiler;
+
+   package Linker is
+      --  Relocatable object, no standard libs (the bare boot provides them).
+      for Default_Switches ("Ada") use ("-Wl,-r", "-nostdlib");
+   end Linker;
+end Example;

@@ -1,0 +1,16 @@
+{
+  // Which GPR the Ada Language Server loads for code intelligence (completion,
+  // diagnostics, go-to-def).  Each example has its own .gpr; point ALS at the one
+  // you're working on and reload the window (Ctrl-Shift-P -> "Developer: Reload
+  // Window").  Examples and their project files:
+  //   esp32s3_gpio0_blink/gpio_blink.gpr   (default below)
+  //   esp32s3_heartbeat/example.gpr
+  //   esp32s3_embedded/app.gpr
+  //   esp32s3_full_tasking/app.gpr
+  //   esp32s3_jorvik_profile_test/profile_test.gpr
+  //   esp32s3_psram/psram.gpr
+  //   esp32s3_smp/comm_demo.gpr
+  //   esp32s3_smp_empty/app.gpr
+  //   esp32s3_smp_skeleton/rts_smp.gpr
+  "ada.projectFile": "examples/esp32s3_gpio0_blink/gpio_blink.gpr"
+}

@@ -1,0 +1,8 @@
+/obj/
+/alire/
+/config/
+/build/
+sdkconfig
+sdkconfig.old
+/main/app_main.o
+/main/.ada_build/

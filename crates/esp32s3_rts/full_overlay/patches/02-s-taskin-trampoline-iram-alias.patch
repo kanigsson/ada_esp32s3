@@ -1,0 +1,34 @@
+--- b/gnarl/s-taskin.adb	2026-06-15 16:25:06.743625584 -0400
++++ a/gnarl/s-taskin.adb	2026-06-15 16:25:06.767625775 -0400
+@@ -31,6 +31,7 @@
+ 
+ with System.Task_Primitives.Operations;
+ with System.Storage_Elements;
++with Ada.Unchecked_Conversion;
+ 
+ package body System.Tasking is
+ 
+@@ -132,7 +133,22 @@
+       T.Common.Protected_Action_Nesting := 0;
+       T.Common.Call                     := null;
+       T.Common.Task_Arg                 := Task_Arg;
+-      T.Common.Task_Entry_Point         := Task_Entry_Point;
++      --  ESP32-S3: re-point a stack/DRAM nested-function trampoline at its
++      --  SRAM1 IRAM alias (see gen_runtime.sh) so the indirect call is fetchable.
++      declare
++         use System.Storage_Elements;
++         function To_A is new Ada.Unchecked_Conversion
++           (Task_Procedure_Access, System.Address);
++         function To_P is new Ada.Unchecked_Conversion
++           (System.Address, Task_Procedure_Access);
++         V : constant Integer_Address := To_Integer (To_A (Task_Entry_Point));
++      begin
++         if V >= 16#3FC8_8000# and then V < 16#3FCF_0000# then
++            T.Common.Task_Entry_Point := To_P (To_Address (V + 16#6F_0000#));
++         else
++            T.Common.Task_Entry_Point := Task_Entry_Point;
++         end if;
++      end;
+       T.Common.Activator                := Self_ID;
+       T.Common.Wait_Count               := 0;
+       T.Common.Elaborated               := Elaborated;

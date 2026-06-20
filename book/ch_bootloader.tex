@@ -1,0 +1,171 @@
+\chapter{The Boot Path: Bootloader and PSRAM}
+\label{ch:bootloader}
+
+When the chip comes out of reset, a great deal has to happen before the first
+line of Ada in your \texttt{Main} runs: the application has to be read out of
+flash and placed in RAM, the instruction and data caches have to be pointed at
+the right flash windows, the CPU has to be sped up from its sleepy reset clock,
+the register windows have to be made sane for Ada's calling convention, and ---
+if the board has it --- the external PSRAM has to be brought up and mapped. This
+chapter follows that path. It is the part of the system that is \emph{not}
+Espressif's: the project replaced the last vendored binary, the 2nd-stage
+bootloader, with its own --- written, like almost everything else here, in Ada.
+
+\section{Three things run before \texttt{Main}}
+
+Boot happens in three hand-offs (the boot figure in
+Chapter~\ref{ch:anatomy}, Fig.~\ref{fig:boot}, sketches the same sequence):
+
+\begin{enumerate}
+\item \textbf{The mask ROM} (silicon, unchangeable) wakes on reset, reads the
+  image at flash offset \texttt{16\#0\#}, and loads it into SRAM. That image is our
+  \emph{2nd-stage bootloader}.
+\item \textbf{Our 2nd-stage bootloader} reads the \emph{application} image (at
+  flash offset \texttt{16\#1\_0000\#}), copies its RAM segments into place, maps its
+  flash-resident code and data through the cache MMU, brings up PSRAM, and jumps
+  to the application's entry point.
+\item \textbf{The application's \texttt{start.S}} normalises the CPU state,
+  configures the instruction cache, switches to the full clock, and calls into
+  the Ada world (eventually the environment task that runs \texttt{Main}).
+\end{enumerate}
+
+\section{The 2nd-stage bootloader}\index{bootloader}
+
+The loader is ZFP-style Ada --- no runtime under it --- in
+\texttt{examples/common/bare/bootloader/} (the core is \texttt{boot\_main.adb}).
+It is deliberately small. Its job, in order:
+
+\begin{itemize}
+\item \textbf{Silence the watchdogs.} The boot ROM arms the timer-group and RTC
+  watchdogs; the loader unlocks them (the magic key \texttt{16\#50D8\_3AA1\#}) and
+  clears them so they cannot reset the chip mid-load.
+\item \textbf{Read and validate the app header.} At flash offset
+  \texttt{16\#1\_0000\#} sits the image header: a \texttt{16\#E9\#} magic byte, a segment
+  count, and the entry-point address. (This is exactly the format the
+  \texttt{esp\_elf2image} host tool emits --- \S\ref{ch:build}.)
+\item \textbf{Place each segment by where it wants to live.} For every segment
+  the loader looks at its load address:
+\begin{center}
+\begin{tabular}{l l l}
+\textbf{Window} & \textbf{Range} & \textbf{Action} \\ \hline
+IRAM   & \texttt{16\#4037\_0000\#..16\#403E\_0000\#} & copy from flash into SRAM \\
+DRAM   & \texttt{16\#3FC8\_0000\#..16\#3FD0\_0000\#} & copy from flash into SRAM \\
+IROM   & \texttt{16\#4200\_0000\#..16\#4400\_0000\#} & map (execute-in-place via cache) \\
+DROM   & \texttt{16\#3C00\_0000\#..16\#3E00\_0000\#} & map (read-in-place via cache) \\
+\end{tabular}
+\end{center}
+  RAM segments are copied byte-for-byte with the ROM SPI-flash read routine; the
+  large code and read-only-data segments are left \emph{in} flash and reached
+  through the cache.
+\item \textbf{Map the flash windows through the cache MMU.} The loader programs
+  the instruction-bus and data-bus MMUs (\texttt{Cache\_Ibus\_MMU\_Set} /
+  \texttt{Cache\_Dbus\_MMU\_Set}, 64\,KB pages) so the IROM/DROM virtual
+  addresses resolve to the right flash pages, then clears the cache ``shut'' bits
+  to switch the buses on.
+\item \textbf{Bring up PSRAM} (next section) and \textbf{jump} to the entry point.
+\end{itemize}
+
+The loader's own code and stack are placed high in SRAM, above the region the
+application's segments occupy, so copying the app never overwrites the running
+loader.
+
+\section{PSRAM: octal bring-up}\index{PSRAM}
+
+External PSRAM is the one place the project still leans on opaque Espressif
+ROM/blob routines, and for a good reason: bringing up octal PSRAM reconfigures
+the very MSPI timing that flash execute-in-place depends on, so it has to run
+from RAM, carefully, at exactly the right moment. The 2nd-stage bootloader is
+that moment. The bring-up (a small C shim, \texttt{psram\_boot.c}) does:
+
+\begin{enumerate}
+\item \textbf{Wire the octal pins.} \texttt{esp\_rom\_opiflash\_pin\_config} and
+  the MSPI drive-strength setup connect the extra data lines and DQS that octal
+  mode needs.
+\item \textbf{Enable and size the PSRAM} via the octal-PSRAM ROM implementation,
+  reporting the detected size.
+\item \textbf{Force the cache read mode.} The tuning step leaves the SPI0 data-in
+  mode wrong for OPI-DDR cache reads; a single register poke
+  (\texttt{16\#6000\_30C0\#}) forces the correct mode.
+\item \textbf{Map it into the address space.} \texttt{Cache\_Dbus\_MMU\_Set} with
+  the external-RAM flag maps the PSRAM at virtual base \texttt{16\#3D00\_0000\#}; the
+  number of 64\,KB pages comes from the project's \texttt{board.ads}
+  (\texttt{PSRAM\_Size / 64\,KB}).
+\end{enumerate}
+
+Because the bootloader maps PSRAM \emph{before} the application's \texttt{start.S}
+sets up its stack, the application can even place the environment task's primary
+stack in PSRAM (the \texttt{ENV\_STACK\_PSRAM} build option), trading a little
+latency for a great deal of headroom on deep elaboration or recursion --- which
+is exactly what the full-profile ACATS sweep needs.
+
+\cnote{In ESP-IDF, \texttt{CONFIG\_SPIRAM=y} hides all of this. Here it is a few
+dozen lines you can read: the pins, the enable call, the one mode-register fix,
+and the MMU map. The size comes from \texttt{board.ads}, so a different module is
+a one-line change, not a menuconfig safari.}
+
+\section{\texttt{start.S}: from reset state to Ada}\index{start.S}
+
+Once the loader jumps in, the application's \texttt{start.S}
+(\texttt{examples/common/bare/start.S}) turns the raw post-loader state into
+something Ada can run on:
+
+\begin{itemize}
+\item \textbf{Vectors and processor state.} It sets \texttt{VECBASE} to our own
+  vector table (so any fault from here uses our handlers) and sets \texttt{PS} to
+  the windowed-ABI state the runtime expects.
+\item \textbf{Sane register windows.} It rewrites \texttt{WINDOWSTART} to a single
+  frame at the current \texttt{WINDOWBASE}, discarding the loader's stale call
+  frames so the first window overflow/underflow does not fault. (Getting this
+  ordering right was the cure for an early environment-task double fault.)
+\item \textbf{FPU on.} It sets \texttt{CPENABLE} so the first floating-point
+  instruction does not trap.
+\item \textbf{Stack and \texttt{.bss}.} It loads the stack pointer from the
+  linker symbol and zeroes \texttt{.bss}.
+\item \textbf{The instruction cache.} The loader enabled caching but left the
+  I-cache unconfigured; \texttt{start.S} configures a 16\,KB, 8-way, 32-byte-line
+  I-cache and sets the IROM/DROM MMU split, so instruction fetches from the IROM
+  window actually return code rather than zeros.
+\item \textbf{The clock.} This is the big one. Out of reset the CPU runs at
+  \emph{20\,MHz} (the crystal divided by two); the runtime's timer math assumes
+  240\,MHz, so short delays would run twelve times too long. \texttt{start.S}
+  selects the 480\,MHz PLL divided to 240\,MHz (registers
+  \texttt{16\#600C\_0010\#} and \texttt{16\#600C\_0060\#}) and tells the ROM timing
+  helpers about the new frequency, all from IRAM before the jump into flash code.
+\end{itemize}
+
+It then jumps (not calls) into the C/Ada glue, which sets up the environment task
+via \texttt{\_\_gnat\_enter\_env} --- a small shim that makes the env-task body the
+\emph{outermost} window frame, so the first context switch has nothing stale
+above it to corrupt. On the second core, a parallel cold-start entry
+(\texttt{core1\_start}) repeats the window/VECBASE/stack normalisation before the
+SMP runtime releases it.
+
+\section{The memory map}\index{memory map}
+
+All of this is pinned down by the linker scripts under
+\texttt{examples/common/bare/vendor/} (the same regions appear in the memory-map
+Table~\ref{tab:memmap}). The ESP32-S3's internal SRAM is visible at two
+addresses --- an instruction-bus (IRAM) view and a data-bus (DRAM) view of the
+\emph{same} bytes --- which is why code and data segments land in different
+windows of one physical memory:
+
+\begin{center}
+\begin{tabular}{l l l}
+\textbf{Region} & \textbf{Base} & \textbf{What lives there} \\ \hline
+IRAM code     & \texttt{16\#4037\_8000\#} & vectors + hot code copied to SRAM \\
+IROM (flash)  & \texttt{16\#4200\_0000\#} & bulk code, execute-in-place via cache \\
+DRAM          & \texttt{16\#3FC9\_0000\#} & data, \texttt{.bss}, heap \\
+DROM (flash)  & \texttt{16\#3C00\_0000\#} & read-only data via cache \\
+PSRAM         & \texttt{16\#3D00\_0000\#} & external RAM (mapped by the loader) \\
+RTC slow mem  & \texttt{16\#5000\_0000\#} & retained across deep sleep \\
+\end{tabular}
+\end{center}
+
+Two practical consequences fall out of this map and recur elsewhere in the book.
+First, executable code must live in (or be reached through) an instruction-bus
+window: that is why the full profile relocates GCC's nested-subprogram
+trampolines to the IRAM alias rather than leaving them on the data-view stack
+(\S\ref{ch:runtime-build}). Second, PSRAM is reachable only after the loader maps
+it, and it cannot be a DMA source --- which is why DMA-capable scratch buffers are
+carved from internal SRAM even when the task stack itself lives in PSRAM (the SD
+and filesystem drivers rely on this).

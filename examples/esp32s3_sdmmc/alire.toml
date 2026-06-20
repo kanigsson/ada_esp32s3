@@ -1,0 +1,17 @@
+name = "esp32s3_sdmmc"
+description = "Bare-metal Ada native SD/MMC-host (SDHOST) self-test on the ESP32-S3 Jorvik runtime"
+version = "0.1.0-dev"
+
+authors = ["D. Howells"]
+maintainers = ["D. Howells <dhowells@motium.us>"]
+licenses = "Apache-2.0 WITH LLVM-exception"
+tags = ["embedded", "esp32s3", "sd", "sdmmc", "sdhost", "driver", "example"]
+
+project-files = ["sdmmc.gpr"]
+
+[[depends-on]]
+esp32s3_rts = "*"
+
+[[pins]]
+esp32s3_rts = { path = "../../crates/esp32s3_rts" }
+xtensa_dynconfig       = { path = "../../crates/xtensa-dynconfig" }

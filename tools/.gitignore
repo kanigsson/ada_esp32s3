@@ -1,0 +1,4 @@
+# fetched by get-openocd.sh / get-gdb.sh (pinned downloads, not committed)
+openocd/
+gdb/
+.jtag_serial

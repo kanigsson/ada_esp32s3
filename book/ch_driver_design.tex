@@ -1,0 +1,344 @@
+\chapter{Writing a Task-Safe Peripheral Driver}
+\label{ch:driver-design}
+
+Chapters~\ref{ch:hal}--\ref{ch:hal3} \emph{used} the drivers. This chapter shows
+how to \emph{write} one, and --- just as important --- why it is built the way it
+is. The shape described here is a project rule: every driver in the HAL for a
+peripheral that is \textbf{exclusive} (cannot be shared between tasks) and can be
+\textbf{reconfigured after setup} follows it exactly. By the end you should be
+able to add a new one and get the same guarantees for free.
+
+\section{The problem}
+
+Consider a typical controller --- a SPI host, a UART, a CAN controller. Three
+facts make it dangerous to share:
+
+\begin{enumerate}
+\item \textbf{It is one physical resource.} Two tasks driving the same FIFO or
+  the same configuration registers at once corrupt each other's transfers.
+\item \textbf{It is configured in stages.} You bring it up once (clocks, frame
+  format), then later you may re-route pins, change the baud rate, flip a line's
+  polarity --- often interleaved with real traffic.
+\item \textbf{The registers are global.} On a bare-metal target the peripheral is
+  a fixed memory-mapped block. Any code that can name it can poke it.
+\end{enumerate}
+
+A naive driver exports \texttt{Configure}, \texttt{Write}, \texttt{Read} as plain
+procedures over a global. Nothing stops task B from calling \texttt{Set\_Baud}
+while task A is mid-\texttt{Write}, or from starting a transfer it has no business
+starting. The corruption is intermittent and miserable to debug. We want a design
+where those mistakes are \emph{impossible to write}, not merely discouraged.
+
+\section{The ownership model}
+
+The cure is to make \emph{ownership} a value you hold, and to make every operation
+that touches the live controller require it.
+
+\begin{description}[style=nextline]
+\item[A \texttt{Session} is a capability.] \texttt{Acquire} hands a task a
+  \texttt{Session} --- a limited, controlled handle that represents exclusive
+  ownership of the controller. ``Limited'' means it cannot be copied (two tasks
+  can never share one), and ``controlled'' means it releases automatically when it
+  leaves scope, even on an exception. While you hold it, no other task can
+  acquire the controller.
+\item[Three things become impossible.] You cannot acquire a controller that was
+  never set up (\texttt{Not\_Initialized}); you cannot transfer or reconfigure
+  without holding it (\texttt{Not\_Owned}); and you cannot leak the lock, because
+  the handle's finalizer always releases.
+\end{description}
+
+The \texttt{Session} is the public face. The interesting part is the machinery
+behind it that makes ``you cannot reconfigure without holding it'' a structural
+fact rather than a rule a future maintainer must remember.
+
+\section{Three layers}
+
+A compliant driver is three packages:
+
+\begin{enumerate}
+\item \textbf{The Engine} (\texttt{ESP32S3.<Drv>.Engine}, a \emph{private child}).
+  It owns \emph{all} register access and exposes a \texttt{Bus} handle. It is the
+  only unit in the whole program that names the peripheral's registers.
+\item \textbf{The State gateway} (a package nested in the parent's \emph{body}). It
+  holds the one configured \texttt{Bus} handle and hands it out through a single
+  function, \texttt{Owned (S)}, which raises unless \texttt{S} holds the
+  controller.
+\item \textbf{The public package} (\texttt{ESP32S3.<Drv>}). It declares the
+  \texttt{Session}, the exceptions, \texttt{Setup}, \texttt{Acquire}, and the
+  operations --- each of which is a one-liner that reaches the hardware only
+  through \texttt{Owned}.
+\end{enumerate}
+
+The rest of this chapter builds a small driver, \texttt{ESP32S3.Widget}, one layer
+at a time.
+
+\begin{figure}[ht]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=12mm]
+\node[blk, text width=2.4cm] (app) {Application\\task};
+\node[blk, right=of app, fill=blue!8, text width=3.4cm] (pub)
+  {Public package\\\scriptsize limited \texttt{Session} +\\\scriptsize protected \texttt{Guard}};
+\node[blk, right=of pub, fill=blue!8, text width=2.8cm] (gw)
+  {\texttt{Owned (S)}\\\scriptsize gateway\\\scriptsize (raises if not held)};
+\node[blk, right=of gw, fill=orange!10, text width=2.6cm] (eng)
+  {\texttt{Engine}\\\scriptsize private child};
+\node[blk, right=of eng, fill=gray!12, text width=2.0cm] (reg) {Registers};
+\draw[flow] (app) -- node[above,font=\scriptsize]{Acquire} (pub);
+\draw[flow] (pub) -- (gw);
+\draw[flow] (gw)  -- (eng);
+\draw[flow] (eng) -- (reg);
+\end{tikzpicture}}
+\caption{The task-safe driver skeleton: a transfer reaches the registers only via
+the ownership-checked \texttt{Owned} gateway, and only the private \texttt{Engine}
+names them. Forgetting the check is structurally impossible.}
+\label{fig:driver-skeleton}
+\end{figure}
+
+\section{Layer 1 --- the Engine (the only code that sees the registers)}
+
+The engine is a \emph{private child}: a unit named \texttt{ESP32S3.Widget.Engine}
+can be \texttt{with}-ed only from inside the \texttt{ESP32S3.Widget} subtree.
+Application code --- and even other drivers --- physically cannot reach it.
+
+\begin{lstlisting}
+private package ESP32S3.Widget.Engine is
+   type Bus is private;                       --  an opaque, configured controller
+
+   function  Open (Clock_Hz : Positive) return Bus;
+   procedure Configure_Pins (B : Bus; Tx, Rx : ESP32S3.GPIO.Optional_Pin);
+   procedure Transfer (B : Bus; Tx, Rx : System.Address; Length : Natural);
+private
+   type Bus is record
+      Regs  : Periph_Ref := null;             --  pointer to the register block
+      Valid : Boolean    := False;
+   end record;
+end ESP32S3.Widget.Engine;
+\end{lstlisting}
+
+The engine \emph{body} is the one place that \texttt{with}s the SVD register
+package. It does the bit-twiddling --- the same code you would have written
+anyway --- but now it is sealed behind the \texttt{Bus} handle. \texttt{Open}
+brings the controller up and returns a \texttt{Bus}; every other operation takes a
+\texttt{Bus} and works through it. Crucially, \textbf{the parent package never
+\texttt{with}s the SVD registers at all} --- so once the engine exists, the global
+controller is unreachable from anywhere except through a \texttt{Bus} handle.
+
+\section{Layer 2 --- ownership: the Session and the Guard}
+
+The public package declares the handle and a per-controller lock. The
+\texttt{Session} is limited and controlled:
+
+\begin{lstlisting}
+package ESP32S3.Widget is
+   type Session is limited private;
+
+   Not_Initialized : exception;   --  Acquire before Setup
+   Not_Owned       : exception;   --  use without holding the controller
+
+   procedure Setup (Clock_Hz : Positive := 1_000_000);          --  startup only
+   procedure Acquire (S : in out Session);
+   procedure Configure_Pins (S : Session; Tx, Rx : ESP32S3.GPIO.Optional_Pin);
+   procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+   procedure Release (S : in out Session);
+private
+   type Session is new Ada.Finalization.Limited_Controlled with record
+      Active : Boolean := False;
+   end record;
+   overriding procedure Finalize (S : in out Session);          --  auto-release
+end ESP32S3.Widget;
+\end{lstlisting}
+
+In the body, a protected object arbitrates ownership. Its guarded section is
+tiny --- it only flips a flag --- so a task is never blocked inside it while a
+slow transfer runs:
+
+\begin{lstlisting}
+protected Guard is
+   entry    Acquire;
+   procedure Release;
+private
+   Held : Boolean := False;
+end Guard;
+
+protected body Guard is
+   entry Acquire when not Held is begin Held := True;  end Acquire;
+   procedure Release         is begin Held := False; end Release;
+end Guard;
+\end{lstlisting}
+
+\texttt{entry Acquire when not Held} is the whole mutual-exclusion story: a second
+task calling \texttt{Acquire} \emph{suspends} on the barrier until the first
+releases. (For a peripheral with several identical instances --- e.g. two SPI
+hosts --- this is an \texttt{array (Host) of Guard} and a matching array of
+handles; the singleton case is shown here for clarity.)
+
+\section{Layer 3 --- the gateway that cannot be bypassed}
+
+Here is the heart of the design. The configured \texttt{Bus} lives inside a
+package nested in the \emph{body}, so no other part of the driver can name it. The
+only way out is \texttt{Owned}:
+
+\begin{lstlisting}
+package State is
+   procedure Open (Clock_Hz : Positive);       --  the Setup path
+   function  Ready return Boolean;
+   function  Owned (S : Session) return E.Bus; --  THE gateway
+end State;
+
+package body State is
+   The_Bus : E.Bus;                            --  hidden here; unreachable elsewhere
+   Is_Set  : Boolean := False;
+
+   procedure Open (Clock_Hz : Positive) is
+   begin
+      The_Bus := E.Open (Clock_Hz);
+      Is_Set  := True;
+   end Open;
+
+   function Ready return Boolean is (Is_Set);
+
+   function Owned (S : Session) return E.Bus is
+   begin
+      if not S.Active then
+         raise Not_Owned with "Widget used without holding it -- Acquire first";
+      end if;
+      return The_Bus;
+   end Owned;
+end State;
+\end{lstlisting}
+
+Now every public operation is a single line that funnels through \texttt{Owned},
+and the ownership check happens in exactly one place:
+
+\begin{lstlisting}
+procedure Setup (Clock_Hz : Positive := 1_000_000) is
+begin
+   State.Open (Clock_Hz);
+end Setup;
+
+procedure Acquire (S : in out Session) is
+begin
+   if not State.Ready then
+      raise Not_Initialized with "Widget acquired before Setup";
+   end if;
+   Guard.Acquire;                              --  suspends until free
+   S.Active := True;
+end Acquire;
+
+procedure Configure_Pins (S : Session; Tx, Rx : ESP32S3.GPIO.Optional_Pin) is
+begin
+   E.Configure_Pins (State.Owned (S), Tx, Rx); --  Owned raises unless held
+end Configure_Pins;
+
+procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural) is
+begin
+   E.Transfer (State.Owned (S), Tx, Rx, Length);
+end Transfer;
+
+procedure Release (S : in out Session) is
+begin
+   if S.Active then
+      S.Active := False;
+      Guard.Release;
+   end if;
+end Release;
+
+overriding procedure Finalize (S : in out Session) is
+begin
+   Release (S);                                --  scope exit / exception unwind
+end Finalize;
+\end{lstlisting}
+
+Look at \texttt{Configure\_Pins} and \texttt{Transfer}: there is \emph{no}
+\texttt{if S.Active then} in either. They cannot reach the hardware without
+calling \texttt{State.Owned (S)}, and \texttt{Owned} is the one place that checks.
+A maintainer adding a new operation tomorrow has no choice but to go through the
+same door --- there is no \texttt{Bus} in scope to grab any other way.
+
+\section{The limited-handle variant}
+
+If the engine's \texttt{Bus} is a \emph{limited} type --- typically because it
+holds something limited, like a finalization-controlled DMA channel --- it cannot
+be returned by value. Make the hidden instance \texttt{aliased} and have
+\texttt{Owned} return an access to it:
+
+\begin{lstlisting}
+The_Bus : aliased E.Bus;
+function Owned (S : Session) return access E.Bus is
+begin
+   if not S.Active then raise Not_Owned with "..."; end if;
+   return The_Bus'Access;
+end Owned;
+--  callers: E.Transfer (State.Owned (S).all, Tx, Rx, Length);
+\end{lstlisting}
+
+In the HAL, SPI and I2S (whose engine \texttt{Bus} is limited) and LCD (whose
+handle owns a GDMA channel) use this form; I2C, UART and TWAI return the handle by
+value. Nothing else about the pattern changes.
+
+\section{Why it is built this way}
+
+Each layer earns its place by removing a specific class of mistake:
+
+\begin{description}[style=nextline]
+\item[Private-child engine $\rightarrow$ the registers have one owner.] Because the
+  parent never \texttt{with}s the SVD package, the controller global is
+  unreachable outside the engine. The ``any code can poke it'' hazard is gone at
+  the visibility level, not by convention.
+\item[Hidden handle + single \texttt{Owned} gateway $\rightarrow$ the guard cannot be
+  forgotten.] The earlier, weaker approach put an \texttt{if S.Active} check at the
+  top of each operation. That works until someone adds an operation and forgets
+  the check. Hiding the only \texttt{Bus} behind \texttt{Owned} makes the check
+  structural: forgetting it is not a bug you can write, because there is no other
+  way to obtain a \texttt{Bus}.
+\item[Limited \texttt{Session} $\rightarrow$ ownership cannot be duplicated.] A
+  non-copyable handle means two tasks can never hold the same controller, and a
+  handle can never outlive its scope as a dangling copy.
+\item[Controlled \texttt{Session} (RAII) $\rightarrow$ the lock cannot leak.] The
+  finalizer releases on every exit path, including exception unwinding. A fault
+  between \texttt{Acquire} and \texttt{Release} hands the controller back instead
+  of deadlocking the next task forever.
+\item[Tiny protected section $\rightarrow$ ownership without serialising work.] The
+  lock is held only long enough to flip a flag; the blocking transfer runs
+  outside it. Tasks contend for \emph{ownership}, never for the bus itself.
+\item[Two named exceptions $\rightarrow$ misuse fails loudly.] \texttt{Not\_Initialized}
+  and \texttt{Not\_Owned} turn ``used in the wrong state'' into an immediate,
+  explanatory error instead of a silent no-op or a corrupted transfer.
+\end{description}
+
+\section{The benefits}
+
+\begin{itemize}
+\item \textbf{Mistakes become unrepresentable.} ``Configure a port you don't
+  own,'' ``transmit from the wrong task,'' ``poke the registers directly'' ---
+  none of these can be written. The compiler and the visibility rules enforce
+  the discipline, so code review does not have to.
+\item \textbf{One pattern, every peripheral.} Because all six \texttt{Session}
+  drivers share this skeleton, learning one teaches all of them, and a new driver
+  is a fill-in-the-blanks exercise rather than a fresh concurrency design.
+\item \textbf{The unsafe core is testable in isolation.} The engine is plain,
+  lock-free register logic; the parent is plain ownership logic. Each can be
+  reasoned about --- and the engine bench-tested --- on its own.
+\item \textbf{RAII hygiene for free.} Scope-based release means the common
+  ``acquire, do work, release'' path needs no explicit \texttt{Release} and is
+  exception-safe by construction.
+\item \textbf{It costs almost nothing.} The handle is a couple of words, the
+  gateway is one comparison, and the protected section is a flag flip. The safety
+  is structural, not runtime overhead.
+\end{itemize}
+
+\section{When the rule applies (and when it does not)}
+
+Use this pattern for a driver that is \textbf{both} exclusive (cannot be shared
+between tasks) \textbf{and} reconfigurable after setup. That is the combination
+that makes uncoordinated access dangerous.
+
+It does \emph{not} apply to lock-free or shareable peripherals. \texttt{GPIO}'s
+set/clear/read are hardware-atomic; \texttt{RNG} is a stateless read; the
+\texttt{Temperature}, \texttt{RTC} and crypto blocks either are internally
+serialised by a small protected object or have nothing a second task can corrupt.
+Those drivers stay simple on purpose and run under every runtime profile,
+including light-tasking, where the controlled \texttt{Session} types (which need
+finalization) are not available. Reach for the full ownership machinery only when
+the hazard is real; for everything else, the simplest safe thing is better.
