@@ -17,7 +17,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BBRT="$HERE/../bb-runtimes"
 PROFILE="${ESP32S3_RTS_PROFILE:-light-tasking}"
 RTS="$HERE/$PROFILE-esp32s3"
+PACK="$HERE/packs/$PROFILE-esp32s3.tar.zst"
 AR=xtensa-esp32-elf-ar
+
+# Fast path (no bb-runtimes, no network): unpack the committed runtime SOURCE
+# pack if the runtime dir is missing.  It is compiled below on the first build
+# (then cached), so it is toolchain-version-independent.  bb-runtimes is only
+# needed to *regenerate* the source pack (rare; after a runtime-source change).
+if [ ! -d "$RTS" ] && [ -f "$PACK" ]; then
+    echo "[esp32s3_rts] unpacking $PROFILE runtime source (compiles on first build)"
+    mkdir -p "$RTS" && tar --zstd -xf "$PACK" -C "$RTS"
+fi
+if [ ! -d "$RTS" ] && [ ! -f "$BBRT/build_rts.py" ]; then
+    echo "[esp32s3_rts] ERROR: no source pack ($PACK) and bb-runtimes is absent." >&2
+    echo "    Restore crates/bb-runtimes to regenerate the runtime source." >&2
+    exit 1
+fi
 
 if [ -z "$XTENSA_GNU_CONFIG" ]; then
     echo "[esp32s3_rts] ERROR: XTENSA_GNU_CONFIG unset; depend on xtensa_dynconfig" >&2
@@ -31,7 +46,7 @@ echo "[esp32s3_rts] profile=$PROFILE  XTENSA_GNU_CONFIG=$XTENSA_GNU_CONFIG"
 # symbols an old context_switch.S doesn't define -> cryptic undefined-reference link
 # errors).  Fail loudly with the fix.  Bypass with ESP32S3_RTS_ALLOW_STALE_BB=1
 # (intentional submodule work).
-if command -v git >/dev/null 2>&1 && [ -z "${ESP32S3_RTS_ALLOW_STALE_BB:-}" ]; then
+if [ ! -d "$RTS" ] && command -v git >/dev/null 2>&1 && [ -z "${ESP32S3_RTS_ALLOW_STALE_BB:-}" ]; then
     SUPER="$(cd "$HERE/../.." && pwd)"   # crates/esp32s3_rts -> repo root
     want="$(git -C "$SUPER" ls-tree HEAD -- crates/bb-runtimes 2>/dev/null | awk '{print $3}')"
     have="$(git -C "$BBRT" rev-parse HEAD 2>/dev/null || true)"
