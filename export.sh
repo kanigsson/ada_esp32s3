@@ -24,6 +24,12 @@ case ":$PATH:" in
   *) PATH="$ESP32S3_ADA_SDK/tools/bin:$PATH"; export PATH ;;
 esac
 
+# Toolchain (xtensa GNAT, gprbuild, native GNAT) on PATH, Alire-free -- resolved
+# from $ESP32S3_ADA_TOOLCHAINS (default: Alire's dir; a bundle overrides it), so a
+# shell that sourced this can run gprbuild directly and ALS sees the compiler.
+. "$ESP32S3_ADA_SDK/tools/sdk-env.sh"
+esp32s3_toolchain_on_path
+
 # Runtime project + every reusable library (libs/*/) on GPR_PROJECT_PATH, so
 # `with "esp32s3_rts.gpr"` / `with "esp32s3_hal.gpr"` resolve with no relative path
 # -- for gprbuild AND ada_language_server (IntelliSense).  Auto-discovered: adding a

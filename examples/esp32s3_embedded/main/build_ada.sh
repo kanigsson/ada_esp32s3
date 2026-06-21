@@ -18,11 +18,10 @@ RTCRATE="$REPO/crates/esp32s3_rts"
 DYNDIR="$REPO/crates/xtensa-dynconfig"
 DYNCFG="$DYNDIR/xtensa-dynconfig/xtensa_esp32s3.so"
 
-GNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_xtensa_esp32_elf_*/bin 2>/dev/null | sort -V | tail -1)"
-GPR="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
-export PATH="$GPR:$GNAT:$PATH"
 
-[ -f "$DYNCFG" ] || alr -C "$DYNDIR" build
+. "$REPO/tools/sdk-env.sh"
+esp32s3_toolchain_on_path
+esp32s3_build_dynconfig "$DYNDIR" "$DYNCFG"
 export XTENSA_GNU_CONFIG="$(realpath "$DYNCFG")"
 
 # Select the embedded runtime profile for both the RTS generation and the build.
@@ -40,7 +39,7 @@ cp "$EX/obj/ada_app.o" "$HERE/app_main.o"
 # under ESP-IDF those clash with newlib's.  Ada's own `new` path is self-contained
 # inside app_main.o (__gnat_malloc -> System.Memory.Alloc over the ada_heap
 # region), so localise the C aliases -> newlib keeps the global ones for IDF C.
-OBJCOPY="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_xtensa_esp32_elf_*/bin/xtensa-esp32-elf-objcopy 2>/dev/null | sort -V | tail -1)"
+OBJCOPY=xtensa-esp32-elf-objcopy   # on PATH via tools/sdk-env.sh
 for s in malloc calloc free realloc memcpy memset; do LOC="$LOC --localize-symbol=$s"; done
 "$OBJCOPY" $LOC "$HERE/app_main.o"
 echo "[build_ada] done (embedded profile): $HERE/app_main.o"

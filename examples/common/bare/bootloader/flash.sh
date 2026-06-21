@@ -12,8 +12,8 @@ if [ -n "${ESP_USE_ESPTOOL:-}" ]; then
 fi
 EFL="$HERE/../espflash/esp_flash"
 if [ ! -x "$EFL" ]; then
-    NATGNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
-    GPRB="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
+    NATGNAT="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
+    GPRB="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
     ( cd "$HERE/../espflash" && PATH="$NATGNAT:$GPRB:$PATH" gprbuild -q -P esp_flash.gpr )
 fi
 exec "$EFL" "$PORT" 0x0 "$HERE/bootloader.bin"

@@ -28,8 +28,8 @@ else
     [ -x "$EFL" ] || echo "[flash] building the Ada esp_flash host tool (one-time) ..."
     #  Always run gprbuild: incremental, so it rebuilds when the tool source OR
     #  ../config/board.ads changed (e.g. Flash_Size) and no-ops otherwise.
-    NATGNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
-    GPRB="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
+    NATGNAT="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
+    GPRB="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
     ( cd "$BARE/espflash" && PATH="$NATGNAT:$GPRB:$PATH" gprbuild -q -P esp_flash.gpr )
     #  ESP_FLASH_MONITOR=1 : after flashing, reset-to-run and stream the console to
     #  stdout WITHOUT closing the port (the ACATS sweep uses this -- one held-open

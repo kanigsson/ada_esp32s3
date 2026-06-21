@@ -17,8 +17,8 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
-GNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_xtensa_esp32_elf_*/bin 2>/dev/null | sort -V | tail -1)"
-GPR="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
+GNAT="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gnat_xtensa_esp32_elf_*/bin 2>/dev/null | sort -V | tail -1)"
+GPR="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
 export PATH="$GPR:$GNAT:$PATH"
 # Little-endian ESP32-S3 xtensa config -- REQUIRED for the Ada/C compiles AND the
 # final link; without it the toolchain emits/links big-endian (esptool rejects it).
@@ -69,7 +69,7 @@ if [ -n "${ESP_USE_ESPTOOL:-}" ]; then
 else
     E2I="$REPO/examples/common/bare/elf2image/esp_elf2image"
     if [ ! -x "$E2I" ]; then
-        NATGNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
+        NATGNAT="$(ls -d "${ESP32S3_ADA_TOOLCHAINS:-$HOME/.local/share/alire/toolchains}"/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
         ( cd "$REPO/examples/common/bare/elf2image" && PATH="$NATGNAT:$GPR:$PATH" gprbuild -q -P esp_elf2image.gpr )
     fi
     "$E2I" "$O/boot.elf" "$OUT"

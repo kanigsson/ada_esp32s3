@@ -19,21 +19,17 @@ VENDOR="$BARE/vendor"
 # ESP-IDF install is needed to build.  Provenance + license: see that dir's README.
 # Override with IDF_PATH=<esp-idf> to use a live IDF tree's headers instead.
 
-GNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_xtensa_esp32_elf_*/bin 2>/dev/null | sort -V | tail -1)"
-GPR="$(ls -d "$HOME"/.local/share/alire/toolchains/gprbuild_*/bin 2>/dev/null | sort -V | tail -1)"
-export PATH="$GPR:$GNAT:$PATH"
+# Toolchain (xtensa GNAT, gprbuild, native GNAT) on PATH -- Alire-free, resolved
+# from $ESP32S3_ADA_TOOLCHAINS (default: Alire's dir; a bundle overrides it).
+. "$REPO/tools/sdk-env.sh"
+esp32s3_toolchain_on_path
 # The xtensa-dynconfig core-config plugin (.so) is REQUIRED before anything below
 # (gen_runtime + every compile/link read XTENSA_GNU_CONFIG).  On a fresh clone it
-# hasn't been built yet, so build it here -- `alr build` runs the crate's pre-build
-# actions (scripts/setup.sh + `make -C xtensa-dynconfig CC=gcc`).  Needs `alr` on
-# PATH + a host C toolchain (see the README prerequisites).
+# hasn't been built yet, so build it here -- without Alire (scripts/setup.sh +
+# `make -C xtensa-dynconfig`).  Needs a host C toolchain (see README prerequisites).
 DYNDIR="$REPO/crates/xtensa-dynconfig"
 DYNCFG="$DYNDIR/xtensa-dynconfig/xtensa_esp32s3.so"
-if [ ! -f "$DYNCFG" ]; then
-    echo "[bare]      building the xtensa-dynconfig core-config plugin (one-time)"
-    command -v alr >/dev/null || { echo "[bare] need 'alr' on PATH to build xtensa-dynconfig" >&2; exit 1; }
-    alr -C "$DYNDIR" build >/dev/null
-fi
+esp32s3_build_dynconfig "$DYNDIR" "$DYNCFG"
 export XTENSA_GNU_CONFIG="$(realpath "$DYNCFG")"
 GCC=xtensa-esp32-elf-gcc
 
@@ -265,8 +261,9 @@ else
     [ -x "$E2I" ] || echo "[bare]      building the Ada elf2image host tool (one-time) ..."
     #  Always run gprbuild: it's incremental, so it rebuilds the tool when its
     #  source changed, and no-ops otherwise.
-    NATGNAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_native_*/bin 2>/dev/null | sort -V | tail -1)"
-    ( cd "$BARE/elf2image" && PATH="$NATGNAT:$GPR:$PATH" gprbuild -q -P esp_elf2image.gpr )
+    #  Native GNAT first so the host tool links with native gcc, not the cross.
+    ( cd "$BARE/elf2image" \
+        && PATH="$ESP32S3_GNAT_NATIVE_BIN:$ESP32S3_GPRBUILD_BIN:$PATH" gprbuild -q -P esp_elf2image.gpr )
     "$E2I" "$EX/app.elf" "$EX/app.bin" --flash-size "$BOARD_FLASH_SIZE"
 fi
 echo "[bare] done: $EX/app.bin"
