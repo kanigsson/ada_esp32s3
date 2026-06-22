@@ -1,4 +1,4 @@
 /alire/
-/config/
-/xtensa-dynconfig/
-/xtensa-overlays/
+# The dynconfig source + the esp32s3 overlay are VENDORED (committed) so the
+# plugin builds offline with no clone.  Only the built plugin is ignored.
+/xtensa-dynconfig/*.so
