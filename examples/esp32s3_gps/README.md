@@ -96,6 +96,38 @@ as satellites appear. Give the antenna sky view (window / outside) for a minute;
 once it locks, GGA/RMC/GLL arrive with a fix and a fresh `lat=…  lon=…` prints.
 (`$GPTXT,…,ANTENNA OK` in the raw echo confirms the antenna path is healthy.)
 
+## L76K-specific commands (PCAS)
+
+The generic driver is receive-only NMEA. The **`ESP32S3.GPS.L76K`** child adds
+the Quectel L76K's proprietary **PCAS** configuration commands — it *sends*
+sentences to the receiver (via `ESP32S3.GPS.Send` and a routed Tx pin). The
+package itself is the "L76K only" gate: `with` it only when the module is an L76K.
+
+| command | procedure | status |
+|---|---|---|
+| PCAS04 | `Set_Constellation` (GNSS selection) | **tested** |
+| PCAS01 | `Set_Baud_Rate` | coded, untested |
+| PCAS02 | `Set_Update_Rate` | coded, untested |
+| PCAS03 | `Set_NMEA_Output` | coded, untested |
+| PCAS10 | `Restart` | coded, untested |
+
+The demo tests **PCAS04** live: after the default GPS+BeiDou baseline it enables
+**all** constellations, and the satellite dump grows to include GLONASS —
+
+```
+[gps] satellites in view: 10      (7 GPS + 3 BeiDou, default)
+[gps] >> PCAS04: set GNSS = GPS+BeiDou+GLONASS
+   ... GLONASS acquires (give it ~1 min from cold) ...
+[gps] satellites in view: 17
+[gps]   GP24 el=49 az=71 snr=27
+[gps]   BD13 el=50 az=239 snr=22
+[gps]   GL84 el=35 az=180 snr=25   <- GLONASS now in view
+```
+
+— proving the command is framed, checksummed, transmitted, and acted on.
+Disabling a constellation is instant; *enabling* GLONASS means acquiring those
+satellites from scratch, so it appears in the dumps a while later.
+
 ## Notes
 
 - The same bare ROM-`printf` caveats as the other examples (no `+` flag,

@@ -216,6 +216,40 @@ package body ESP32S3.GPS is
    end PPS_ISR;
 
    ---------------------------------------------------------------------------
+   --  Outbox: bytes queued by Send, transmitted by the reader task (which owns
+   --  the UART Session).  Overflowing bytes are dropped.
+   ---------------------------------------------------------------------------
+
+   Max_Out : constant := 256;
+
+   protected Outbox is
+      procedure Put (S : String);
+      procedure Take (Buf : out String; Count : out Natural);
+   private
+      Data : String (1 .. Max_Out);
+      Len  : Natural := 0;
+   end Outbox;
+
+   protected body Outbox is
+      procedure Put (S : String) is
+      begin
+         if S'Length > 0 and then Len + S'Length <= Max_Out then
+            Data (Len + 1 .. Len + S'Length) := S;
+            Len := Len + S'Length;
+         end if;
+      end Put;
+
+      procedure Take (Buf : out String; Count : out Natural) is
+      begin
+         Count := Len;
+         if Len > 0 then
+            Buf (Buf'First .. Buf'First + Len - 1) := Data (1 .. Len);
+            Len := 0;
+         end if;
+      end Take;
+   end Outbox;
+
+   ---------------------------------------------------------------------------
    --  Decode one framed sentence and publish whatever it carried.
    ---------------------------------------------------------------------------
 
@@ -255,6 +289,25 @@ package body ESP32S3.GPS is
       ESP32S3.UART.Acquire (S, Cfg.Port);
 
       loop
+         --  Transmit anything queued by Send (we hold the UART Session).
+         declare
+            Out_Buf : String (1 .. Max_Out);
+            Out_Len : Natural;
+         begin
+            Outbox.Take (Out_Buf, Out_Len);
+            if Out_Len > 0 then
+               declare
+                  Bytes : ESP32S3.UART.Byte_Array (1 .. Out_Len);
+               begin
+                  for I in 1 .. Out_Len loop
+                     Bytes (I) :=
+                       ESP32S3.UART.Byte (Character'Pos (Out_Buf (I)));
+                  end loop;
+                  ESP32S3.UART.Write (S, Bytes);
+               end;
+            end if;
+         end;
+
          ESP32S3.UART.Read (S, Chunk, N);
          if N = 0 then
             delay until Ada.Real_Time.Clock + Milliseconds (5);  --  idle pacing
@@ -330,6 +383,11 @@ package body ESP32S3.GPS is
 
    function Age (Updated_At : Ada.Real_Time.Time) return Ada.Real_Time.Time_Span
    is (Ada.Real_Time.Clock - Updated_At);
+
+   procedure Send (Command : String) is
+   begin
+      Outbox.Put (Command);
+   end Send;
 
    procedure Last_Sentence (Buffer : out String; Length : out Natural) is
    begin

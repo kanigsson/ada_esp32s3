@@ -178,6 +178,13 @@ package ESP32S3.GPS is
    --  to decide whether the value is stale.
    function Age (Updated_At : Ada.Real_Time.Time) return Ada.Real_Time.Time_Span;
 
+   --  Send a raw command string to the receiver (e.g. a vendor configuration
+   --  sentence).  The bytes are sent VERBATIM -- the caller frames and checksums
+   --  them; see the ESP32S3.GPS.L76K child for the L76K's PCAS commands.  Queued
+   --  and transmitted by the reader task on its UART, so it needs Setup and a
+   --  routed Tx pin.  Silently dropped if the small outbox is full.
+   procedure Send (Command : String);
+
    --  Copy the most recently received raw sentence (as framed: '$' .. before the
    --  CR/LF, including any '*HH') into Buffer; Length is how many characters were
    --  copied (0 if none yet), clipped to Buffer'Length.  Captured for EVERY

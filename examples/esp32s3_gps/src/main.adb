@@ -23,6 +23,7 @@ with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.UART;
 with ESP32S3.GPS;
+with ESP32S3.GPS.L76K;   --  L76K-specific PCAS commands
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the demo runs on core 0.
@@ -30,8 +31,13 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   package GPS renames ESP32S3.GPS;
+   package GPS  renames ESP32S3.GPS;
+   package L76K renames ESP32S3.GPS.L76K;
    use type GPS.Fix_Quality;
+
+   --  PCAS04 mode number (1 .. 7) for a constellation selection.
+   function Config_Mode (C : L76K.Constellation) return int is
+     (int (L76K.Constellation'Pos (C)) + 1);
 
    procedure Banner;   pragma Import (C, Banner,   "native_gps_banner");
    procedure Live_Hdr; pragma Import (C, Live_Hdr, "native_gps_live_hdr");
@@ -46,6 +52,8 @@ procedure Main is
                        pragma Import (C, Sat_Hdr,  "native_gps_sat_hdr");
    procedure Sat (Sys, PRN, El, Az, SNR : int);
                        pragma Import (C, Sat,      "native_gps_sat");
+   procedure Cfg (Mode : int);
+                       pragma Import (C, Cfg,      "native_gps_cfg");
    procedure Done;     pragma Import (C, Done,     "native_gps_done");
 
    --  Canonical NMEA examples (checksums verified): 48 07.038' N, 011 31.000' E.
@@ -191,7 +199,7 @@ begin
    Live_Hdr;
    GPS.Setup (Port => ESP32S3.UART.UART0, Rx => 44, Tx => 43, Baud => 9_600);
 
-   for Tick in 1 .. 30 loop
+   for Tick in 1 .. 70 loop
       delay until Clock + Seconds (1);
       declare
          P : constant GPS.Position_Reading := GPS.Current_Position;
@@ -216,14 +224,20 @@ begin
                Max_SNR    => int (S.Max_SNR),
                Fix_Type   => GPS.Fix_Type'Pos (S.Mode));
 
-         --  Echo the actual raw sentence (spaced so the FIFO drains).
+         --  Echo the actual raw sentence (spaced so the FIFO drains; long
+         --  sentences are split into two lines to stay under the console FIFO).
          delay until Clock + Milliseconds (40);
          declare
-            Buf : String (1 .. 90);
-            Len : Natural;
+            Buf  : String (1 .. 90);
+            Len  : Natural;
+            Half : constant := 45;
          begin
             GPS.Last_Sentence (Buf, Len);
-            Raw (Buf'Address, int (Len));
+            Raw (Buf'Address, int (Natural'Min (Len, Half)));
+            if Len > Half then
+               delay until Clock + Milliseconds (40);
+               Raw (Buf (Buf'First + Half)'Address, int (Len - Half));
+            end if;
          end;
 
          --  Every 10 s, dump the full satellite-in-view list, one per line.
@@ -238,6 +252,16 @@ begin
                     Az  => int (Sats (I).Azimuth),
                     SNR => int (Sats (I).SNR));
             end loop;
+         end if;
+
+         --  L76K PCAS04 test: at tick 5 (after the default GPS+BeiDou baseline)
+         --  enable ALL constellations.  Disabling a constellation is instant,
+         --  but ENABLING GLONASS means acquiring those satellites from scratch,
+         --  so GLONASS (GL) appears in the dumps a while later.
+         if Tick = 5 then
+            delay until Clock + Milliseconds (40);
+            Cfg (Config_Mode (L76K.GPS_BeiDou_GLONASS));
+            L76K.Set_Constellation (L76K.GPS_BeiDou_GLONASS);
          end if;
       end;
    end loop;

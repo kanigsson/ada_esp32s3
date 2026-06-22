@@ -61,6 +61,7 @@ project ESP32S3_HAL is
             "esp32s3-qmi8658c-interrupts.adb",
             "esp32s3-gps.ads",          "esp32s3-gps.adb",
             "esp32s3-gps-nmea.ads",     "esp32s3-gps-nmea.adb",
+            "esp32s3-gps-l76k.ads",     "esp32s3-gps-l76k.adb",
             "esp32s3-spi.ads",         "esp32s3-spi.adb",
             "esp32s3-spi-engine.ads",  "esp32s3-spi-engine.adb",
             "esp32s3-i2c.ads",         "esp32s3-i2c.adb",

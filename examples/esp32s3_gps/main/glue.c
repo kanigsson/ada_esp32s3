@@ -129,4 +129,13 @@ void native_gps_sat(int sys, int prn, int el, int az, int snr)
     esp_rom_printf("%s\n", line);
 }
 
+/* Announce an L76K PCAS04 constellation change (mode 1..7). */
+void native_gps_cfg(int mode)
+{
+    static const char *const n[] = { "?", "GPS", "BeiDou", "GPS+BeiDou",
+        "GLONASS", "GPS+GLONASS", "BeiDou+GLONASS", "GPS+BeiDou+GLONASS" };
+    const char *m = (mode >= 1 && mode <= 7) ? n[mode] : "?";
+    esp_rom_printf("[gps] >> PCAS04: set GNSS = %s\n", m);
+}
+
 void native_gps_done(void) { esp_rom_printf("[gps] done.\n"); }
