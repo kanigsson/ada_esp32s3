@@ -308,6 +308,12 @@ fi
 #     turns every Time_Error / Constraint_Error into a board reset, so Calendar is
 #     unusable (and grades nothing) there.  Don't fight that design.
 if [ "$PROFILE" = "embedded" ] || [ "$PROFILE" = "full" ]; then
+    if [ ! -d "$HERE/calendar_overlay/gnat" ] || [ ! -d "$HERE/calendar_overlay/gnarl" ]; then
+        echo "[esp32s3_rts] ERROR: calendar_overlay/ is missing -- the $PROFILE runtime" >&2
+        echo "    needs it (Ada.Calendar children).  It is tracked in the repo; restore" >&2
+        echo "    crates/esp32s3_rts/calendar_overlay/{gnat,gnarl}/." >&2
+        exit 1
+    fi
     cp -a "$HERE/calendar_overlay/gnat/."  "$RTS/gnat/"
     cp -a "$HERE/calendar_overlay/gnarl/." "$RTS/gnarl/"
     chmod -R u+w "$RTS/gnat" "$RTS/gnarl"
