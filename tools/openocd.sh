@@ -73,11 +73,25 @@ fi
 #                       trick is asking for both threads).  `./x debug --smp`.
 RTOS="${ESP_RTOS:-none}"
 [ "$RTOS" = "hwthread" ] && echo "openocd.sh: dual-core (hwthread) -- both cores appear as gdb threads" >&2
+
+# Flash support for GDB.  When GDB attaches, the esp flash driver auto-probes the
+# SPI flash -- but if the core is halted in a low-power WAITI state (e.g. the
+# full/embedded runtime's idle: System.BB...power_down), the probe reads back an
+# empty mapping ("Failed to probe flash, size 0 KB / auto_probe failed") and
+# OpenOCD REJECTS the whole GDB connection.  That broke `./x debug` / the IDE for
+# the full profile (HW-confirmed).  Default to disabling flash support
+# (ESP_FLASH_SIZE 0): debugging then uses the two LX7 hardware breakpoints, which
+# works in EVERY profile and in post-mortem --attach (no forced reset, so a
+# crash/hang is preserved).  Set ESP_FLASH_SIZE=<size-in-MB> to re-enable flash
+# software breakpoints if your image probes cleanly.
+FLASH_ARGS=(-c "set ESP_FLASH_SIZE ${ESP_FLASH_SIZE:-0}")
+[ "${ESP_FLASH_SIZE:-0}" = 0 ] && echo "openocd.sh: flash support off (HW breakpoints; set ESP_FLASH_SIZE=<MB> to enable)" >&2
+
 if [ -x "$LOCAL/bin/openocd" ]; then
   exec "$LOCAL/bin/openocd" -s "$LOCAL/share/openocd/scripts" \
-       -c "set ESP_RTOS $RTOS" "${ONLYCPU_ARGS[@]}" "${PIN_ARGS[@]}" -f board/esp32s3-builtin.cfg "$@"
+       -c "set ESP_RTOS $RTOS" "${FLASH_ARGS[@]}" "${ONLYCPU_ARGS[@]}" "${PIN_ARGS[@]}" -f board/esp32s3-builtin.cfg "$@"
 elif command -v openocd >/dev/null; then
-  exec openocd -c "set ESP_RTOS $RTOS" "${ONLYCPU_ARGS[@]}" "${PIN_ARGS[@]}" -f board/esp32s3-builtin.cfg "$@"
+  exec openocd -c "set ESP_RTOS $RTOS" "${FLASH_ARGS[@]}" "${ONLYCPU_ARGS[@]}" "${PIN_ARGS[@]}" -f board/esp32s3-builtin.cfg "$@"
 else
   echo "openocd.sh: no OpenOCD found." >&2
   echo "            run  ./tools/get-openocd.sh  (or ./x get-openocd) to fetch it." >&2
