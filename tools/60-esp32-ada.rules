@@ -1,0 +1,29 @@
+# ESP32-S3 (and friends) device access for flashing + on-chip debug.
+#
+# Installed to /etc/udev/rules.d/60-esp32-ada.rules by  ./x setup-device
+# (tools/install-udev.sh).  Two grants per device, belt-and-braces:
+#   TAG+="uaccess"          -- on systemd/logind desktops the ACTIVE local user
+#                              gets access automatically, no group, no re-login.
+#   GROUP=..., MODE="0660"  -- fallback for non-logind systems: membership in
+#                              plugdev (raw USB / JTAG) or dialout (tty) is enough.
+#
+# After installing: unplug and replug the board.  If you rely on the group
+# fallback (no logind), also log out and back in once so the new group applies.
+
+# --- Espressif built-in USB-JTAG / serial debug unit (ESP32-S3/C3/C6/H2/...) ---
+# Raw USB endpoint OpenOCD drives for debugging, and the CDC-ACM serial it exposes.
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", TAG+="uaccess", GROUP="dialout", MODE="0660"
+
+# --- Common external USB-UART bridges on ESP32 dev boards ---------------------
+# Silicon Labs CP210x / CP2105
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", TAG+="uaccess", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea70", TAG+="uaccess", GROUP="dialout", MODE="0660"
+# WCH CH340 / CH9102
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", TAG+="uaccess", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", TAG+="uaccess", GROUP="dialout", MODE="0660"
+# FTDI FT231X / FT2232 (some boards / JTAG probes)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6010", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", TAG+="uaccess", GROUP="plugdev", MODE="0660"

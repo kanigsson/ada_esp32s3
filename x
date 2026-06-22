@@ -25,6 +25,8 @@
 #                                     --smp    : both LX7 cores as gdb threads (info threads)
 #                                     --attach : post-mortem halt-in-place (no reset; a hang/crash)
 #    ./x kill-openocd                  kill every OpenOCD (releases captured USB-JTAG ports)
+#    ./x setup-device [-h]             one-time: install udev rule + groups for USB access (sudo)
+#    ./x check-device [-p PORT]        report whether the board's port is accessible
 #    ./x install-ide                   install the VS Code extension (committed .vsix; no Node)
 #    ./x build-ide                     (maintainer) rebuild the committed .vsix (needs Node)
 #    ./x install-vim                   symlink the Vim/Neovim plugin (auto-updates on git pull)
@@ -171,9 +173,44 @@ cmd_build () {
     ( cd "$EXROOT/$e" && env $(prof_env "$prof") bash build.sh )
 }
 
+# -- device access ------------------------------------------------------------
+#  A board may be plugged in yet unusable because the user lacks permission on the
+#  port (raw USB / tty).  Distinguish "no device" from "no permission" and, for the
+#  latter, print a STABLE marker line ("device not accessible") the IDE matches to
+#  offer './x setup-device'.  Exit 13 == EACCES.
+device_preflight () {  # $1 = port
+    local port="$1"
+    if [ ! -e "$port" ]; then
+        echo "x: device not accessible: no such port $port" >&2
+        echo "x:   plug in the ESP32-S3, or pass -p <port> / set \$ESPPORT." >&2
+        return 1
+    fi
+    if [ ! -r "$port" ] || [ ! -w "$port" ]; then
+        echo "x: device not accessible: $port -- permission denied." >&2
+        echo "x:   run  ./x setup-device  (one-time, needs sudo) to grant access." >&2
+        return 13
+    fi
+    return 0
+}
+
+cmd_setup_device () {  # install the udev rule + group membership (self-sudos)
+    bash "$ROOT/tools/install-udev.sh" "$@"
+}
+
+cmd_check_device () {  # report port + USB-JTAG accessibility (human + IDE)
+    local port="$PORT_DEFAULT"
+    while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
+    if device_preflight "$port"; then
+        echo "x: device OK: $port is accessible"
+    else
+        return $?
+    fi
+}
+
 cmd_flash () {
     local e port="$PORT_DEFAULT"; e="$(resolve "${1:-}")"; shift || true
     while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
+    device_preflight "$port" || exit $?
     ( cd "$EXROOT/$e" && bash flash.sh "$port" )
     #  Record the flashed board's USB-JTAG serial so `./x debug` / the openocd task
     #  pin to THIS board (not the first 303a device) -- see tools/openocd.sh.
@@ -184,7 +221,7 @@ cmd_flash () {
 cmd_monitor () {
     local port="$PORT_DEFAULT"
     while [ $# -gt 0 ]; do case "$1" in -p|--port) port="$2"; shift 2;; *) shift;; esac; done
-    [ -e "$port" ] || die "no such port: $port (set -p or \$ESPPORT)"
+    device_preflight "$port" || exit $?
     echo "x: monitor $port @ $BAUD (Ctrl-C / Ctrl-A K to quit)" >&2
     monitor_tool "$port"
 }
@@ -510,11 +547,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     get-gdb)            cmd_get_gdb "$@" ;;
     debug)              cmd_debug "$@" ;;
     kill-openocd)       cmd_kill_openocd "$@" ;;
+    setup-device)       cmd_setup_device "$@" ;;
+    check-device)       cmd_check_device "$@" ;;
     install-ide)        cmd_install_ide "$@" ;;
     build-ide)          cmd_build_ide "$@" ;;
     install-vim)        cmd_install_vim "$@" ;;
     ""|-h|--help|help)
-        sed -n '3,35p' "$0" | sed 's/^#  \{0,1\}//; s/^#//' ;;
+        sed -n '3,36p' "$0" | sed 's/^#  \{0,1\}//; s/^#//' ;;
     *) die "unknown command '$cmd' (try './x help')" ;;
   esac
 fi
