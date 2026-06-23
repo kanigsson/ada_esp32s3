@@ -104,9 +104,13 @@ the IMU's raw counts (scaled by `Accel_LSB_Per_G`) → `NN.NN`.
 
 - The GPS needs sky view to lock; until then the GPS view shows `--` placeholders
   and `* searching`.
-- The RTC shows `(unset)` until its time is set (the oscillator-stop flag is set
-  after a power loss) — `Date 2000-01-01` with the flag is the honest power-on
-  state, not a bug.
+- **The RTC is set from GPS UTC on the first fix** (one time): once the GPS has a
+  position lock with a valid date + time, `Sync_RTC_From_GPS` loads that UTC into
+  the PCF85063A (deriving the weekday, which NMEA doesn't carry, via Sakamoto's
+  algorithm). `Set_Time` clears the oscillator-stop flag, so the RTC then reads
+  `Valid`; the RTC view's `Src` line shows `GPS UTC`. Before the first lock it
+  shows `awaiting GPS` (or `battery` if the RTC was already running). The UTC
+  snapshot can be ~1 s old (no PPS alignment), which is fine for a wall clock.
 - The IMU "satellites of gravity" sanity check: at rest the three axes sum to
   ≈1 g; this sensor reads ≈0.94 g uncalibrated (expected, per the QMI8658C
   example).

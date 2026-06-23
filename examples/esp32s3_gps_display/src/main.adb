@@ -59,6 +59,9 @@ procedure Main is
    Clk     : RTC.Device;
    Imu_Dev : IMU.Device;
 
+   --  Set True once the RTC has been loaded from a GPS UTC fix (done once).
+   RTC_Synced : Boolean := False;
+
    --  Display layout (240x240): scale-3 title, scale-1 subtitle, then up to four
    --  value rows in the scale-2 font (cell 12x16), each padded to a fixed width
    --  so the opaque redraw overwrites the previous value.
@@ -138,6 +141,20 @@ procedure Main is
                 when RTC.Tuesday => "Tue", when RTC.Wednesday => "Wed",
                 when RTC.Thursday => "Thu", when RTC.Friday   => "Fri",
                 when RTC.Saturday => "Sat");
+
+   --  Weekday for a Gregorian date (Sakamoto's algorithm; 0 = Sunday).  The GPS
+   --  carries date + time but no weekday, so derive it before loading the RTC.
+   function Weekday_Of (Y, M, D : Natural) return RTC.Weekday is
+      T  : constant array (1 .. 12) of Natural :=
+             (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4);
+      Yr : Natural := Y;
+   begin
+      if M < 3 then
+         Yr := Yr - 1;
+      end if;
+      return RTC.Weekday'Val
+        ((Yr + Yr / 4 - Yr / 100 + Yr / 400 + T (M) + D) mod 7);
+   end Weekday_Of;
 
    ----------------------------------------------------------------------------
    --  Output helpers.
@@ -234,6 +251,13 @@ procedure Main is
                    White);
          Draw_Row (R3, "Day  " & Day_Str (T.Day_Of_Week)
                        & (if Valid then "" else " (unset)"), Cyan);
+         if RTC_Synced then
+            Draw_Row (R4, "Src  GPS UTC", Green);
+         elsif Valid then
+            Draw_Row (R4, "Src  battery", Dim);
+         else
+            Draw_Row (R4, "Src  awaiting GPS", Amber);
+         end if;
       else
          Draw_Row (R1, "RTC bus error", Amber);
       end if;
@@ -263,6 +287,40 @@ procedure Main is
                    Cyan);
       end if;
    end Update_IMU;
+
+   --  Once the GPS has a position fix with a valid date + time, load that UTC
+   --  into the PCF85063A -- one time.  Set_Time clears the oscillator-stop flag,
+   --  so the RTC then reads back Valid until power is lost.  The GPS UTC snapshot
+   --  can be up to ~1 s old (no PPS alignment here), which is fine for a clock.
+   procedure Sync_RTC_From_GPS is
+      P  : constant GPS.Position_Reading := GPS.Current_Position;
+      Dt : constant GPS.Date_Reading     := GPS.Current_Date;
+      Tm : constant GPS.Time_Reading     := GPS.Current_Time;
+      Locked : constant Boolean :=
+        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < 3.0;
+      T  : RTC.Time;
+      St : RTC.Status;
+   begin
+      if RTC_Synced or else not (Locked and then Dt.Valid and then Tm.Valid) then
+         return;
+      end if;
+      T := (Year        => Dt.Value.Year,
+            Month       => Dt.Value.Month,
+            Day         => Dt.Value.Day,
+            Day_Of_Week => Weekday_Of (Dt.Value.Year, Dt.Value.Month,
+                                       Dt.Value.Day),
+            Hour        => Tm.Value.Hour,
+            Minute      => Tm.Value.Minute,
+            Second      => Tm.Value.Second);
+      RTC.Set_Time (Clk, T, St);
+      if St = RTC.OK then
+         RTC_Synced := True;
+         Console ("RTC set from GPS UTC "
+                  & Nat_Fixed (T.Year, 4) & "-" & Nat_Fixed (T.Month, 2) & "-"
+                  & Nat_Fixed (T.Day, 2) & " " & Nat_Fixed (T.Hour, 2) & ":"
+                  & Nat_Fixed (T.Minute, 2) & ":" & Nat_Fixed (T.Second, 2));
+      end if;
+   end Sync_RTC_From_GPS;
 
    type View_Kind is (V_GPS, V_Env, V_RTC, V_IMU);
 begin
@@ -320,6 +378,7 @@ begin
          end case;
 
          for Sec in 1 .. 5 loop
+            Sync_RTC_From_GPS;   --  one-time, as soon as the GPS locks
             case V is
                when V_GPS => Update_GPS;
                when V_Env => Update_Env;
