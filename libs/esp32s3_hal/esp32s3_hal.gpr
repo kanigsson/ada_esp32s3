@@ -96,6 +96,11 @@ project ESP32S3_HAL is
    end case;
 
    package Compiler is
+      --  Reject GNAT stack trampolines ('Access of an up-level-capturing nested
+      --  subprogram): they are emitted on this target's non-executable stack and
+      --  fault silently when called.  See no_dynamic_code.adc.
+      for Local_Configuration_Pragmas use "no_dynamic_code.adc";
+
       --  -gnata turns on the contract checks (e.g. the GPIO valid-pin predicate)
       --  at run time -- but only under the exception-capable profiles.  Under
       --  light-tasking the assertion path would drag in the DWARF unwinder + a

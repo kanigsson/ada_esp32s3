@@ -1,0 +1,15 @@
+--  Configuration pragma applied to the ESP32-S3 HAL (and any project that opts
+--  in via Compiler'Local_Configuration_Pragmas).
+--
+--  This target's stacks live in the data-bus SRAM window, whose instruction-bus
+--  alias is a different address; a GNAT *trampoline* -- the small stack stub
+--  emitted for 'Access / 'Unrestricted_Access of a NESTED subprogram that
+--  references up-level variables -- is therefore not executable and faults
+--  (InstrFetchProhibited) when called, a silent hang rather than a clean error.
+--
+--  No_Implicit_Dynamic_Code makes the compiler REJECT any such trampoline at its
+--  'Access source line instead.  The fix is always to make the callback
+--  closure-free:
+--  pass context explicitly (as ESP32S3.Block_Dev does with Ctx : System.Address),
+--  return data instead of taking a visitor, or use a library-level subprogram.
+pragma Restrictions (No_Implicit_Dynamic_Code);

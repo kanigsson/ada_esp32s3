@@ -18,6 +18,7 @@ with ESP32S3.Block_Dev.SDMMC_Source;
 with ESP32S3.Ext4;       use ESP32S3.Ext4;
 with ESP32S3.Ext4.FS;
 with ESP32S3.Ext4.Inode;
+with FS_Glue;            use FS_Glue;   --  library-level glue (closure-free cb)
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
@@ -28,15 +29,9 @@ procedure Main is
    use type CH.Status;
    use type SD.Status;
 
-   procedure Banner;  pragma Import (C, Banner, "native_fs_banner");
-   procedure Card_R (Ok : int);  pragma Import (C, Card_R, "native_fs_card");
-   procedure Mount_R (Ok, BS : int);  pragma Import (C, Mount_R, "native_fs_mount");
-   procedure Entry_R (Name : System.Address; Ino, Ftype : int);
-                      pragma Import (C, Entry_R, "native_fs_entry");
-   procedure File_R (Ok, Size : int; Preview : System.Address);
-                      pragma Import (C, File_R, "native_fs_file");
-   procedure Err_R (Stage : System.Address);  pragma Import (C, Err_R, "native_fs_err");
-   procedure Done;  pragma Import (C, Done, "native_fs_done");
+   --  Console glue (Banner/Card_R/Mount_R/Entry_R/File_R/Err_R/Done) and Cstr
+   --  live in the library-level package FS_Glue so the Iterate callback below
+   --  stays closure-free (no GNAT stack trampoline -- see FS_Glue).
 
    Dev_CH : CH.Device;
    ExS    : CH.Session;
@@ -44,28 +39,7 @@ procedure Main is
    SDC    : aliased SD.Card;
    St     : SD.Status;
 
-   --  NUL-terminate Str for the C %s glue, replacing non-printables with '.'.
-   function Cstr (Str : String) return String is
-      R : String (1 .. Str'Length + 1);
-   begin
-      for I in 1 .. Str'Length loop
-         declare
-            Ch : constant Character := Str (Str'First + I - 1);
-         begin
-            R (I) := (if Character'Pos (Ch) in 32 .. 126 then Ch else '.');
-         end;
-      end loop;
-      R (R'Last) := Character'Val (0);
-      return R;
-   end Cstr;
-
    Empty : aliased constant String := (1 => Character'Val (0));
-
-   procedure Visit (Name : String; Ino : Inode_Number; File_Type : U8) is
-      N : aliased constant String := Cstr (Name);
-   begin
-      Entry_R (N'Address, int (Ino), int (File_Type));
-   end Visit;
 
    procedure Stage (Name : String) is
       N : aliased constant String := Cstr (Name);
