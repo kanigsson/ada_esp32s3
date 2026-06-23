@@ -1,0 +1,17 @@
+name = "esp32s3_sdmmc_ch422g"
+description = "Bare-metal Ada SD card (SDMMC 1-bit) with the CH422G driving DAT3/CD (ESP32-S3)"
+version = "0.1.0-dev"
+
+authors = ["D. Howells"]
+maintainers = ["D. Howells <dhowells@motium.us>"]
+licenses = "Apache-2.0 WITH LLVM-exception"
+tags = ["embedded", "esp32s3", "sdmmc", "sdcard", "i2c", "ch422g", "example"]
+
+project-files = ["sdmmc_ch422g.gpr"]
+
+[[depends-on]]
+esp32s3_rts = "*"
+
+[[pins]]
+esp32s3_rts = { path = "../../crates/esp32s3_rts" }
+xtensa_dynconfig       = { path = "../../crates/xtensa-dynconfig" }
