@@ -1,0 +1,17 @@
+name = "esp32s3_st7789_cube"
+description = "Bare-metal Ada demo: bouncing hidden-line wireframe cube on an ST7789 display (ESP32-S3)"
+version = "0.1.0-dev"
+
+authors = ["D. Howells"]
+maintainers = ["D. Howells <dhowells@motium.us>"]
+licenses = "Apache-2.0 WITH LLVM-exception"
+tags = ["embedded", "esp32s3", "spi", "display", "lcd", "graphics", "example"]
+
+project-files = ["cube.gpr"]
+
+[[depends-on]]
+esp32s3_rts = "*"
+
+[[pins]]
+esp32s3_rts = { path = "../../crates/esp32s3_rts" }
+xtensa_dynconfig       = { path = "../../crates/xtensa-dynconfig" }
