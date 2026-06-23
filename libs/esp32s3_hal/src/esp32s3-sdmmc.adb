@@ -400,6 +400,9 @@ package body ESP32S3.SDMMC is
          RINT := Data_Err or Int_Data_Over;
          return Write_Error;
       end if;
+      if (RINT and Int_Data_Over) = 0 then      --  deadline hit, no data-over
+         return Write_Error;
+      end if;
       RINT := Int_Data_Over;
       Wait_Not_Busy;                            --  card programs the block
       return OK;

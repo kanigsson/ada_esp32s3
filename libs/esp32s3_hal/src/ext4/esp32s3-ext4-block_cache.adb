@@ -195,6 +195,23 @@ package body ESP32S3.Ext4.Block_Cache is
       end loop;
    end For_Each_Dirty;
 
+   ----------------
+   -- Dirty_Tags --
+   ----------------
+
+   procedure Dirty_Tags
+     (C : in out Cache; Into : out Block_List; Count : out Natural) is
+   begin
+      Count := 0;
+      for E in 0 .. C.Count - 1 loop
+         if C.Meta (E).Valid and then C.Meta (E).Dirty then
+            exit when Count >= Into'Length;
+            Count := Count + 1;
+            Into (Into'First + Count - 1) := C.Meta (E).Tag;
+         end if;
+      end loop;
+   end Dirty_Tags;
+
    ----------
    -- Drop --
    ----------

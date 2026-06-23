@@ -431,7 +431,19 @@ package body ESP32S3.Ext4.Journal is
       SB_Base   : constant Natural := Superblock.SB_Offset (BS);
    begin
       --  1. Gather the write-set: the dirty metadata blocks, plus the SB block.
-      Block_Cache.For_Each_Dirty (V.Cache, Collect'Access);
+      --  Use the callback-free Dirty_Tags (not For_Each_Dirty with a nested
+      --  collector): 'Access of a nested subprogram makes GNAT emit a stack
+      --  trampoline, which faults when called on this target's non-executable
+      --  stacks -- a silent hang in the commit.
+      declare
+         Dirty : Block_Cache.Block_List (1 .. Max_WS - 1);
+         DN    : Natural;
+      begin
+         Block_Cache.Dirty_Tags (V.Cache, Dirty, DN);
+         for I in 1 .. DN loop
+            Collect (Dirty (I));
+         end loop;
+      end;
       if N = 0 then
          Free (Jsb); Free (Blk); Free (SBblk);
          return;                       --  nothing changed
