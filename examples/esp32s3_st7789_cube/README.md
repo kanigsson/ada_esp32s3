@@ -1,13 +1,13 @@
-# Bouncing hidden-line wireframe cube — bare-metal Ada (ESP32-S3)
+# Bouncing solid-colour 3D cube — bare-metal Ada (ESP32-S3)
 
-A rotating 3D wireframe cube drawn with **hidden-line removal** and
-**perspective**, each visible face's edges in its own colour, its window
-bouncing around the edges of a 240×240 ST7789 panel. Runs at ~60 fps.
+A rotating 3D cube with each visible face **flat-shaded in its own colour**
+(**perspective** + **hidden-surface removal**, black facet seams), its window
+bouncing around the edges of a 240×240 ST7789 panel. Runs at ~57 fps.
 
 ```
-[cube] bouncing hidden-line wireframe cube -> ST7789 240x240
+[cube] bouncing solid-colour 3D cube -> ST7789 240x240
 [cube]   SPI2 sclk=12 mosi=13 dc=16 cs=10 bl=6
-[cube] ~61 fps
+[cube] ~57 fps
 ```
 
 ## How it works
@@ -17,7 +17,7 @@ into a small in-RAM framebuffer that acts as a **moving window** always
 containing the whole cube:
 
 1. **Render** — clear the `FB_W × FB_W` RGB565 framebuffer, rotate + project the
-   cube into it, rasterise the visible edges (Bresenham).
+   cube into it, fill each visible face solid (scanline) and outline it in black.
 2. **Blit** — `ESP32S3.ST7789.Draw_Bitmap` copies the window to its current
    screen position.
 3. **Bounce + clean** — the window moves a few pixels per frame and reflects off
@@ -25,16 +25,16 @@ containing the whole cube:
    moves are cleared to black (`Fill_Rect`) — no full-screen clears, so there are
    no trails and no flicker.
 
-### Hidden-line removal
+### Hidden-surface removal
 
-For a convex cube, HLR is exactly **back-face culling**. Each face carries an
-outward normal; the normal is rotated with the cube, and the face is drawn only
-if it points toward the viewer (rotated normal *z* > 0). Edges shared only by
-back faces are never drawn — hidden. From a generic angle exactly 3 faces are
-front-facing → 9 of the 12 edges are drawn, and the 3 edges meeting at the far
-(hidden) corner are removed. Each visible edge is drawn in the colour of
-whichever front face draws it last (shared visible edges are drawn twice, which
-is harmless).
+For a convex cube, the visible faces are exactly the **front-facing** ones
+(back-face culling). Each face carries an outward normal; the normal is rotated
+with the cube, and the face is drawn only if it points toward the viewer
+(rotated normal *z* > 0). From a generic angle exactly 3 faces are front-facing.
+Those three front faces **tile the silhouette with no overlap**, so they can be
+filled in any order — no depth sort (painter's algorithm) is needed. Each is
+filled solid in its own colour by a scanline convex-quad fill, then outlined in
+black for crisp facet seams.
 
 ### Maths
 

@@ -5,7 +5,7 @@ extern int esp_rom_printf(const char *fmt, ...);
 
 void native_cube_banner(void)
 {
-    esp_rom_printf("[cube] bouncing hidden-line wireframe cube -> ST7789 240x240\n");
+    esp_rom_printf("[cube] bouncing solid-colour 3D cube -> ST7789 240x240\n");
     esp_rom_printf("[cube]   SPI2 sclk=12 mosi=13 dc=16 cs=10 bl=6\n");
 }
 

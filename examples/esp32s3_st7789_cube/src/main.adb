@@ -1,6 +1,6 @@
---  Bouncing hidden-line wireframe cube on a 240x240 ST7789 panel (bare-metal
---  ESP32-S3, no FreeRTOS, no IDF).  A rotating 3D cube drawn with hidden-line
---  removal and perspective, each visible face's edges in its own colour, its
+--  Bouncing solid-colour 3D cube on a 240x240 ST7789 panel (bare-metal
+--  ESP32-S3, no FreeRTOS, no IDF).  A rotating cube with each visible face
+--  flat-shaded in its own colour (perspective + hidden-surface removal), its
 --  bounding window bouncing around the edges of the screen.
 --
 --  Rendering (the panel is write-only -- no framebuffer to read back):
@@ -12,10 +12,12 @@
 --      window UNCOVERS as it moves are cleared to black (Fill_Rect) -- no
 --      full-screen clears, so there is no flicker and no trails.
 --
---  Hidden-line removal: for a convex cube, HLR is back-face culling.  Each
---  face's outward normal is rotated; if it points toward the viewer (rotated
---  normal z > 0) the face is front-facing and its four edges are drawn (in that
---  face's colour).  Edges shared only by back faces are never drawn -- hidden.
+--  Hidden-surface removal: for a convex cube, the visible faces are exactly the
+--  front-facing ones (back-face culling).  Each face's outward normal is
+--  rotated; if it points toward the viewer (rotated normal z > 0) the face is
+--  filled solid (scanline) in its colour and outlined in black.  A convex
+--  cube's front faces tile the silhouette with no overlap, so they can be filled
+--  in any order with no depth sort.
 --
 --  Maths is fixed-point Q12 integers with an embedded sine table -- no libm /
 --  trig dependency, no floating point needed.
@@ -153,6 +155,58 @@ procedure Main is
       end if;
    end Plot;
 
+   --  Scanline-fill the convex quad given by corner indices C with colour Col.
+   --  For each row, the polygon's two edge crossings bound the span to fill.
+   procedure Fill_Face (C : Corners; Col : LCD.Color) is
+      YMin : Integer := FB_W;
+      YMax : Integer := -1;
+   begin
+      for K in 0 .. 3 loop
+         YMin := Integer'Min (YMin, SY (C (K)));
+         YMax := Integer'Max (YMax, SY (C (K)));
+      end loop;
+      YMin := Integer'Max (YMin, 0);
+      YMax := Integer'Min (YMax, FB_W - 1);
+
+      for Y in YMin .. YMax loop
+         declare
+            XL : Integer := FB_W;     --  leftmost crossing on this row
+            XR : Integer := -1;       --  rightmost crossing
+         begin
+            for K in 0 .. 3 loop
+               declare
+                  Ax : constant Integer := SX (C (K));
+                  Ay : constant Integer := SY (C (K));
+                  Bx : constant Integer := SX (C ((K + 1) mod 4));
+                  By : constant Integer := SY (C ((K + 1) mod 4));
+               begin
+                  --  Half-open span [min(Ay,By), max) so each row counts an
+                  --  edge once and vertices aren't double-counted.
+                  if (Ay <= Y and then Y < By)
+                    or else (By <= Y and then Y < Ay)
+                  then
+                     declare
+                        X : constant Integer :=
+                          Ax + (Bx - Ax) * (Y - Ay) / (By - Ay);
+                     begin
+                        XL := Integer'Min (XL, X);
+                        XR := Integer'Max (XR, X);
+                     end;
+                  end if;
+               end;
+            end loop;
+
+            if XR >= XL then
+               XL := Integer'Max (XL, 0);
+               XR := Integer'Min (XR, FB_W - 1);
+               for X in XL .. XR loop
+                  FB (Y * FB_W + X) := Col;
+               end loop;
+            end if;
+         end;
+      end loop;
+   end Fill_Face;
+
    --  Bresenham line into the FB.
    procedure Line (X0, Y0, X1, Y1 : Integer; C : LCD.Color) is
       DX : constant Integer := abs (X1 - X0);
@@ -192,20 +246,37 @@ procedure Main is
          end;
       end loop;
 
-      --  Draw the edges of front-facing faces only (hidden-line removal), each
-      --  in its own colour.
-      for F of Faces loop
-         if Rotate (F.N, Cax, Sax, Cay, Say).Z > 0 then    --  faces the viewer
-            for K in 0 .. 3 loop
-               declare
-                  A : constant Integer := F.Corn (K);
-                  B : constant Integer := F.Corn ((K + 1) mod 4);
-               begin
-                  Line (SX (A), SY (A), SX (B), SY (B), F.Col);
-               end;
-            end loop;
-         end if;
-      end loop;
+      --  Which faces point at the viewer (hidden-surface removal: a convex
+      --  cube's front faces tile the silhouette with no overlap, so they can be
+      --  filled in any order with no depth sort).
+      declare
+         Vis : array (Faces'Range) of Boolean;
+      begin
+         for I in Faces'Range loop
+            Vis (I) := Rotate (Faces (I).N, Cax, Sax, Cay, Say).Z > 0;
+         end loop;
+
+         --  Fill pass: each visible face solid in its own colour.
+         for I in Faces'Range loop
+            if Vis (I) then
+               Fill_Face (Faces (I).Corn, Faces (I).Col);
+            end if;
+         end loop;
+
+         --  Edge pass: black facet outlines on top for crisp seams.
+         for I in Faces'Range loop
+            if Vis (I) then
+               for K in 0 .. 3 loop
+                  declare
+                     A : constant Integer := Faces (I).Corn (K);
+                     B : constant Integer := Faces (I).Corn ((K + 1) mod 4);
+                  begin
+                     Line (SX (A), SY (A), SX (B), SY (B), LCD.Black);
+                  end;
+               end loop;
+            end if;
+         end loop;
+      end;
    end Render_Cube;
 
    --  Clear the strips the window uncovers moving from (OPx,OPy) to (Px,Py).
