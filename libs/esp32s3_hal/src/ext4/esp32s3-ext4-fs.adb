@@ -161,6 +161,11 @@ package body ESP32S3.Ext4.FS is
       Writer.Link (M.V, Target_Path, New_Dir, New_Name);
    end Link;
 
+   procedure Symlink (M : in out Mount; Dir_Path, Name, Target : String) is
+   begin
+      Writer.Make_Symlink (M.V, Dir_Path, Name, Target);
+   end Symlink;
+
    procedure Commit (M : in out Mount) is
    begin
       Journal.Transaction_Commit (M.V, Simulate_Crash => False);

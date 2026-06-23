@@ -1,0 +1,41 @@
+#!/bin/bash
+# Build the native ext4 host harness and exercise it against file-backed ext4
+# images, cross-checking each with the host's own e2fsck.
+#
+# Requirements:
+#   * a NATIVE GNAT + gprbuild (the Alire toolchains are auto-discovered below,
+#     or put gprbuild/gnatmake on PATH yourself)
+#   * mkfs.ext4 + e2fsck (e2fsprogs; usually in /usr/sbin)
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE"
+
+# --- locate a native Ada toolchain (Alire layout) + e2fsprogs ---
+AL="$HOME/.local/share/alire/toolchains"
+NATIVE="$(ls -d "$AL"/gnat_native_* 2>/dev/null | sort | tail -1)"
+GPR="$(ls -d "$AL"/gprbuild_* 2>/dev/null | sort | tail -1)"
+[ -n "$NATIVE" ] && PATH="$NATIVE/bin:$PATH"
+[ -n "$GPR" ]    && PATH="$GPR/bin:$PATH"
+PATH="/usr/sbin:/sbin:$PATH"
+export PATH
+command -v gprbuild >/dev/null || { echo "no native gprbuild found"; exit 1; }
+command -v mkfs.ext4 >/dev/null || { echo "no mkfs.ext4 (install e2fsprogs)"; exit 1; }
+
+gprbuild -P ext4_host.gpr -q
+
+IMG="$(mktemp /tmp/ext4_host.XXXXXX.img)"
+trap 'rm -f "$IMG"' EXIT
+fresh() { rm -f "$IMG"; truncate -s 64M "$IMG"; mkfs.ext4 -q -F -O ^metadata_csum -b 4096 "$IMG"; }
+
+# Scenarios mirror examples/esp32s3_ext4_write and the re-run drift hunt.
+for S in one two rerun battery dirty_battery; do
+   fresh
+   ./ext4_host "$IMG" "$S" >/dev/null
+   if e2fsck -f -n "$IMG" >/tmp/ext4_host.fsck 2>&1; then
+      printf '  %-14s e2fsck CLEAN\n' "$S"
+   else
+      printf '  %-14s e2fsck ERRORS:\n' "$S"
+      grep -iE 'wrong|invalid|unattached|deleted' /tmp/ext4_host.fsck | sed 's/^/      /'
+   fi
+done
+echo "done."

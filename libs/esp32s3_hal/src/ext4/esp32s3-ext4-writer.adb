@@ -219,6 +219,22 @@ package body ESP32S3.Ext4.Writer is
       N_Blk : constant Natural := Natural ((CI.Size + U64 (BS) - 1) / U64 (BS));
       Ptr   : Byte_Array (0 .. 3);
    begin
+      --  A symlink's i_block holds either inline target text (fast symlink, no
+      --  data blocks) or a single block pointer (slow symlink) -- never the
+      --  classic block map, so it must not run through the loops below.
+      if Inode.Is_Symlink (CI) then
+         if CI.Blocks_512 /= 0 then               --  slow symlink: one block
+            declare
+               P : constant U32 := Get_U32 (CI.I_Block, 0);
+            begin
+               if P /= 0 then
+                  Bitmap.Free_Block (V, Block_Number (P));
+               end if;
+            end;
+         end if;
+         return;
+      end if;
+
       if Inode.Uses_Extents (CI)
         or else Get_U32 (CI.I_Block, 52) /= 0      --  double indirect
         or else Get_U32 (CI.I_Block, 56) /= 0      --  triple indirect
@@ -466,5 +482,68 @@ package body ESP32S3.Ext4.Writer is
       TI.Links := TI.Links + 1;
       Inode.Write (V, TN, TI, Fresh => False);
    end Link;
+
+   ------------------
+   -- Make_Symlink --
+   ------------------
+
+   procedure Make_Symlink (V : in out Volume.Context;
+                           Dir_Path, Name, Target : String)
+   is
+      BS    : constant Natural := V.SB.Block_Size;
+      Dir_I : Inode.Info;
+      Child : Inode_Number;
+      CI    : Inode.Info;
+   begin
+      Guard (V);
+      if Target'Length = 0 then
+         raise Use_Error with "empty symlink target";
+      end if;
+      if Target'Length > BS then
+         raise Use_Error with "symlink target longer than one block";
+      end if;
+
+      Inode.Read (V, Path.Resolve (V, Dir_Path), Dir_I);
+      if not Inode.Is_Dir (Dir_I) then
+         raise Use_Error with "parent is not a directory";
+      end if;
+      if Dir.Lookup (V, Dir_I, Name) /= 0 then
+         raise Use_Error with "symlink target already exists: " & Name;
+      end if;
+
+      Child := Bitmap.Alloc_Inode (V, As_Dir => False);
+      CI := (Mode       => 16#A1FF#,         --  S_IFLNK | 0777
+             Size       => U64 (Target'Length),
+             Flags      => 0,
+             Links      => 1,
+             Blocks_512 => 0,
+             I_Block    => [others => 0]);
+
+      if Target'Length < 60 then
+         --  Fast symlink: the link text lives inline in the 60-byte i_block.
+         for K in 0 .. Target'Length - 1 loop
+            CI.I_Block (K) := Character'Pos (Target (Target'First + K));
+         end loop;
+         Inode.Write (V, Child, CI, Fresh => True);
+      else
+         --  Slow symlink: one data block holds the link text.
+         declare
+            Phys : constant Block_Number := Bitmap.Alloc_Block (V);
+            Buf  : Bytes_Ptr := new Byte_Array (0 .. BS - 1);
+         begin
+            Buf.all := [others => 0];
+            for K in 0 .. Target'Length - 1 loop
+               Buf (K) := Character'Pos (Target (Target'First + K));
+            end loop;
+            ESP32S3.Ext4.Block_Cache.Write (V.Cache, Phys, Buf.all);
+            Put_U32 (CI.I_Block, 0, U32 (Phys));
+            CI.Blocks_512 := U64 (BS / 512);
+            Inode.Write (V, Child, CI, Fresh => True);
+            Free (Buf);
+         end;
+      end if;
+
+      Dir.Add_Entry (V, Dir_I, Name, Child, Dir.FT_Symlink);
+   end Make_Symlink;
 
 end ESP32S3.Ext4.Writer;

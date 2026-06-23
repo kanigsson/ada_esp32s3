@@ -3,7 +3,8 @@ extern int esp_rom_printf(const char *fmt, ...);
 
 void native_w_banner(void)
 {
-    esp_rom_printf("[ext4w] ext4 WRITE test over SDMMC (creates /ada_write.txt)\n");
+    esp_rom_printf("[ext4w] ext4 WRITE battery over SDMMC "
+                   "(mkdir / big file / hardlink / symlink / rename / delete)\n");
 }
 
 void native_w_card(int ok)
@@ -18,20 +19,20 @@ void native_w_mount(int ok)
 
 void native_w_write(int ok, const char *msg)
 {
-    if (ok) esp_rom_printf("[ext4w] create + write + commit (journaled): OK\n");
+    if (ok) esp_rom_printf("[ext4w] all operations committed (journaled): OK\n");
     else    esp_rom_printf("[ext4w] write FAILED: %s\n", msg);
-}
-
-void native_w_verify(int ok, int size, const char *content)
-{
-    esp_rom_printf("[ext4w] read-back: %s   %d bytes = \"%s\"\n",
-                   ok ? "MATCH" : "MISMATCH", size, content);
 }
 
 void native_w_step(const char *s) { esp_rom_printf("[ext4w]   .. %s\n", s); }
 
+/* Per-operation on-device assertion. */
+void native_w_check(const char *label, int ok)
+{
+    esp_rom_printf("[ext4w]   [%s] %s\n", ok ? "PASS" : "FAIL", label);
+}
+
 void native_w_done(void)
 {
     esp_rom_printf("[ext4w] done.  On a host: 'e2fsck -f /dev/sdX' should be "
-                   "clean and /ada_write.txt readable.\n");
+                   "clean; verify the tree + readlink + big-file pattern.\n");
 }

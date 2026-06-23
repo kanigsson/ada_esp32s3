@@ -43,4 +43,11 @@ package ESP32S3.Ext4.Writer is
    procedure Link (V : in out Volume.Context;
                    Target_Path, New_Dir, New_Name : String);
 
+   --  Create a symbolic link Name in Dir_Path whose contents is Target (the
+   --  link text -- not resolved).  Short targets (< 60 bytes) are stored inline
+   --  in the inode ("fast symlink"); longer ones use a single data block.  The
+   --  target must not exceed one block.
+   procedure Make_Symlink (V : in out Volume.Context;
+                           Dir_Path, Name, Target : String);
+
 end ESP32S3.Ext4.Writer;
