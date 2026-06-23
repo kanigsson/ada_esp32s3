@@ -54,6 +54,14 @@ package ESP32S3.Ext4.Block_Cache is
      (C     : in out Cache;
       Visit : not null access procedure (B : Block_Number));
 
+   --  Callback-free variant of For_Each_Dirty: fill Into with the tags of the
+   --  currently-dirty entries (up to Into'Length) and set Count.  Preferred on
+   --  targets whose stacks are non-executable, where 'Access of a nested
+   --  collector passed to For_Each_Dirty would need an unavailable trampoline.
+   type Block_List is array (Positive range <>) of Block_Number;
+   procedure Dirty_Tags
+     (C : in out Cache; Into : out Block_List; Count : out Natural);
+
    --  Flush, then release all heap storage (cache unusable until re-Init).
    procedure Done (C : in out Cache);
 

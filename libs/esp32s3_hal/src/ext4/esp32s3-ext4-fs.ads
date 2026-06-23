@@ -63,6 +63,9 @@ package ESP32S3.Ext4.FS is
    procedure Truncate (M : in out Mount; N : Inode_Number; New_Size : U64);
    procedure Link (M : in out Mount; Target_Path, New_Dir, New_Name : String);
 
+   --  Create symbolic link Name in Dir_Path pointing at the text Target.
+   procedure Symlink (M : in out Mount; Dir_Path, Name, Target : String);
+
    --  Atomically commit the pending write-set (the dirty metadata + the
    --  superblock, from one or more preceding operations) as a single journaled
    --  transaction: journal -> barrier -> checkpoint -> reset.  The write-set must
