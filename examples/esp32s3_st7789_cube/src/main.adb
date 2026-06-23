@@ -14,10 +14,10 @@
 --
 --  Hidden-surface removal: for a convex cube, the visible faces are exactly the
 --  front-facing ones (back-face culling).  Each face's outward normal is
---  rotated; if it points toward the viewer (rotated normal z > 0) the face is
---  filled solid (scanline) in its colour and outlined in black.  A convex
---  cube's front faces tile the silhouette with no overlap, so they can be filled
---  in any order with no depth sort.
+--  rotated; if it points toward the EYE point (perspective test, Render_Cube)
+--  the face is filled solid (scanline) in its colour and outlined in black.  A
+--  convex cube's front faces tile the silhouette with no overlap, so they can be
+--  filled in any order with no depth sort.
 --
 --  Maths is fixed-point Q12 integers with an embedded sine table -- no libm /
 --  trig dependency, no floating point needed.
@@ -256,11 +256,19 @@ procedure Main is
       --  Which faces point at the viewer (hidden-surface removal: a convex
       --  cube's front faces tile the silhouette with no overlap, so they can be
       --  filled in any order with no depth sort).
+      --
+      --  PERSPECTIVE back-face test: a face is visible iff its outward normal
+      --  points toward the EYE point, dot(N, Eye - C) > 0.  For this cube the
+      --  rotated face centre C equals the rotated normal Nr (each face centre
+      --  lies one unit along its normal), so this reduces to Nr.z*Eye > |Nr|^2 =
+      --  One^2.  (Using the orthographic test Nr.z > 0 would wrongly draw faces
+      --  with 0 < Nr.z < One^2/Eye, which are back-facing under perspective.)
       declare
          Vis : array (Faces'Range) of Boolean;
       begin
          for I in Faces'Range loop
-            Vis (I) := Rotate (Faces (I).N, Cax, Sax, Cay, Say).Z > 0;
+            Vis (I) :=
+              Rotate (Faces (I).N, Cax, Sax, Cay, Say).Z * Eye > One * One;
          end loop;
 
          --  Fill pass: each visible face solid in its own colour.
