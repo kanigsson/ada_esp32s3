@@ -13,8 +13,8 @@ void native_st_step(int code)
 {
     static const char *const n[] = {
         "backlight + setup", "init", "fill red", "fill green", "fill blue",
-        "colour bars", "centre box" };
-    const char *m = (code >= 0 && code <= 6) ? n[code] : "?";
+        "colour bars", "centre box", "text" };
+    const char *m = (code >= 0 && code <= 7) ? n[code] : "?";
     esp_rom_printf("[lcd] %s\n", m);
 }
 

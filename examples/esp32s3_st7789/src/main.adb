@@ -15,6 +15,7 @@ with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
 with ESP32S3.ST7789;
+with ESP32S3.ST7789.Text;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
@@ -76,6 +77,20 @@ begin
    LCD.Fill_Rect (S, X => 70, Y => 70, W => 100, H => 100, C => LCD.White);
    LCD.Fill_Rect (S, X => 90, Y => 90, W => 60,  H => 60,  C => LCD.RGB (255, 128, 0));
    Step (6); Hold;
+
+   --  Text: 5x7 font at three scales on a dark background (.Text child layer).
+   LCD.Fill (S, LCD.RGB (0, 0, 32));
+   LCD.Text.Draw_Text (S, X => 6,  Y => 16,  Str => "ESP32-S3 + Ada",
+                       FG => LCD.White, BG => LCD.RGB (0, 0, 32));
+   LCD.Text.Draw_Text (S, X => 6,  Y => 60,  Str => "ST7789",
+                       FG => LCD.RGB (0, 255, 0), BG => LCD.RGB (0, 0, 32),
+                       Scale => 3);
+   LCD.Text.Draw_Text (S, X => 6,  Y => 120, Str => "40 MHz SPI" & Character'Val (10)
+                                                     & "240x240" & Character'Val (10)
+                                                     & "write-only",
+                       FG => LCD.RGB (255, 200, 0), BG => LCD.RGB (0, 0, 32),
+                       Scale => 2);
+   Step (7); Hold;
 
    LCD.Release (S);
    Done;

@@ -13,13 +13,14 @@ MISO), 16-bit RGB565 pixels. Verified on a 240×240 panel at 40 MHz.
 [lcd] fill blue
 [lcd] colour bars
 [lcd] centre box
+[lcd] text
 [lcd] done -- check the panel.
 ```
 
 The panel is the real output — SPI is write-only, so there's nothing to read
 back and the console only narrates the steps. The demo paints solid red →
 green → blue, then eight vertical colour bars, then a centred white box with an
-orange box inside it, and holds.
+orange box inside it, then a text screen (5×7 font at 1×/2×/3×), and holds.
 
 ## Two-level locking (what this driver is built around)
 
@@ -71,6 +72,21 @@ held-`Session` operations: `Init`, `Display_On`/`Display_Off`, `Set_Rotation`,
 `Invert`, `Sleep`, `Fill`, `Fill_Rect`, `Set_Pixel`, and `Draw_Bitmap` (blit a
 row-major `Color_Array`). Colours are RGB565 — `RGB (r, g, b)` plus
 `Black`/`White`/`Red`/`Green`/`Blue` constants.
+
+### Text — `ESP32S3.ST7789.Text` child package
+
+Built purely on `Draw_Bitmap`: a 5×7 public-domain font (full printable ASCII)
+rendered into a 6×8 cell. `Draw_Char (S, X, Y, Ch, FG, BG, Scale)` and
+`Draw_Text (S, X, Y, Str, FG, BG, Scale)` take the *same held `Session`* — so
+text shares the two-level locking. Integer `Scale` (1×, 2×, 3× …) and an ASCII
+`LF` line-wrap. Cells are **opaque** (each glyph paints FG and BG): because the
+panel is write-only there is no framebuffer to read for a transparent overlay,
+so a glyph blits its whole cell.
+
+```ada
+ESP32S3.ST7789.Text.Draw_Text (S, X => 6, Y => 60, Str => "ST7789",
+                               FG => Green, BG => Black, Scale => 3);
+```
 
 ## Build / flash / run
 
