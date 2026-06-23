@@ -1,4 +1,5 @@
 with Interfaces;                 use Interfaces;
+with Ada.Real_Time;
 with ESP32S3_Registers;          use ESP32S3_Registers;
 with ESP32S3_Registers.SDHOST;   use ESP32S3_Registers.SDHOST;
 with ESP32S3_Registers.SYSTEM;
@@ -57,15 +58,24 @@ package body ESP32S3.SDMMC is
    type Resp_Kind is (No_Resp, Short_Resp, Short_NoCRC, Long_Resp);
    type Data_Dir  is (No_Data, Read_Data, Write_Data);
 
-   --  Busy-poll bounds.  On real silicon the hardware short-circuits these (the
-   --  CIU accepts in a few clocks; a missing card raises RTO within the response
-   --  timeout), so they only bound the WORST case -- e.g. an unclocked
-   --  controller -- keeping a no-card run to a few seconds instead of a hang.
-   CIU_Spins   : constant := 30_000;     --  wait for CMD.START_CMD to clear
-   Cmd_Spins   : constant := 30_000;     --  wait for command-done / RTO
-   Data_Spins  : constant := 200_000;    --  wait for a FIFO word / DTO
-   Busy_Spins  : constant := 500_000;    --  wait for the card to leave busy
-   ACMD41_Tries: constant := 400;        --  ~SD spec's 1 s power-up budget
+   --  Busy-poll deadlines.  These are REAL-TIME bounds, not iteration counts:
+   --  at -O2 a tight register-poll loop expires in microseconds -- far short of
+   --  a command's response time -- so an iteration count silently gives up
+   --  before the response/data arrives.  A wall-clock deadline is independent of
+   --  CPU speed and optimisation.  On real silicon the hardware short-circuits
+   --  these (the CIU accepts in a few clocks; a missing card raises RTO within
+   --  the response timeout), so they only bound the WORST case.
+   CIU_Span  : constant Ada.Real_Time.Time_Span := Ada.Real_Time.Milliseconds (50);
+   Cmd_Span  : constant Ada.Real_Time.Time_Span := Ada.Real_Time.Milliseconds (250);
+   Data_Span : constant Ada.Real_Time.Time_Span := Ada.Real_Time.Milliseconds (1000);
+   Busy_Span : constant Ada.Real_Time.Time_Span := Ada.Real_Time.Milliseconds (1000);
+   Reg_Span  : constant Ada.Real_Time.Time_Span := Ada.Real_Time.Milliseconds (50);
+   ACMD41_Tries : constant := 400;        --  ~SD spec's 1 s power-up budget
+
+   --  True once the wall-clock has passed Deadline (used by the poll loops).
+   use type Ada.Real_Time.Time;
+   function Past (Deadline : Ada.Real_Time.Time) return Boolean is
+     (Ada.Real_Time.Clock >= Deadline);
 
    ---------------------------------------------------------------------------
    --  GPIO-matrix routing (single-threaded, from Setup).
@@ -116,9 +126,13 @@ package body ESP32S3.SDMMC is
          CARD_NUMBER                 => CMD_CARD_NUMBER_Field (Slot_No),
          START_CMD                   => True,
          others                      => <>);
-      for I in 1 .. 100_000 loop
-         exit when not SDHOST_Periph.CMD.START_CMD;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Reg_Span;
+      begin
+         while SDHOST_Periph.CMD.START_CMD loop
+            exit when Past (D);
+         end loop;
+      end;
    end Clock_Command;
 
    procedure Set_Card_Clock (Slot_No : Natural; Hz : Positive) is
@@ -176,14 +190,22 @@ package body ESP32S3.SDMMC is
          others                => <>);
 
       --  Wait for the CIU to load the command.
-      for I in 1 .. CIU_Spins loop
-         exit when not SDHOST_Periph.CMD.START_CMD;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + CIU_Span;
+      begin
+         while SDHOST_Periph.CMD.START_CMD loop
+            exit when Past (D);
+         end loop;
+      end;
 
       --  Wait for command done (or an error / timeout).
-      for I in 1 .. Cmd_Spins loop
-         exit when (RINT and (Int_Cmd_Done or Int_RTO)) /= 0;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Cmd_Span;
+      begin
+         while (RINT and (Int_Cmd_Done or Int_RTO)) = 0 loop
+            exit when Past (D);
+         end loop;
+      end;
 
       if (RINT and Int_RTO) /= 0 then
          RINT := Int_RTO or Int_Cmd_Done;
@@ -211,9 +233,10 @@ package body ESP32S3.SDMMC is
 
    --  Wait for the card to stop signalling busy (DATA0 held low after R1b/write).
    procedure Wait_Not_Busy is
+      D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Busy_Span;
    begin
-      for I in 1 .. Busy_Spins loop
-         exit when not SDHOST_Periph.STATUS.DATA_BUSY;
+      while SDHOST_Periph.STATUS.DATA_BUSY loop
+         exit when Past (D);
       end loop;
    end Wait_Not_Busy;
 
@@ -224,9 +247,13 @@ package body ESP32S3.SDMMC is
    procedure Prepare_Data is
    begin
       SDHOST_Periph.CTRL.FIFO_RESET := True;
-      for I in 1 .. 1000 loop
-         exit when not SDHOST_Periph.CTRL.FIFO_RESET;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Reg_Span;
+      begin
+         while SDHOST_Periph.CTRL.FIFO_RESET loop
+            exit when Past (D);
+         end loop;
+      end;
       SDHOST_Periph.BLKSIZ.BLOCK_SIZE := 512;
       SDHOST_Periph.BYTCNT := 512;
    end Prepare_Data;
@@ -238,8 +265,9 @@ package body ESP32S3.SDMMC is
       for Word in 0 .. 127 loop
          declare
             Ready : Boolean := False;
+            D     : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Data_Span;
          begin
-            for I in 1 .. Cmd_Spins loop
+            loop
                if (RINT and Data_Err) /= 0 then
                   RINT := Data_Err;
                   Data := (others => 0);
@@ -249,6 +277,7 @@ package body ESP32S3.SDMMC is
                   Ready := True;
                   exit;
                end if;
+               exit when Past (D);
             end loop;
             if not Ready then
                Data := (others => 0);
@@ -263,9 +292,13 @@ package body ESP32S3.SDMMC is
       end loop;
 
       --  Wait for the data-transfer-over flag.
-      for I in 1 .. Cmd_Spins loop
-         exit when (RINT and (Int_Data_Over or Data_Err)) /= 0;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Data_Span;
+      begin
+         while (RINT and (Int_Data_Over or Data_Err)) = 0 loop
+            exit when Past (D);
+         end loop;
+      end;
       if (RINT and Data_Err) /= 0 then
          RINT := Data_Err or Int_Data_Over;
          return Read_Error;
@@ -281,8 +314,9 @@ package body ESP32S3.SDMMC is
       for Word in 0 .. 127 loop
          declare
             Ready : Boolean := False;
+            D     : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Data_Span;
          begin
-            for I in 1 .. Cmd_Spins loop
+            loop
                if (RINT and Data_Err) /= 0 then
                   RINT := Data_Err;
                   return Write_Error;
@@ -291,6 +325,7 @@ package body ESP32S3.SDMMC is
                   Ready := True;
                   exit;
                end if;
+               exit when Past (D);
             end loop;
             if not Ready then
                return Write_Error;
@@ -303,9 +338,13 @@ package body ESP32S3.SDMMC is
          FIFO := W;
       end loop;
 
-      for I in 1 .. Cmd_Spins loop
-         exit when (RINT and (Int_Data_Over or Data_Err)) /= 0;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Data_Span;
+      begin
+         while (RINT and (Int_Data_Over or Data_Err)) = 0 loop
+            exit when Past (D);
+         end loop;
+      end;
       if (RINT and Data_Err) /= 0 then
          RINT := Data_Err or Int_Data_Over;
          return Write_Error;
@@ -495,10 +534,15 @@ package body ESP32S3.SDMMC is
       SDHOST_Periph.CTRL :=
         (CONTROLLER_RESET => True, FIFO_RESET => True, DMA_RESET => True,
          others => <>);
-      for I in 1 .. 100_000 loop
-         exit when not SDHOST_Periph.CTRL.CONTROLLER_RESET
-           and then not SDHOST_Periph.CTRL.FIFO_RESET;
-      end loop;
+      declare
+         D : constant Ada.Real_Time.Time := Ada.Real_Time.Clock + Reg_Span;
+      begin
+         while SDHOST_Periph.CTRL.CONTROLLER_RESET
+           or else SDHOST_Periph.CTRL.FIFO_RESET
+         loop
+            exit when Past (D);
+         end loop;
+      end;
 
       --  Generous response/data timeouts; conservative FIFO watermarks.
       SDHOST_Periph.TMOUT := (RESPONSE_TIMEOUT => 16#FF#,
