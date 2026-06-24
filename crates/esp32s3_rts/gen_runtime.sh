@@ -320,6 +320,25 @@ if [ "$PROFILE" = "embedded" ] || [ "$PROFILE" = "full" ]; then
     echo "[gen_runtime] Ada.Calendar children + J.1 rename: applied ($PROFILE)"
 fi
 
+# 1c. System.Tick must be the basic clock PERIOD, not 0.0.  This port's clock runs
+#     at 240 MHz (s-bbpara Ticks_Per_Second), so the tick is 1/240 MHz ~= 4.17 ns.
+#     The bb-runtimes xtensa system templates (and full_overlay/gnat/system.ads)
+#     ship System.Tick = 0.0, which -- being < Duration'Small (1 ns) -- tells code
+#     the clock is infinitely precise.  Code that reads System.Tick to gauge clock
+#     resolution then misbehaves: ACATS C96001/C96004 decide whether a sub-
+#     Duration'Small delay is *measurable* from Tick, so with 0.0 they expect it to
+#     be and FAIL, whereas the true 4.17 ns tick (> Duration'Small) makes them
+#     correctly skip the unmeasurable case.  (Same 4.17 ns-vs-1 ns mismatch the
+#     a-reatim To_Time_Span fix above handles.)  All profiles; idempotent.
+if grep -qE 'Tick *: *constant *:= *0\.0;' "$RTS/gnat/system.ads" 2>/dev/null; then
+    #  Keep the replacement short: the runtime compiles with -gnatyM (max line
+    #  length), so the rationale lives in this comment, not inline in system.ads.
+    sed -i 's#\(Tick *: *constant *:= *\)0\.0;#\11.0 / 240_000_000;  --  1/240 MHz#' \
+        "$RTS/gnat/system.ads"
+    rm -f "$RTS/adalib/libgnat.a" "$RTS/adalib/libgnarl.a"   # force recompile: the new Tick must take effect
+    echo "[gen_runtime] System.Tick 0.0 -> 1/240 MHz (C96001/C96004): applied"
+fi
+
 # 2. Compile the runtime and archive into libgnat.a / libgnarl.a (bb-runtimes
 #    cannot build a library project for xtensa-esp32-elf, so archive by hand).
 if [ ! -f "$RTS/adalib/libgnat.a" ]; then
