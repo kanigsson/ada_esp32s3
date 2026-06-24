@@ -315,6 +315,39 @@ package body ESP32S3.GDMA is
       end case;
    end Start;
 
+   ----------------
+   -- Start_Loop --
+   ----------------
+
+   procedure Start_Loop (C : Channel; Buffer : System.Address; Length : Natural)
+   is
+   begin
+      if not C.Valid or else Length = 0 or else Length > Max_Transfer then
+         return;
+      end if;
+
+      --  Self-linked descriptor: Next points back to itself and Suc_EOF is
+      --  clear, so the OUT engine walks it forever.  With OUT_AUTO_WRBACK off
+      --  the engine never writes the descriptor back, so Owner stays True and
+      --  every pass re-reads Buffer -- a hands-free repeating transfer.
+      TX_Desc (C.Id).W0     := (Size    => UInt12 (Length),
+                                Length  => UInt12 (Length),
+                                Suc_EOF => False,
+                                Owner   => True,
+                                others  => <>);
+      TX_Desc (C.Id).Buffer := Buffer;
+      TX_Desc (C.Id).Next   := TX_Desc (C.Id)'Address;   --  loop to self
+
+      Channels (C.Id).OUT_CONF0.OUT_AUTO_WRBACK := False;
+      Channels (C.Id).OUT_INT_CLR.OUT_DONE     := True;
+      Channels (C.Id).OUT_INT_CLR.OUT_EOF      := True;
+      Channels (C.Id).OUT_INT_CLR.OUT_DSCR_ERR := True;
+      Asm ("memw", Volatile => True, Clobber => "memory");
+      Channels (C.Id).OUT_LINK.OUTLINK_ADDR  :=
+        Link_Addr (TX_Desc (C.Id)'Address);
+      Channels (C.Id).OUT_LINK.OUTLINK_START := True;
+   end Start_Loop;
+
    ----------
    -- Done --
    ----------

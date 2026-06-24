@@ -29,14 +29,18 @@ package body ESP32S3.I2S.Engine is
    --  share an index space, so SD_OUT and SD_IN are the same number.
    type Sig is record
       Bck_Out, Ws_Out, Sd_Out, Bck_In, Ws_In, Sd_In : Natural;
+      Mck_Out : Natural;          --  I2S master-clock output (0 => unsupported)
    end record;
 
+   --  ESP32-S3 GPIO-matrix signal indices (gpio_sig_map.h).  I2S0_MCLK_OUT = 23
+   --  (sits between BCK_OUT=22 and WS_OUT=24); the I2S1 MCLK index is not used
+   --  here, so it is left 0 (Configure_Pins then skips routing it).
    function Signals (Port : I2S_Port) return Sig is
      (case Port is
          when I2S0 => (Bck_Out => 22, Ws_Out => 24, Sd_Out => 25,
-                       Bck_In  => 26, Ws_In  => 27, Sd_In  => 25),
+                       Bck_In  => 26, Ws_In  => 27, Sd_In  => 25, Mck_Out => 23),
          when I2S1 => (Bck_Out => 28, Ws_Out => 29, Sd_Out => 30,
-                       Bck_In  => 31, Ws_In  => 32, Sd_In  => 30));
+                       Bck_In  => 31, Ws_In  => 32, Sd_In  => 30, Mck_Out => 0));
 
    function Data_Bits (Bits : Sample_Bits) return Natural is
      (case Bits is when Bits_8  =>  8, when Bits_16 => 16,
@@ -193,13 +197,17 @@ package body ESP32S3.I2S.Engine is
                              Bclk : ESP32S3.GPIO.Optional_Pin;
                              Ws   : ESP32S3.GPIO.Optional_Pin;
                              Dout : ESP32S3.GPIO.Optional_Pin := No_Pin;
-                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin)
+                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                             Mclk : ESP32S3.GPIO.Optional_Pin := No_Pin)
    is
       use type ESP32S3.GPIO.Pad_Number;
       S : constant Sig := Signals (B.Port);
    begin
       if not B.Valid then
          return;
+      end if;
+      if Mclk /= No_Pin and then S.Mck_Out /= 0 then
+         Drive_Out (ESP32S3.GPIO.Pin_Id (Mclk), S.Mck_Out);   --  master clock out
       end if;
       if Bclk /= No_Pin then
          Drive_Out (ESP32S3.GPIO.Pin_Id (Bclk), S.Bck_Out);
@@ -290,6 +298,38 @@ package body ESP32S3.I2S.Engine is
    begin
       Run (B, Tx, Rx, Length, Do_Tx => True, Do_Rx => True);
    end Transfer;
+
+   ----------------------
+   -- Start_Continuous --
+   ----------------------
+
+   procedure Start_Continuous (B : Bus; Tx : System.Address; Length : Natural) is
+      R : constant Periph_Ref := B.Regs;
+   begin
+      if not B.Valid or else Length = 0 or else Length > 4095 then
+         return;
+      end if;
+
+      --  Clear TX_STOP_EN so a momentary FIFO underrun can never latch TX off;
+      --  with the self-looping DMA the FIFO stays fed, so the clock runs
+      --  continuously and the waveform repeats with no gap.
+      R.TX_CONF.TX_STOP_EN := False;
+      R.TX_CONF.TX_FIFO_RESET := True;  R.TX_CONF.TX_FIFO_RESET := False;
+      GD.Start_Loop (B.Chan, Tx, Length);
+      R.TX_CONF.TX_UPDATE := True;  while R.TX_CONF.TX_UPDATE loop null; end loop;
+      R.TX_CONF.TX_START := True;
+   end Start_Continuous;
+
+   ----------
+   -- Stop --
+   ----------
+
+   procedure Stop (B : Bus) is
+   begin
+      if B.Valid then
+         B.Regs.TX_CONF.TX_START := False;
+      end if;
+   end Stop;
 
    -----------
    -- Close --

@@ -24,13 +24,23 @@ private package ESP32S3.I2S.Engine is
                              Bclk : ESP32S3.GPIO.Optional_Pin;
                              Ws   : ESP32S3.GPIO.Optional_Pin;
                              Dout : ESP32S3.GPIO.Optional_Pin := No_Pin;
-                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin);
+                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                             Mclk : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
    procedure Enable_Loopback (B : Bus; Pad : ESP32S3.GPIO.Pin_Id);
 
    procedure Write    (B : Bus; Tx : System.Address; Length : Natural);
    procedure Read     (B : Bus; Rx : System.Address; Length : Natural);
    procedure Transfer (B : Bus; Tx, Rx : System.Address; Length : Natural);
+
+   --  Start the TX path streaming Tx (Length bytes) on a SELF-LOOPING DMA and
+   --  leave it running: the buffer is replayed forever with no inter-buffer
+   --  gap (gapless).  Returns immediately; Stop halts it.  Tx in internal SRAM,
+   --  Length 1 .. 4095, and Tx should hold a whole number of wave periods.
+   procedure Start_Continuous (B : Bus; Tx : System.Address; Length : Natural);
+
+   --  Stop a continuous transmit (TX clock off).
+   procedure Stop (B : Bus);
 
    procedure Close (B : in out Bus);
 

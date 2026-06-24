@@ -47,7 +47,8 @@ package body ESP32S3.I2S is
                                 Bclk : ESP32S3.GPIO.Optional_Pin;
                                 Ws   : ESP32S3.GPIO.Optional_Pin;
                                 Dout : ESP32S3.GPIO.Optional_Pin;
-                                Din  : ESP32S3.GPIO.Optional_Pin);
+                                Din  : ESP32S3.GPIO.Optional_Pin;
+                                Mclk : ESP32S3.GPIO.Optional_Pin);
       function  Ready (Port : I2S_Port) return Boolean;
       function  Owned (S : Session) return access E.Bus;
    end State;
@@ -73,9 +74,10 @@ package body ESP32S3.I2S is
                                 Bclk : ESP32S3.GPIO.Optional_Pin;
                                 Ws   : ESP32S3.GPIO.Optional_Pin;
                                 Dout : ESP32S3.GPIO.Optional_Pin;
-                                Din  : ESP32S3.GPIO.Optional_Pin) is
+                                Din  : ESP32S3.GPIO.Optional_Pin;
+                                Mclk : ESP32S3.GPIO.Optional_Pin) is
       begin
-         E.Configure_Pins (Buses (Port), Bclk, Ws, Dout, Din);
+         E.Configure_Pins (Buses (Port), Bclk, Ws, Dout, Din, Mclk);
       end Configure_Pins;
 
       function Ready (Port : I2S_Port) return Boolean is (Ready_Map (Port));
@@ -111,9 +113,10 @@ package body ESP32S3.I2S is
                              Bclk : ESP32S3.GPIO.Optional_Pin := No_Pin;
                              Ws   : ESP32S3.GPIO.Optional_Pin := No_Pin;
                              Dout : ESP32S3.GPIO.Optional_Pin := No_Pin;
-                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin) is
+                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                             Mclk : ESP32S3.GPIO.Optional_Pin := No_Pin) is
    begin
-      State.Configure_Pins (Port, Bclk, Ws, Dout, Din);
+      State.Configure_Pins (Port, Bclk, Ws, Dout, Din, Mclk);
    end Configure_Pins;
 
    -------------
@@ -156,6 +159,25 @@ package body ESP32S3.I2S is
    begin
       E.Transfer (State.Owned (S).all, Tx, Rx, Length);
    end Transfer;
+
+   ----------------------
+   -- Start_Continuous --
+   ----------------------
+
+   procedure Start_Continuous (S : Session; Tx : System.Address; Length : Natural)
+   is
+   begin
+      E.Start_Continuous (State.Owned (S).all, Tx, Length);
+   end Start_Continuous;
+
+   ----------
+   -- Stop --
+   ----------
+
+   procedure Stop (S : Session) is
+   begin
+      E.Stop (State.Owned (S).all);
+   end Stop;
 
    -------------
    -- Release --
