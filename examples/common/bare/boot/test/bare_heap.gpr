@@ -1,10 +1,13 @@
---  Native (host) build of the Bare_Heap_Core allocator test.  Compiles the SAME
---  bare_heap_core.adb the firmware links (from the parent boot/ dir) with the
---  host GNAT, so a bug found here is a real allocator bug.  Run via run.sh.
+--  Native (host) build of the allocator tests.  Compiles the SAME allocator
+--  cores the firmware links (from the parent boot/ dir) with the host GNAT, so a
+--  bug found here is a real allocator bug.  Run via run.sh.
 project Bare_Heap is
    for Source_Dirs use (".", "..");
-   for Source_Files use ("bare_heap_test.adb", "bare_heap_core.ads", "bare_heap_core.adb");
-   for Main use ("bare_heap_test.adb");
+   for Source_Files use
+     ("allocator_test.adb", "heap_stress.ads", "heap_stress.adb",
+      "bare_heap_core.ads", "bare_heap_core.adb",
+      "tlsf_core.ads", "tlsf_core.adb");
+   for Main use ("allocator_test.adb");
    for Object_Dir use "obj";
    for Exec_Dir use ".";
 
