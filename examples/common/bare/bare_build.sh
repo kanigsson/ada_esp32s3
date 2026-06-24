@@ -102,7 +102,7 @@ if [ "$(cat "$PROF_STAMP" 2>/dev/null)" != "$PROF_NOW" ]; then
     #  against the previous runtime mislinks under the new one, so clear it.
     rm -rf "$EX/obj"
     rm -f "$EX/main/app_main.o" "$EX/.noidf/bare_heap.o" \
-          "$EX/.noidf/bare_mem.o" "$EX/.noidf/bare_crt.o" \
+          "$EX/.noidf/bare_mem.o" "$EX/.noidf/bare_crt.o" "$EX/.noidf/tlsf_core.o" \
           "$EX/app.bin" "$EX/app.elf"
 fi
 echo "$PROF_NOW" > "$PROF_STAMP"
@@ -210,24 +210,30 @@ $GCC ${CFLAGS/-Os/-Og} $XINC -c "$VENDOR/xtensa_intr.c" -o "$OBJ/xtensa_intr.o"
 # Heap-using profiles (embedded/full): add the freestanding allocator + libc bits
 # the runtime references (malloc/free/mem*/abort) that newlib provided under IDF.
 LIB_OBJS=()
+BHEAP_DEFSYM=""
 if [ -n "$HEAP_SIZE" ]; then
+    #  Heap arena bounds -> the linker, so the Ada allocator (bare_heap.adb) is
+    #  arena-agnostic: its imported __bare_heap_base/__bare_heap_end resolve to
+    #  whichever region we --defsym here.
     #  HEAP_PSRAM=1 : arena in the bootloader-mapped PSRAM (0x3D000000, BOARD_PSRAM_SIZE)
     #  instead of the ~256 KB leftover DRAM -- gives multi-task / large-alloc tests MBs
     #  (fixes the CXD8002/CXD4007/CXD4009 OOM class).  Needs PSRAM_Size>0 in board.ads.
-    HEAP_PS=""
     if [ "${HEAP_PSRAM:-0}" != 0 ]; then
-        # BOARD_PSRAM_SIZE already comes from THIS project's board_config.env (above).
         # PSRAM_HEAP_SIZE = BOARD_PSRAM_SIZE, minus the env-stack slice if ENV_STACK_PSRAM.
-        HEAP_PS="-DHEAP_PSRAM -DHEAP_PSRAM_SIZE=${PSRAM_HEAP_SIZE}u"
+        PEND=$(( 0x3D000000 + PSRAM_HEAP_SIZE ))
+        BHEAP_DEFSYM="-Wl,--defsym=__bare_heap_base=0x3D000000 -Wl,--defsym=__bare_heap_end=$PEND"
         echo "[bare]      heap -> PSRAM (${PSRAM_HEAP_SIZE} B @ 0x3D000000)"
+    else
+        BHEAP_DEFSYM="-Wl,--defsym=__bare_heap_base=_heap_low_start -Wl,--defsym=__bare_heap_end=_bare_heap_top"
     fi
-    echo "[bare]      + heap ($HEAP_SIZE B) + freestanding libc (embedded/full profile)"
-    $GCC $CFLAGS -DHEAP_SIZE="$HEAP_SIZE" $HEAP_PS -c "$BARE/bare_heap.c" -o "$OBJ/bare_heap.o"
-    #  Freestanding libc is now Ada (boot/bare_mem.adb + boot/bare_crt.adb),
-    #  compiled above by bare_boot.gpr; linked only for the heap profiles.
-    cp "$BARE/boot/obj/bare_mem.o" "$OBJ/bare_mem.o"
-    cp "$BARE/boot/obj/bare_crt.o" "$OBJ/bare_crt.o"
-    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/bare_mem.o" "$OBJ/bare_crt.o")
+    echo "[bare]      + heap ($HEAP_SIZE B) + Ada freestanding libc + allocator (embedded/full profile)"
+    #  Freestanding libc AND the malloc/free allocator are now Ada (boot/bare_*.adb
+    #  + tlsf_core), compiled above by bare_boot.gpr; linked only for heap profiles.
+    cp "$BARE/boot/obj/bare_mem.o"  "$OBJ/bare_mem.o"
+    cp "$BARE/boot/obj/bare_crt.o"  "$OBJ/bare_crt.o"
+    cp "$BARE/boot/obj/tlsf_core.o" "$OBJ/tlsf_core.o"
+    cp "$BARE/boot/obj/bare_heap.o" "$OBJ/bare_heap.o"
+    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/tlsf_core.o" "$OBJ/bare_mem.o" "$OBJ/bare_crt.o")
 fi
 
 # Example-provided extra link inputs (esp32s3_psram: the vendored IDF
@@ -248,6 +254,7 @@ $GCC -nostdlib -no-pie \
     -Wl,--defsym=__core1_stack_end=core1_stack+8192 \
     -Wl,--defsym=__heap_start=_heap_low_start \
     -Wl,--defsym=__heap_end=_bare_heap_top \
+    $BHEAP_DEFSYM \
     -o "$EX/app.elf" \
     "$EX/main/app_main.o" "$OBJ/bare_glue.o" "$OBJ/bare_log.o" $GLUE_OBJ "$OBJ/bare_boot.o" "$OBJ/app_desc.o" \
     "$OBJ/start.o" "$OBJ/highint5.o" $SO_OBJ "${LIB_OBJS[@]}" $EXTRA_OBJS \

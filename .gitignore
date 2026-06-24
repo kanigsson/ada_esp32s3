@@ -39,3 +39,4 @@ dependencies.lock
 # ---- Per-example VS Code cruft (the ESP-IDF extension drops its own config here);
 #      the project's real VS Code config is the repo-root .vscode/ ----
 examples/*/.vscode/
+b~*
