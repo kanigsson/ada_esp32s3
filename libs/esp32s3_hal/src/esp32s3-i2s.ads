@@ -72,11 +72,14 @@ package ESP32S3.I2S is
    --  Route the port's signals to physical pads for an external codec.  Each
    --  line is a validated GPIO pin; pass No_Pin to leave a line unrouted (e.g.
    --  Din for a TX-only DAC, or Dout for an RX-only microphone).
+   --  Mclk routes the master clock out (e.g. to a codec's MCLK input); only
+   --  supported on I2S0.  Leave No_Pin for codecs that clock from BCLK.
    procedure Configure_Pins (Port : I2S_Port;
                              Bclk : ESP32S3.GPIO.Optional_Pin := No_Pin;
                              Ws   : ESP32S3.GPIO.Optional_Pin := No_Pin;
                              Dout : ESP32S3.GPIO.Optional_Pin := No_Pin;
-                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin);
+                             Din  : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                             Mclk : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
    ----------------------------------------------------------------------------
    --  Concurrent, mutually-exclusive use.
@@ -106,6 +109,18 @@ package ESP32S3.I2S is
    --  Full-duplex: shift Tx out and capture Rx in simultaneously (same Length).
    --  Raises Not_Owned unless S holds a port.
    procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+
+   --  Start streaming Tx (Length bytes, 1 .. 4095) on a self-looping DMA and
+   --  return immediately, leaving the TX clock running: the buffer is replayed
+   --  forever with NO inter-buffer gap -- gapless playback of a periodic
+   --  waveform with zero CPU cost after the call.  Tx must stay valid (in
+   --  internal SRAM) and should hold a whole number of wave periods so the
+   --  wrap is seamless.  Stop halts it.  Raises Not_Owned unless S holds a port.
+   procedure Start_Continuous (S : Session; Tx : System.Address; Length : Natural);
+
+   --  Stop a continuous transmit started by Start_Continuous (TX clock off).
+   --  Raises Not_Owned unless S holds a port.
+   procedure Stop (S : Session);
 
    --  Relinquish ownership (lets a waiting task proceed).  Idempotent.
    procedure Release (S : in out Session);

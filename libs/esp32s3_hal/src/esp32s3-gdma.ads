@@ -88,6 +88,17 @@ package ESP32S3.GDMA is
    procedure Start (C : Channel; Dir : Direction;
                     Buffer : System.Address; Length : Natural);
 
+   --  Arm a CONTINUOUS (self-looping) transmit on C's OUT path: a single
+   --  descriptor whose link points back to itself, so the engine replays
+   --  Buffer forever with no gap between passes.  NON-blocking and never
+   --  completes on its own -- the peripheral keeps consuming Buffer until the
+   --  channel is Released (or the peripheral is stopped).  For gapless looped
+   --  playback of a periodic waveform (e.g. a steady tone) with zero CPU
+   --  involvement after the kick.  Buffer must be in internal SRAM and should
+   --  hold a whole number of wave periods so the wrap is seamless; Length in
+   --  1 .. Max_Transfer.  No-op on an invalid handle or out-of-range Length.
+   procedure Start_Loop (C : Channel; Buffer : System.Address; Length : Natural);
+
    --  True once the Dir transfer has signalled success-EOF (also True for an
    --  invalid handle, so a Wait never hangs on one).
    function Done (C : Channel; Dir : Direction) return Boolean;
