@@ -46,6 +46,24 @@ It is built in three layers:
 > read **[the book (`book/main.pdf`)](book/main.pdf)** — its
 > [LaTeX source](book/) is in the same directory.
 
+## Blob-free PSRAM bring-up with a real timing tune
+
+Reinforcing the *no-ESP-IDF* claim, the 2nd-stage bootloader's external octal-PSRAM
+bring-up is now almost entirely from-source. Four vendored IDF `mspi_timing`/GPIO
+objects were reverse-engineered (live, over JTAG) and replaced with ~100 lines of
+readable C ([`mspi_timing_src.c`](examples/common/bare/bootloader/mspi_timing_src.c));
+a single chip-init object remains.
+
+The PSRAM **din sampling is also genuinely calibrated now**. The IDF blob runs its
+tuning sweep at 20 MHz — where the sampling phase is irrelevant — so it always falls
+back to a vendor default that actually *fails* at the 80 MHz operating speed
+(previously papered over by a hand-coded override). The replacement sweeps the din at
+the real 80 MHz over a *bounded* SPI1 transaction (a wrong setting returns garbage
+instead of stalling the bus), finds the true timing window, and centres on it — a
+per-board measurement with no magic constant, validated end-to-end by the example's
+1 MB checksum. Full write-up:
+[PSRAM_BRINGUP_RESEARCH.md](examples/common/bare/bootloader/PSRAM_BRINGUP_RESEARCH.md).
+
 ## What runs on real silicon
 
 - **Dual-core SMP** — tasks pinned per core (`CPU => 1`/`CPU => 2`), cross-core

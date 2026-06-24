@@ -37,11 +37,14 @@ SECTIONS
   .rodata :
   {
     *(.rodata .rodata.* .srodata .srodata.* .sdata2 .sdata2.*)
+    . = ALIGN(4);
   } > dram_seg
 
   .data :
   {
+    . = ALIGN(4);
     *(.data .data.* .sdata .sdata.*)
+    . = ALIGN(4);
   } > dram_seg
 
   .bss (NOLOAD) :
