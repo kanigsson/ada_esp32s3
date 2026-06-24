@@ -17,7 +17,6 @@
 --
 --  The console mirrors every row pushed to the panel, so a live run can be
 --  checked over serial too (the panel itself is write-only).
-with System;
 with Interfaces;    use type Interfaces.Integer_32;
 with Ada.Real_Time; use Ada.Real_Time;
 
@@ -29,6 +28,7 @@ with ESP32S3.PCF85063A;
 with ESP32S3.QMI8658C;
 with ESP32S3.ST7789;
 with ESP32S3.ST7789.Text;
+with ESP32S3.Log;    use ESP32S3.Log;
 with Ada_Logo;
 
 with System.BB.CPU_Primitives.Multiprocessors;
@@ -45,9 +45,14 @@ procedure Main is
    use type RTC.Status;
    use type IMU.Status;
 
-   procedure Banner;  pragma Import (C, Banner, "native_gd_banner");
-   procedure Row_C (S : System.Address);
-                      pragma Import (C, Row_C, "native_gd_row");
+   procedure Banner is
+   begin
+      Put_Line ("[dash] multi-sensor dashboard -> ST7789 240x240");
+      Put_Line ("[dash]   GPS  UART0 rx=44 tx=43 9600   (NMEA)");
+      Put_Line ("[dash]   I2C0 sda=8 scl=7  SHT41 0x44 / RTC 0x51 / IMU 0x6b");
+      Put_Line ("[dash]   LCD  SPI2  sclk=12 mosi=13 dc=16 cs=10 bl=6");
+      Put_Line ("[dash]   cycling GPS / ENV / RTC / IMU, 5 s each");
+   end Banner;
 
    Backlight : constant ESP32S3.GPIO.Pin_Id := 6;
    Sda       : constant ESP32S3.GPIO.Pin_Id := 8;
@@ -160,14 +165,12 @@ procedure Main is
    --  Output helpers.
    ----------------------------------------------------------------------------
 
-   --  Mirror one line to the console (NUL-terminate for the C %s glue).
+   --  Mirror one line to the console.
    procedure Console (Line : String) is
-      Buf : aliased String (1 .. Line'Length + 1);
    begin
-      Buf (1 .. Line'Length) := Line;
-      Buf (Buf'Last) := Character'Val (0);
       delay until Clock + Milliseconds (25);   --  space out the 64-byte FIFO
-      Row_C (Buf'Address);
+      Put ("[dash] ");
+      Put_Line (Line);
    end Console;
 
    --  Paint one fixed-width row to the panel (over the view's black background)

@@ -4,11 +4,11 @@
 --  NO external wiring: the channel's output pad is sampled with ESP32S3.GPIO.Read
 --  in a tight loop over a timed window (high samples / total = duty, rising edges
 --  / elapsed = frequency).  Also checks the controlled (RAII) Channel handle.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.LEDC;  use ESP32S3.LEDC;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -16,14 +16,39 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_ledc_banner");
-   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz, Ok : int);
-   pragma Import (C, Result, "native_ledc_result");
-   procedure Raii_Result (Eight, Ninth, Reclaimed, Ok : int);
-   pragma Import (C, Raii_Result, "native_ledc_raii");
-   procedure Done;
-   pragma Import (C, Done, "native_ledc_done");
+   procedure Banner is
+   begin
+      Put_Line ("[ledc] bare-metal LEDC PWM self-test (GPIO-sampled, no wiring)");
+   end Banner;
+
+   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz : Integer; Ok : Boolean) is
+   begin
+      Put ("[ledc] duty set=");
+      Put (Set_Pct);
+      Put ("%   measured=");
+      Put_Fixed (Meas_Pct_X10, 10, 1);
+      Put ("%   freq=");
+      Put (Meas_Hz);
+      Put (" Hz  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Result;
+
+   procedure Raii_Result (Eight, Ninth, Reclaimed, Ok : Boolean) is
+   begin
+      Put ("[ledc] raii: 8-claimed=");
+      Put (if Eight then "y" else "n");
+      Put (" 9th-rejected=");
+      Put (if Ninth then "y" else "n");
+      Put (" reclaimed=");
+      Put (if Reclaimed then "y" else "n");
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Raii_Result;
+
+   procedure Done is
+   begin
+      Put_Line ("[ledc] done.");
+   end Done;
 
    Pin0 : constant ESP32S3.GPIO.Pin_Id := 4;     --  channel 0 output (sampled)
    Freq : constant := 5_000;
@@ -78,8 +103,8 @@ begin
          Measure (Pin0, 50, D, F);
          Ok := abs (D - Float (Duties (I))) <= 4.0
                  and then abs (F - Float (Freq)) <= Float (Freq) * 0.10;
-         Result (int (Float (Duties (I))), int (D * 10.0), int (F),
-                 Boolean'Pos (Ok));
+         Result (Integer (Float (Duties (I))), Integer (D * 10.0), Integer (F),
+                 Ok);
       end loop;
    end;                                  --  Ch0 finalizes -> output stopped, freed
 
@@ -104,9 +129,8 @@ begin
          Reclaimed := Is_Valid (C);
       end;
 
-      Raii_Result (Boolean'Pos (Eight), Boolean'Pos (Ninth_Rejected),
-                   Boolean'Pos (Reclaimed),
-                   Boolean'Pos (Eight and Ninth_Rejected and Reclaimed));
+      Raii_Result (Eight, Ninth_Rejected, Reclaimed,
+                   Eight and Ninth_Rejected and Reclaimed);
    end;
 
    Done;

@@ -23,10 +23,10 @@
 --  trig dependency, no floating point needed.
 --
 --  Display: SPI2 SCLK=IO12 MOSI=IO13 DC=IO16 CS=IO10; backlight IO6 driven HERE.
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
+with ESP32S3.Log;    use ESP32S3.Log;
 with ESP32S3.ST7789;
 
 with System.BB.CPU_Primitives.Multiprocessors;
@@ -34,10 +34,6 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
    package LCD renames ESP32S3.ST7789;
-
-   procedure Banner;  pragma Import (C, Banner, "native_cube_banner");
-   procedure Fps_C (N : int);
-                      pragma Import (C, Fps_C, "native_cube_fps");
 
    Backlight : constant ESP32S3.GPIO.Pin_Id := 6;
    Screen    : constant := 240;
@@ -313,7 +309,8 @@ procedure Main is
    T0     : Time;
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[cube] bouncing solid-colour 3D cube -> ST7789 240x240");
+   Put_Line ("[cube]   SPI2 sclk=12 mosi=13 dc=16 cs=10 bl=6");
 
    ESP32S3.GPIO.Configure (Backlight, Mode => ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Set (Backlight);
@@ -357,7 +354,9 @@ begin
       --  Report frame-rate roughly once a second.
       Frames := Frames + 1;
       if To_Duration (Clock - T0) >= 1.0 then
-         Fps_C (int (Frames));
+         Put ("[cube] ~");
+         Put (Frames);
+         Put_Line (" fps");
          Frames := 0;
          T0 := Clock;
       end if;

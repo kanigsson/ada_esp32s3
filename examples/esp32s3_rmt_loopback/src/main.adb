@@ -5,24 +5,54 @@
 --  SAME pad back (the matrix loops the pad's output into the RX input -- no
 --  wiring) and captures the burst; the received durations are compared to what
 --  was sent.  This verifies both the TX and RX paths plus the tick divider.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.RMT;   use ESP32S3.RMT;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_rmt_banner");
-   procedure Result (Sent, Received, Ok : int);
-   pragma Import (C, Result, "native_rmt_result");
-   procedure Dump (I, L0, D0, L1, D1 : int);
-   pragma Import (C, Dump, "native_rmt_dump");
-   procedure Done;
-   pragma Import (C, Done, "native_rmt_done");
+   procedure Banner is
+   begin
+      Put_Line
+        ("[rmt] bare-metal RMT TX->RX single-pad loopback self-test (no wiring)");
+   end Banner;
+
+   procedure Result (Sent, Received : Integer; Ok : Boolean) is
+   begin
+      Put ("[rmt] loopback: sent=");
+      Put (Sent);
+      Put (" received=");
+      Put (Received);
+      Put (" durations-match=");
+      Put (if Ok then "y" else "n");
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Result;
+
+   procedure Dump (I : Integer; L0 : Boolean; D0 : Integer;
+                   L1 : Boolean; D1 : Integer) is
+   begin
+      Put ("[rmt]   got[");
+      Put (I);
+      Put ("] = {");
+      Put (Boolean'Pos (L0));
+      Put (":");
+      Put (D0);
+      Put (", ");
+      Put (Boolean'Pos (L1));
+      Put (":");
+      Put (D1);
+      Put_Line ("}");
+   end Dump;
+
+   procedure Done is
+   begin
+      Put_Line ("[rmt] done.");
+   end Done;
 
    Pad : constant ESP32S3.GPIO.Pin_Id := 4;     --  TX drives it, RX reads it back
    Res : constant := 1_000_000;                 --  1 MHz -> 1 tick = 1 us
@@ -72,10 +102,10 @@ begin
          end loop;
       end if;
 
-      Result (Sent'Length, int (Count), Boolean'Pos (Ok));
+      Result (Sent'Length, Count, Ok);
       for I in 0 .. Natural'Min (Count, 8) - 1 loop
-         Dump (int (I), Boolean'Pos (Got (I).Level0), int (Got (I).Duration0),
-               Boolean'Pos (Got (I).Level1), int (Got (I).Duration1));
+         Dump (I, Got (I).Level0, Integer (Got (I).Duration0),
+               Got (I).Level1, Integer (Got (I).Duration1));
       end loop;
    end;                                        --  Tx, Rx finalize -> released
 

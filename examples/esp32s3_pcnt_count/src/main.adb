@@ -5,24 +5,47 @@
 --  (the matrix feeds the pad into the counter input -- no wiring); the counted
 --  edges are compared to the number driven.  Also checks the controlled (RAII)
 --  Unit handle.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.PCNT;  use ESP32S3.PCNT;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_pcnt_banner");
-   procedure Result (Pulses, Counted, Ok : int);
-   pragma Import (C, Result, "native_pcnt_result");
-   procedure Raii_Result (Four, Fifth, Reclaimed, Ok : int);
-   pragma Import (C, Raii_Result, "native_pcnt_raii");
-   procedure Done;
-   pragma Import (C, Done, "native_pcnt_done");
+   procedure Banner is
+   begin
+      Put_Line ("[pcnt] bare-metal PCNT pulse-counter self-test (no wiring)");
+   end Banner;
+
+   procedure Result (Pulses, Counted : Integer; Ok : Boolean) is
+   begin
+      Put ("[pcnt] count: pulses-driven=");
+      Put (Pulses);
+      Put (" counted=");
+      Put (Counted);
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Result;
+
+   procedure Raii_Result (Four, Fifth, Reclaimed, Ok : Boolean) is
+   begin
+      Put ("[pcnt] raii: 4-claimed=");
+      Put (if Four then "y" else "n");
+      Put (" 5th-rejected=");
+      Put (if Fifth then "y" else "n");
+      Put (" reclaimed=");
+      Put (if Reclaimed then "y" else "n");
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Raii_Result;
+
+   procedure Done is
+   begin
+      Put_Line ("[pcnt] done.");
+   end Done;
 
    Pin    : constant ESP32S3.GPIO.Pin_Id := 4;   --  software-driven, PCNT-sensed
    Pulses : constant := 100;
@@ -55,7 +78,7 @@ begin
 
       N  := Count (U);
       Ok := (N = Pulses);
-      Result (Pulses, int (N), Boolean'Pos (Ok));
+      Result (Pulses, N, Ok);
    end;                                      --  U finalizes -> paused, released
 
    --  RAII: claim all 4 units, confirm a 5th fails, then reclaim on scope exit.
@@ -79,9 +102,8 @@ begin
          Reclaimed := Is_Valid (U);
       end;
 
-      Raii_Result (Boolean'Pos (Four), Boolean'Pos (Fifth_Rejected),
-                   Boolean'Pos (Reclaimed),
-                   Boolean'Pos (Four and Fifth_Rejected and Reclaimed));
+      Raii_Result (Four, Fifth_Rejected, Reclaimed,
+                   Four and Fifth_Rejected and Reclaimed);
    end;
 
    Done;

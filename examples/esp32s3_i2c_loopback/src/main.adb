@@ -23,10 +23,10 @@
 --  Together these exercise START/STOP, 7-bit addressing, the command-sequence
 --  FSM, multi-byte FIFO transmit, the bus timing, and ACK/NACK detection.
 --  Report goes through the ROM printf glue (the reliable console path here).
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.I2C;
+with ESP32S3.Log;  use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -36,12 +36,13 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    use ESP32S3.I2C;
 
-   procedure Banner;
-   pragma Import (C, Banner, "native_i2c_banner");
-   procedure Verdict (Test, Ok : int);
-   pragma Import (C, Verdict, "native_i2c_verdict");
-   procedure Done;
-   pragma Import (C, Done, "native_i2c_done");
+   procedure Verdict (Test : Integer; Ok : Boolean) is
+   begin
+      Put ("[i2c] test");
+      Put (Test);
+      Put (": ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Verdict;
 
    Host : constant I2C_Host := I2C0;
 
@@ -59,7 +60,8 @@ procedure Main is
    Ok : Boolean;
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
-   Banner;
+   Put_Line ("[i2c] bare-metal I2C master hardware self-test "
+             & "(no wiring, no device)");
 
    Setup (Host, Clock_Hz => 100_000);
    Configure_Pins (Host, Scl => Scl_Pad, Sda => Sda_Pad);
@@ -68,13 +70,13 @@ begin
    Acquire (S, Host);
    Write (S, Absent, (1 => 16#00#), Ok);
    Release (S);
-   Verdict (0, Boolean'Pos (not Ok));        --  PASS = NACK correctly detected
+   Verdict (0, not Ok);                       --  PASS = NACK correctly detected
 
    --  test1: multi-byte write, ACK-checking off -> expect completion.
    Acquire (S, Host);
    Write (S, Absent, Payload, Ok, Check_Ack => False);
    Release (S);
-   Verdict (1, Boolean'Pos (Ok));            --  PASS = full transaction completed
+   Verdict (1, Ok);                           --  PASS = full transaction completed
 
    --  test2: the Session is a controlled type, so it auto-releases the host when
    --  it leaves scope -- even via an exception.  Acquire then raise inside a
@@ -102,10 +104,10 @@ begin
          Reacquired := True;
          Release (T);
       end;
-      Verdict (2, Boolean'Pos (Reacquired));
+      Verdict (2, Reacquired);
    end;
 
-   Done;
+   Put_Line ("[i2c] done.");
 
    loop
       delay until Clock + Seconds (3600);

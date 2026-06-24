@@ -10,20 +10,29 @@
 --  pixel 1 of the chain -- so it cycles red -> green -> blue -> white -> off,
 --  confirming the stream actually transmits.  Wire a real string into IO48 and
 --  all 64 light up.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
 with ESP32S3.TX1812;
+with ESP32S3.Log;    use ESP32S3.Log;
 with LED_Panel;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;              pragma Import (C, Banner, "native_led_banner");
-   procedure Acquired (Ok : int); pragma Import (C, Acquired, "native_led_acquired");
-   procedure Name (Idx : int);    pragma Import (C, Name, "native_led_color");
+   procedure Name (Idx : Integer) is
+   begin
+      Put ("[led] ");
+      case Idx is
+         when 0      => Put_Line ("red");
+         when 1      => Put_Line ("green");
+         when 2      => Put_Line ("blue");
+         when 3      => Put_Line ("white");
+         when 4      => Put_Line ("off");
+         when others => Put_Line ("?");
+      end case;
+   end Name;
 
    package LED renames ESP32S3.TX1812;
 
@@ -38,13 +47,16 @@ procedure Main is
       4 => LED.Off);                          --  off
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[led] TX1812 string of 64 LEDs on IO48 via RMT "
+             & "(wrap-streamed; on-board LED = pixel 1)");
 
    --  Acquire the channel BEFORE driving the string.  Channel 0, default 1 RMT
    --  block (the wrap path handles all 64 LEDs); pass Blocks => 4 to push up to
    --  ~7 LEDs out in one shot without wrap.
    LED.Acquire (LED_Panel.Panel, Pin => Data_Pin, Channel => 0);
-   Acquired (Boolean'Pos (LED.Is_Valid (LED_Panel.Panel)));
+   Put ("[led] acquire RMT TX channel: ");
+   Put_Line (if LED.Is_Valid (LED_Panel.Panel) then "OK"
+             else "FAILED (channel busy?)");
    if not LED.Is_Valid (LED_Panel.Panel) then
       loop delay until Clock + Seconds (3600); end loop;
    end if;
@@ -53,7 +65,7 @@ begin
       for I in Colors'Range loop
          LED.Set_All (LED_Panel.Panel, Colors (I));   --  all 64 pixels
          LED.Show (LED_Panel.Panel);                  --  stream the whole frame
-         Name (int (I));
+         Name (I);
          delay until Clock + Milliseconds (600);
       end loop;
    end loop;

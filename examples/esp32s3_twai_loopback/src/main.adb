@@ -8,22 +8,35 @@
 --  extended (29-bit id) frame, using the overloaded Send/Receive and the
 --  Available/Is_Extended peek to pick the right Receive each time.
 with Interfaces;   use Interfaces;
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.TWAI; use ESP32S3.TWAI;
 with ESP32S3.GPIO;
+with ESP32S3.Log;  use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_twai_banner");
-   procedure Result (Extended, Remote, Got, Id, Len, Data_Ok, Ok : int);
-   pragma Import (C, Result, "native_twai_result");
-   procedure Done;
-   pragma Import (C, Done, "native_twai_done");
+   --  One self-rx result line.
+   procedure Result (Extended, Remote, Got, Data_Ok, Ok : Boolean;
+                     Id, Len : Unsigned_32) is
+   begin
+      Put ("[twai] ");
+      Put (if Extended then "extended(29-bit)" else "standard(11-bit)");
+      Put (" ");
+      Put (if Remote then "remote(RTR)" else "data      ");
+      Put (" self-rx: got=");
+      Put (Boolean'Pos (Got));
+      Put (" id=0x");
+      Put_Hex (Id);
+      Put (" len=");
+      Put (Integer (Len));
+      Put (" match=");
+      Put (if Data_Ok then "y" else "n");
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Result;
 
    Pad : constant ESP32S3.GPIO.Pin_Id := 4;     --  TX driven, RX read back
 
@@ -49,7 +62,7 @@ procedure Main is
       others => <>);
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[twai] bare-metal TWAI (CAN) self-test loopback (no wiring)");
 
    Setup (Mode => Self_Test, Bit_Rate => 125_000);
 
@@ -76,8 +89,9 @@ begin
             D_Ok := D_Ok and then RS.Data (I) = Std.Data (I);
          end loop;
       end if;
-      Result (0, 0, Boolean'Pos (Got), int (RS.Id), int (RS.Length),
-              Boolean'Pos (D_Ok), Boolean'Pos (Got and then D_Ok));
+      Result (Extended => False, Remote => False, Got => Got, Data_Ok => D_Ok,
+              Ok => Got and then D_Ok,
+              Id => Unsigned_32 (RS.Id), Len => Unsigned_32 (RS.Length));
 
       --  Extended (29-bit) data round-trip.
       Send (S, Ext);
@@ -92,8 +106,9 @@ begin
             D_Ok := D_Ok and then RE.Data (I) = Ext.Data (I);
          end loop;
       end if;
-      Result (1, 0, Boolean'Pos (Got), int (RE.Id), int (RE.Length),
-              Boolean'Pos (D_Ok), Boolean'Pos (Got and then D_Ok));
+      Result (Extended => True, Remote => False, Got => Got, Data_Ok => D_Ok,
+              Ok => Got and then D_Ok,
+              Id => Unsigned_32 (RE.Id), Len => Unsigned_32 (RE.Length));
 
       --  Standard remote-request (RTR) round-trip: carries Id + DLC, no data.
       Send (S, Rtr);
@@ -104,8 +119,9 @@ begin
       --  A correct RTR echo: Remote set, matching Id and requested length.
       D_Ok := Got and then RS.Remote and then RS.Id = Rtr.Id
                 and then RS.Length = Rtr.Length;
-      Result (0, 1, Boolean'Pos (Got), int (RS.Id), int (RS.Length),
-              Boolean'Pos (D_Ok), Boolean'Pos (Got and then D_Ok));
+      Result (Extended => False, Remote => True, Got => Got, Data_Ok => D_Ok,
+              Ok => Got and then D_Ok,
+              Id => Unsigned_32 (RS.Id), Len => Unsigned_32 (RS.Length));
 
       --  Extended (29-bit) remote-request (RTR) round-trip -- RTR works on either
       --  width, the Remote flag is orthogonal to the addressing standard.
@@ -116,11 +132,12 @@ begin
       end if;
       D_Ok := Got and then RE.Remote and then RE.Id = Ert.Id
                 and then RE.Length = Ert.Length;
-      Result (1, 1, Boolean'Pos (Got), int (RE.Id), int (RE.Length),
-              Boolean'Pos (D_Ok), Boolean'Pos (Got and then D_Ok));
+      Result (Extended => True, Remote => True, Got => Got, Data_Ok => D_Ok,
+              Ok => Got and then D_Ok,
+              Id => Unsigned_32 (RE.Id), Len => Unsigned_32 (RE.Length));
    end;                                  --  S finalizes -> controller released
 
-   Done;
+   Put_Line ("[twai] done.");
 
    loop
       delay until Clock + Seconds (3600);

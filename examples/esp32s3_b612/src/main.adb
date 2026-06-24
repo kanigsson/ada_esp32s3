@@ -10,14 +10,13 @@
 --  against a KNOWN background.
 --
 --  Display: SPI2 SCLK=IO12 MOSI=IO13 DC=IO16 CS=IO10; backlight IO6 driven HERE.
-with System;
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
 with ESP32S3.ST7789;
 with ESP32S3.Fonts;
 with ESP32S3.ST7789.Fonts;
+with ESP32S3.Log;   use ESP32S3.Log;
 --  'with' only the sizes used -- unused ones are never linked.
 with B612_24; with B612_16; with B612_12;
 
@@ -28,24 +27,25 @@ procedure Main is
    package LCD renames ESP32S3.ST7789;
    package TF  renames ESP32S3.ST7789.Fonts;     --  the panel's text renderer
 
-   procedure Banner;  pragma Import (C, Banner, "native_b612_banner");
-   procedure Size_C (Name : System.Address; Bytes : int);
-                     pragma Import (C, Size_C, "native_b612_size");
-
    Backlight : constant ESP32S3.GPIO.Pin_Id := 6;
    BG        : constant ESP32S3.Fonts.RGB := (0, 0, 0);   --  text background
 
    Dev : LCD.Device;
    S   : LCD.Session;
 
-   --  Report one variant's flash size over the console.
+   --  Report one variant's flash size over the console
+   --  ("[b612]   %-8s %5d bytes").
    procedure Show_Size (Name : String; Bytes : Integer) is
-      Buf : aliased String (1 .. Name'Length + 1);
    begin
-      Buf (1 .. Name'Length) := Name;
-      Buf (Buf'Last) := Character'Val (0);
       delay until Clock + Milliseconds (25);
-      Size_C (Buf'Address, int (Bytes));
+      Put ("[b612]   ");
+      Put (Name);
+      for I in Name'Length + 1 .. 8 loop
+         Put (" ");
+      end loop;
+      Put (" ");
+      Put (Bytes, Width => 5);
+      Put_Line (" bytes");
    end Show_Size;
 
    --  Running top-of-line cursor; draw one line, advance by the font height.
@@ -62,7 +62,7 @@ procedure Main is
    Amber : constant ESP32S3.Fonts.RGB := (255, 190, 0);
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[b612] anti-aliased B612 font: 12/16/24 px -> ST7789 240x240");
    Show_Size ("12px", B612_12.Bytes);
    Show_Size ("16px", B612_16.Bytes);
    Show_Size ("24px", B612_24.Bytes);
