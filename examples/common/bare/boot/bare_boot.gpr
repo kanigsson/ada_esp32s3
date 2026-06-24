@@ -16,6 +16,7 @@ project Bare_Boot is
    for Source_Files use
      ("bare_boot.ads", "bare_boot.adb",
       "bare_mem.ads", "bare_mem.adb",      --  Ada freestanding mem* (was bare_libc.c)
+      "bare_crt.ads", "bare_crt.adb",      --  Ada strlen/atoi/write/abort/... (was bare_libc.c)
       "esp32s3_registers.ads",
       "esp32s3_registers-interrupt_core0.ads",
       "esp32s3_registers-interrupt_core1.ads",
@@ -31,6 +32,11 @@ project Bare_Boot is
       --  bare_mem implements memcpy/memset/...; -fno-tree-loop-distribute-patterns
       --  stops GCC turning its byte loops back into calls to those (self-recursion).
       for Switches ("bare_mem.adb") use
+        ("-Os", "-mlongcalls", "-gnatp",
+         "-ffunction-sections", "-fdata-sections",
+         "-fno-tree-loop-distribute-patterns");
+      --  Same reason for bare_crt's strlen byte loop.
+      for Switches ("bare_crt.adb") use
         ("-Os", "-mlongcalls", "-gnatp",
          "-ffunction-sections", "-fdata-sections",
          "-fno-tree-loop-distribute-patterns");
