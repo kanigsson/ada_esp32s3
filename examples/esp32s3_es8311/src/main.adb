@@ -12,25 +12,18 @@
 --  captured frequency by counting threshold zero-crossings -- it should read
 --  ~440 Hz, confirming the mic picks up the tone.
 with Interfaces;    use Interfaces;
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
 with ESP32S3.I2C;
 with ESP32S3.I2S;
 with ESP32S3.ES8311;
+with ESP32S3.Log;       use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;             pragma Import (C, Banner, "native_es_banner");
-   procedure Init_R (Ok : int);  pragma Import (C, Init_R, "native_es_init");
-   procedure Playing;            pragma Import (C, Playing, "native_es_playing");
-   procedure Listening (Gain : int);
-   pragma Import (C, Listening, "native_es_listening");
-   procedure Captured (Peak, Freq : int);
-   pragma Import (C, Captured, "native_es_captured");
 
    Rate     : constant := 16_000;      --  sample rate (Hz)
    Freq     : constant := 440;         --  tone frequency (Hz)
@@ -139,7 +132,8 @@ procedure Main is
 
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[es8311] ES8311 codec: 440 Hz test tone on the DAC output "
+             & "(I2C control + I2S audio)");
    Build_Cycle;
 
    --  Frame i is at phase Cycles*i cycles: index the unit circle at
@@ -164,22 +158,37 @@ begin
          Mclk    => 1,  Sclk  => 2,  Lrck => 4,  Dsdin => 5,
          Asdout  => 3,                        --  codec ADC out -> our data in
          Sample_Rate => Rate, Volume => 75, Mic_Gain_Db => Mic_Gain, Ok => Ok);
-      Init_R (Boolean'Pos (Ok));
-      if not Ok then
+      if Ok then
+         Put_Line ("[es8311] codec init: OK");
+      else
+         Put_Line ("[es8311] codec init: FAILED (I2C no ACK? check address/wiring)");
          loop delay until Clock + Seconds (3600); end loop;
       end if;
 
-      Playing;
+      Put_Line ("[es8311] playing 440 Hz... (connect a speaker/headphone to "
+                & "the codec output)");
       ESP32S3.ES8311.Acquire (Audio);          --  hold the audio port
       --  Kick the gapless loop; the DMA replays Buf forever, click-free, and
       --  keeps the I2S master clock running for capture.
       ESP32S3.ES8311.Play_Continuous (Audio, Buf'Address, Buf_Bytes);
 
-      Listening (int (Mic_Gain));
+      Put ("[es8311] mic capture on (ADC PGA ");
+      Put (Mic_Gain);
+      Put_Line (" dB) -- play feeds the speaker, mic should hear it");
       loop
          ESP32S3.ES8311.Capture (Audio, Cap'Address, Cap_Bytes);
          Analyse (Peak, Est);
-         Captured (int (Peak), int (Est));
+         if Peak < 200 then
+            Put ("[es8311] captured: peak=");
+            Put (Peak);
+            Put_Line (" (quiet -- no tone picked up?)");
+         else
+            Put ("[es8311] captured: peak=");
+            Put (Peak);
+            Put ("  est tone=");
+            Put (Est);
+            Put_Line (" Hz");
+         end if;
          delay until Clock + Milliseconds (1000);
       end loop;
    end;
