@@ -7,8 +7,8 @@
 extern int  esp_rom_printf(const char *fmt, ...);
 extern void esp_rom_opiflash_pin_config(void);
 extern void mspi_timing_set_pin_drive_strength(void);
-extern int  esp_psram_impl_enable(void);
-extern int  esp_psram_impl_get_physical_size(uint32_t *out);
+extern int  psram_impl_enable_src(void);                /* from-source (psram_impl_src.c) */
+extern int  psram_impl_get_physical_size_src(uint32_t *out);
 extern void Cache_Disable_DCache(void);
 extern void Cache_Enable_DCache(uint32_t autoload);
 extern int  Cache_Dbus_MMU_Set(uint32_t ext_ram, uint32_t vaddr, uint32_t paddr,
@@ -91,9 +91,9 @@ void psram_bringup(void)
     esp_rom_opiflash_pin_config();
     mspi_timing_set_pin_drive_strength();
 
-    int prc = esp_psram_impl_enable();
+    int prc = psram_impl_enable_src();
     uint32_t psz = 0;
-    esp_psram_impl_get_physical_size(&psz);
+    psram_impl_get_physical_size_src(&psz);
     esp_rom_printf("[ada-free-boot] octal PSRAM up: rc=%d  %u MB\n", prc, psz >> 20);
 
     Cache_Disable_DCache();

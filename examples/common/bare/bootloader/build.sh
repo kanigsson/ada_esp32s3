@@ -51,17 +51,20 @@ $GCC $CFLAGS -c "$HERE/psram_glue.c"                     -o "$O/psram_glue.o"
 # From-source MSPI clock/pin-drive config (replaces the 4 mspi_timing/gpio blobs;
 # the din "tuning" is a proven no-op -- see PSRAM_BRINGUP_RESEARCH.md).
 $GCC $CFLAGS -c "$HERE/mspi_timing_src.c"                -o "$O/mspi_timing_src.o"
+# From-source octal-PSRAM chip init (MR program + connect probe via ROM
+# esp_rom_opiflash_exec_cmd; cache phases from golden state) -- replaces the last
+# vendored blob, esp_psram_impl_octal.c.obj.
+$GCC $CFLAGS -c "$HERE/psram_impl_src.c"                 -o "$O/psram_impl_src.o"
 
-# Vendored IDF octal-PSRAM chip-init object (the MR programming via ROM
-# esp_rom_opiflash_exec_cmd).  The mspi_timing_*/gpio_periph blobs are retired --
-# replaced by mspi_timing_src.o above.
-PSRAM_OBJS="$REPO/examples/esp32s3_psram/vendor_psram/esp_psram_impl_octal.c.obj"
+# All five vendored IDF objects are now retired; the PSRAM bring-up is from-source.
+PSRAM_OBJS=""
 
 $GCC -nostdlib -no-pie \
     -T "$HERE/boot.ld" -T "$HERE/rom.ld" \
     -Wl,-e,_start -Wl,-Map="$O/boot.map" \
     -o "$O/boot.elf" \
-    "$BMO" "$O/start.o" "$O/psram_boot.o" "$O/psram_glue.o" "$O/mspi_timing_src.o" $PSRAM_OBJS
+    "$BMO" "$O/start.o" "$O/psram_boot.o" "$O/psram_glue.o" \
+    "$O/mspi_timing_src.o" "$O/psram_impl_src.o" $PSRAM_OBJS
 
 # Package boot.elf -> bootloader.bin with our own Ada esp_elf2image (byte-identical
 # to esptool, verified) so the bootloader build needs no esptool either.  Set

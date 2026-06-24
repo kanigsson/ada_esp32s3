@@ -49,10 +49,14 @@ It is built in three layers:
 ## Blob-free PSRAM bring-up with a real timing tune
 
 Reinforcing the *no-ESP-IDF* claim, the 2nd-stage bootloader's external octal-PSRAM
-bring-up is now almost entirely from-source. Four vendored IDF `mspi_timing`/GPIO
-objects were reverse-engineered (live, over JTAG) and replaced with ~100 lines of
-readable C ([`mspi_timing_src.c`](examples/common/bare/bootloader/mspi_timing_src.c));
-a single chip-init object remains.
+bring-up is now **entirely from-source** — all five vendored IDF objects (the
+`mspi_timing`/GPIO config *and* the chip init) were reverse-engineered live over JTAG
+and replaced with ~200 lines of readable C
+([`mspi_timing_src.c`](examples/common/bare/bootloader/mspi_timing_src.c) +
+[`psram_impl_src.c`](examples/common/bare/bootloader/psram_impl_src.c)). The bring-up
+now calls only documented ROM functions: mode-register programming and the
+connectivity probe go through the ROM OPI helper, and the controller config is written
+from the captured (golden) register state.
 
 The PSRAM **din sampling is also genuinely calibrated now**. The IDF blob runs its
 tuning sweep at 20 MHz — where the sampling phase is irrelevant — so it always falls
