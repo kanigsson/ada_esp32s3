@@ -343,3 +343,24 @@ cache din, and the app `checksum=0x07f80000` validates it end-to-end. Notes:
 
 **Net:** the de-blobbed bring-up now does a genuine per-board din calibration with no magic
 constant — strictly better than both the IDF blob (wrong default) and FIX 2 (edge point).
+
+## Option C — STAGE 2 DONE (2026-06-24): the last blob retired, bring-up 100% from-source
+
+Replaced `esp_psram_impl_octal.c.obj` with `bootloader/psram_impl_src.c`
+(`psram_impl_enable_src` + `psram_impl_get_physical_size_src`). The chip-facing steps use
+the ROM OPI helper exactly as the blob did; the controller config is written from the live
+golden register state; clocks/din are `mspi_timing_src.c`:
+- pins (IO_MUX CS `0x6000906c=0x00000f00`, SMEM clk drive `0x600033fc=0x0210105f`),
+  CS timing (`0x600030dc=0x0400b18f`), ECC off (clear `0x60026058` bit 8).
+- 20 MHz; SPI1 var-dummy (`0x600020e0|=2`) + `esp_rom_spi_set_dtr_swap_mode(1,0,0)`.
+- **MR0** read-modify-write to `0x28` (lt=1, read_latency=2, drive_str=0) via
+  `esp_rom_opiflash_exec_cmd(1, OPI_DTR=7, 0x4040 read / 0xC0C0 write, 16-bit cmd, 32-bit
+  addr, CS=BIT(1))`.
+- connect probe `0x5a6b7c8d` (write `0x8080` dummy 8, read `0x0000` dummy 18).
+- 80 MHz; SPI0 cache phases (golden `SCTRL 0x01f7c479`, `SRAM_CMD 0x007c0000`,
+  `DRD 0xf0000000`, `DWR 0xf0008080`, `SMEM_DDR 0x00003023`) + `Cache_Resume_DCache(0)`.
+- size hardcoded 8 MB (the density read is elided; the connect probe proves presence).
+
+Deleted `vendor_psram/` (all 5 blobs gone) and the now-dead leaf stubs in `psram_glue.c`.
+**Validated (DevKitC), 4/4 resets:** `octal PSRAM up rc=0 8 MB`, din tuned mode 0,
+`checksum=0x07f80000`. The entire octal-PSRAM bring-up is now readable source + ROM calls.
