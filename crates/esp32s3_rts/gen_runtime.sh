@@ -361,6 +361,31 @@ if grep -qE 'Tick *: *constant *:= *0\.0;' "$RTS/gnat/system.ads" 2>/dev/null; t
     echo "[gen_runtime] System.Tick 0.0 -> 1/240 MHz (C96001/C96004): applied"
 fi
 
+# FULL env-task SECONDARY STACK.  The full donor System.Tasking.Initialize builds the
+# env ATCB but never gives it a secondary stack -- it relies on Init_RTS ->
+# Init_Tasking_Soft_Links copying the non-tasking NT_TSD sec stack into the env ATCB,
+# which on this bare boot leaves the env ATCB Sec_Stack_Ptr null (elaboration-order
+# dependent; confirmed by JTAG).  So an ACATS test run as the program main (= the env
+# task on core 0) faults on its FIRST SS_Mark in Report.Test, before any output -- the
+# "[C] Ada runtime up on both cores" then-hang.  The restricted embedded runtime avoids
+# this by SS_Init'ing the env ATCB directly in Initialize; do the same for full.  Done
+# here (not in the synthesis block) because full is normally UNPACKED from a pre-built
+# pack, so the synthesis patches don't run.  Library tasks are unaffected (Create_TSD).
+if [ "$PROFILE" = "full" ]; then
+    ST="$RTS/gnarl/s-taskin.adb"
+    if [ -f "$ST" ] && ! grep -q 'with System.Secondary_Stack;' "$ST"; then
+        sed -i '/^with System.Task_Primitives.Operations;/a with System.Secondary_Stack;' "$ST"
+        sed -i '/^      STPO.Initialize (T);$/a\
+      --  Give the environment task a secondary stack directly (as embedded does);\
+      --  the full Init_RTS / NT_TSD copy path leaves it null on this bare boot, so\
+      --  the env task (an ACATS test-as-main) would fault on its first SS_Mark.\
+      T.Common.Compiler_Data.Sec_Stack_Ptr := null;\
+      System.Secondary_Stack.SS_Init (T.Common.Compiler_Data.Sec_Stack_Ptr);' "$ST"
+        rm -f "$RTS/adalib/libgnat.a" "$RTS/adalib/libgnarl.a"   # force recompile
+        echo "[gen_runtime] s-taskin env-task secondary stack: applied"
+    fi
+fi
+
 # 2. Compile the runtime and archive into libgnat.a / libgnarl.a (bb-runtimes
 #    cannot build a library project for xtensa-esp32-elf, so archive by hand).
 if [ ! -f "$RTS/adalib/libgnat.a" ]; then
