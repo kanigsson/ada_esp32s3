@@ -7,6 +7,26 @@ Ada and Xtensa assembly. **FreeRTOS never runs** (its scheduler isn't even
 linked) and there is **no ESP-IDF** in the build: every example compiles with
 Alire GNAT alone and boots through our own minimal 2nd-stage bootloader.
 
+## Hardware validation — full-board retest (2026-06-24)
+
+Every driver and the whole runtime were re-verified on real silicon, on a
+fully-populated ESP32-S3 board (all external devices except an SD card):
+
+- **Device drivers — all working:** ES8311 codec + mic (440 Hz play **and**
+  mic-capture loopback), QMI8658C IMU (≈1 g at rest), SHT41 temp/humidity,
+  PCF85063A RTC, TCA9555 GPIO expander, capacitive touch, ST7789 / ST7789-cube /
+  LCD-i8080 displays, anti-aliased B612 font, a multi-sensor dashboard, TX1812
+  addressable LEDs, and a NMEA GPS parser.
+- **Peripheral self-tests — all PASS:** SHA/AES crypto, GDMA, I2S / RMT / TWAI /
+  UART loopbacks, PCNT, sigma-delta, LEDC + MCPWM PWM, and the general-purpose
+  timer.
+- **Runtime / tasking — all working:** ZCX exceptions, full dynamic tasking
+  (tasks allocated + freed on the heap, with `abort`), dual-core SMP, rendezvous,
+  interrupt levels, and the PSRAM allocator.
+
+The freestanding C runtime (`memcpy`/`malloc`/…) is now **Ada** too: an O(1)
+**TLSF** allocator and the `mem*`/libc shims, host-tested and hardware-validated.
+
 It is built in three layers:
 
 1. **A native GNAT/Ada runtime** in three selectable profiles — *light-tasking*
