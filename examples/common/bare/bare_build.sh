@@ -223,7 +223,10 @@ if [ -n "$HEAP_SIZE" ]; then
     echo "[bare]      + heap ($HEAP_SIZE B) + freestanding libc (embedded/full profile)"
     $GCC $CFLAGS -DHEAP_SIZE="$HEAP_SIZE" $HEAP_PS -c "$BARE/bare_heap.c" -o "$OBJ/bare_heap.o"
     $GCC $CFLAGS                          -c "$BARE/bare_libc.c" -o "$OBJ/bare_libc.o"
-    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/bare_libc.o")
+    #  Ada freestanding mem* (memcpy/memset/memmove/memcmp); compiled above by
+    #  bare_boot.gpr.  Linked only for the heap profiles, same as bare_libc.o.
+    cp "$BARE/boot/obj/bare_mem.o" "$OBJ/bare_mem.o"
+    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/bare_libc.o" "$OBJ/bare_mem.o")
 fi
 
 # Example-provided extra link inputs (esp32s3_psram: the vendored IDF

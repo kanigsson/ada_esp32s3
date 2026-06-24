@@ -15,6 +15,7 @@ project Bare_Boot is
    --  but there is no point compiling 46 peripherals to use three).
    for Source_Files use
      ("bare_boot.ads", "bare_boot.adb",
+      "bare_mem.ads", "bare_mem.adb",      --  Ada freestanding mem* (was bare_libc.c)
       "esp32s3_registers.ads",
       "esp32s3_registers-interrupt_core0.ads",
       "esp32s3_registers-interrupt_core1.ads",
@@ -27,5 +28,11 @@ project Bare_Boot is
       for Switches ("Ada") use
         ("-Os", "-mlongcalls", "-gnatp",
          "-ffunction-sections", "-fdata-sections");
+      --  bare_mem implements memcpy/memset/...; -fno-tree-loop-distribute-patterns
+      --  stops GCC turning its byte loops back into calls to those (self-recursion).
+      for Switches ("bare_mem.adb") use
+        ("-Os", "-mlongcalls", "-gnatp",
+         "-ffunction-sections", "-fdata-sections",
+         "-fno-tree-loop-distribute-patterns");
    end Compiler;
 end Bare_Boot;

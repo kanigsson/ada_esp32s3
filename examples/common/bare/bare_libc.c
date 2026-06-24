@@ -7,40 +7,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* The mem* helpers are WEAK: GNAT's own runtime provides strong memcpy/memmove/
- * memset/memcmp (s-memcom/s-memmov/...) whenever a unit's closure pulls them in
- * (e.g. some light-tasking ACATS tests).  Weak here lets the runtime's win when
- * present, and supplies these otherwise (profiles whose closure omits them). */
-#define WEAK __attribute__((weak))
-
-WEAK void *memcpy(void *d, const void *s, size_t n)
-{
-    uint8_t *dd = d; const uint8_t *ss = s;
-    while (n--) *dd++ = *ss++;
-    return d;
-}
-
-WEAK void *memmove(void *d, const void *s, size_t n)
-{
-    uint8_t *dd = d; const uint8_t *ss = s;
-    if (dd < ss) { while (n--) *dd++ = *ss++; }
-    else { dd += n; ss += n; while (n--) *--dd = *--ss; }
-    return d;
-}
-
-WEAK void *memset(void *d, int c, size_t n)
-{
-    uint8_t *dd = d;
-    while (n--) *dd++ = (uint8_t) c;
-    return d;
-}
-
-WEAK int memcmp(const void *a, const void *b, size_t n)
-{
-    const uint8_t *x = a, *y = b;
-    while (n--) { if (*x != *y) return (int) *x - (int) *y; x++; y++; }
-    return 0;
-}
+/* memcpy/memmove/memset/memcmp now live in Ada (boot/bare_mem.adb, linked as
+ * bare_mem.o); see that unit for the weak-symbol rationale.  The remaining
+ * string/atoi/getenv/write/abort glue is still here pending its own Ada port. */
 
 size_t strlen(const char *s)
 {
