@@ -1,12 +1,12 @@
-# TX1812 addressable RGB LED over RMT — bare-metal Ada (ESP32-S3)
+# TX1812 addressable RGB LED string over RMT — bare-metal Ada (ESP32-S3)
 
-Drives a single **TX1812** addressable RGB LED (WS2812 / "NeoPixel"-compatible
-single-wire protocol) on **IO48** using the **RMT** peripheral. It cycles the LED
-**red → green → blue → white → off** (~0.6 s each) and prints each colour, so you
-can match the serial log to what you see.
+Drives a string of **TX1812** addressable RGB LEDs (WS2812 / "NeoPixel"-compatible
+single-wire protocol) on **IO48** using the **RMT** peripheral. The example
+declares a **64-LED** string, then cycles the whole string **red → green → blue →
+white → off** (~0.6 s each), printing each colour.
 
 ```
-[led] TX1812 addressable RGB LED on IO48, driven by RMT
+[led] TX1812 string of 64 LEDs on IO48 via RMT (wrap-streamed; on-board LED = pixel 1)
 [led] acquire RMT TX channel: OK
 [led] red
 [led] green
@@ -16,43 +16,60 @@ can match the serial log to what you see.
 ...
 ```
 
+With **no physical string attached**, the board's on-board LED on IO48 is just
+**pixel 1** of the chain, so it cycles colours — confirming the stream transmits.
+Wire a real string into IO48 and all 64 light up.
+
 ## The driver — `ESP32S3.TX1812`
 
-A `Strip` is a **claimed handle**: `Acquire` it (which takes an RMT transmit
-channel and routes it to the data pin), `Set` pixel colours into its buffer, then
-`Show` to clock them out. The RMT channel is **released automatically** when the
-`Strip` leaves scope (its channel component is controlled), so you acquire the
-resource before driving the LED and never leak it.
+A `Strip (Count)` is a **claimed handle**: `Acquire` it (takes an RMT transmit
+channel + routes it to the pin), `Set`/`Set_All` pixel colours into its buffer,
+then `Show` to clock them out. The RMT channel is **released automatically** when
+the `Strip` leaves scope.
 
 ```ada
-S : ESP32S3.TX1812.Strip (Count => 1);
-...
-ESP32S3.TX1812.Acquire (S, Pin => 48, Channel => 0);
-ESP32S3.TX1812.Set     (S, Index => 1, C => (R => 48, G => 0, B => 0));
-ESP32S3.TX1812.Show    (S);
+ESP32S3.TX1812.Acquire (Panel, Pin => 48, Channel => 0);
+ESP32S3.TX1812.Set_All (Panel, (R => 48, G => 0, B => 0));   --  all red
+ESP32S3.TX1812.Show    (Panel);
 ```
 
-Each data bit becomes one RMT symbol (a '1' is long-high/short-low, a '0' the
-reverse, ~1.2 µs/bit; the channel idles low afterwards, providing the >80 µs
-reset latch). Wire order is **GRB**; per-bit timings are named constants in
-`esp32s3-tx1812.adb`, within WS2812/TX1812 tolerance — tune there if a part is
-fussy.
+Wire order is **GRB**; per-bit timings are named constants in
+`esp32s3-tx1812.adb`, within WS2812/TX1812 tolerance.
+
+## Static, pre-elaborated memory (`LED_Panel`)
+
+A `Strip` is **statically sized by its `Count` discriminant** — it carries both
+the `Count` pixel colours and the `Count×24` RMT-symbol frame buffer. The example
+declares the string **at library level** in `LED_Panel`, so its **~6.4 KiB**
+(64 colours + 1536 symbols) is reserved **in `.bss` at elaboration** — no heap,
+and the **link fails if it doesn't fit**. So "do we have enough memory for 64
+LEDs?" is answered by the build (check `led_panel__panel` in `app.map`).
+
+## How the frame reaches the LEDs — two RMT transports
+
+The RMT symbol RAM is only **48 symbols/block**, and each LED is 24 symbols, so
+the HAL `RMT` driver streams the frame two ways (`Show`/`RMT.Transmit` pick
+automatically):
+
+- **Phase 1 — multi-block (one shot):** `Acquire (..., Blocks => 1 .. 4)` gives
+  the channel up to 4 RAM blocks, so up to ~7 LEDs go out in a single load (no
+  re-fill). It borrows the higher TX channels' RAM.
+- **Phase 2 — wrap streaming (any length):** for a burst bigger than the RAM, the
+  channel runs in wrap mode and the driver **re-fills the symbol RAM in 24-symbol
+  halves** as it drains (polled in the blocking `Transmit` loop — no ISR). This
+  is how the 64-LED frame goes out through 48 symbols of RAM.
+
+> The blocking `Transmit` busy-polls the re-fill, so keep higher-priority
+> interrupts short. A future async/DMA path would lift that.
 
 ## Wiring
 
 | Signal | Pin |
 |---|---|
-| TX1812 data in | **IO48** |
+| TX1812 data in (string DIN) | **IO48** |
 
-On many ESP32-S3 boards IO48 is the **on-board RGB LED**. For an external LED,
-wire its DIN to IO48 (and share ground / 5 V or 3.3 V per the part).
-
-## Single LED for now
-
-The HAL `RMT.Transmit` sends at most 47 symbols per burst and each LED needs 24,
-so this drives **one** LED (`Count => 1`). The API is already shaped for a string
-(`Count`, per-pixel `Set`); driving a longer chain needs RMT wrap/refill support
-(a later step) — only `Show`'s transport changes.
+On many ESP32-S3 boards IO48 is the **on-board RGB LED** (= pixel 1). A real
+string needs an adequate 5 V supply and often 3.3 V→5 V level shifting on DIN.
 
 ## Build / flash / run
 

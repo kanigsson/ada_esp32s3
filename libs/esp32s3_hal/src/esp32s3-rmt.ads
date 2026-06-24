@@ -54,11 +54,21 @@ package ESP32S3.RMT is
 
    --  Configure C: each tick = 1 / Resolution_Hz seconds (e.g. 1_000_000 → 1 µs),
    --  output routed to Pin.  Idle level is low.
+   --
+   --  Blocks (1 .. 4) gives the channel that many consecutive 48-symbol RAM
+   --  blocks (Phase 1, "multi-block"), raising the one-shot Transmit ceiling to
+   --  Blocks*48-1 symbols.  Blocks > 1 BORROWS the RAM of the higher-numbered TX
+   --  channels (channel Index .. Index+Blocks-1), so don't also Claim those.
    procedure Configure (C : in out TX_Channel;
                         Resolution_Hz : Positive;
-                        Pin : ESP32S3.GPIO.Pin_Id);
+                        Pin    : ESP32S3.GPIO.Pin_Id;
+                        Blocks : Positive := 1);
 
-   --  Transmit Symbols (at most 47) and block until the channel finishes.
+   --  Transmit Symbols and block until the channel finishes.  A burst up to the
+   --  channel's RAM (Blocks*48-1 symbols) is loaded and sent in one shot; a
+   --  LONGER burst is streamed by re-filling the symbol RAM in halves as it
+   --  drains (Phase 2, "wrap"), so Symbols may be any length.  Because the call
+   --  blocks and busy-polls the re-fill, keep higher-priority interrupts short.
    procedure Transmit (C : TX_Channel; Symbols : Symbol_Array);
 
    ----------------------------------------------------------------------------
@@ -85,8 +95,9 @@ package ESP32S3.RMT is
 
 private
    type TX_Channel is new Ada.Finalization.Limited_Controlled with record
-      Idx  : TX_Index := 0;
-      Held : Boolean  := False;
+      Idx    : TX_Index := 0;
+      Held   : Boolean  := False;
+      Blocks : Positive := 1;        --  RAM blocks claimed (set by Configure)
    end record;
    overriding procedure Finalize (C : in out TX_Channel);
 

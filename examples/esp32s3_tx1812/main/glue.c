@@ -3,7 +3,8 @@ extern int esp_rom_printf(const char *fmt, ...);
 
 void native_led_banner(void)
 {
-    esp_rom_printf("[led] TX1812 addressable RGB LED on IO48, driven by RMT\n");
+    esp_rom_printf("[led] TX1812 string of 64 LEDs on IO48 via RMT "
+                   "(wrap-streamed; on-board LED = pixel 1)\n");
 }
 
 void native_led_acquired(int ok)

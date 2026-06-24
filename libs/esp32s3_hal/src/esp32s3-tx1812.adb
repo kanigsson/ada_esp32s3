@@ -18,12 +18,13 @@ package body ESP32S3.TX1812 is
 
    procedure Acquire (S       : in out Strip;
                       Pin     : ESP32S3.GPIO.Pin_Id;
-                      Channel : ESP32S3.RMT.TX_Index := 0) is
+                      Channel : ESP32S3.RMT.TX_Index := 0;
+                      Blocks  : Positive := 1) is
    begin
       ESP32S3.RMT.Claim (S.Chan, Channel);
       if ESP32S3.RMT.Is_Valid (S.Chan) then
          ESP32S3.RMT.Configure (S.Chan, Resolution_Hz => Resolution_Hz,
-                                Pin => Pin);
+                                Pin => Pin, Blocks => Blocks);
          S.Ready := True;
       end if;
    end Acquire;
@@ -70,19 +71,21 @@ package body ESP32S3.TX1812 is
    ----------
 
    procedure Show (S : in out Strip) is
-      Bits_Per_LED : constant := 24;
-      Syms : ESP32S3.RMT.Symbol_Array (0 .. S.Count * Bits_Per_LED - 1);
-      K    : Natural := 0;
+      --  Flat view over the Strip's Count*24-symbol frame buffer (encode here,
+      --  then transmit it -- one contiguous Symbol_Array).
+      Flat : ESP32S3.RMT.Symbol_Array (0 .. S.Count * Symbols_Per_LED - 1)
+        with Import, Address => S.Frame'Address;
+      K : Natural := 0;
 
-      --  Append byte B's 8 bits, MSB first, as RMT symbols.
+      --  Append byte B's 8 bits, MSB first.
       procedure Emit (B : Unsigned_8) is
       begin
          for I in reverse 0 .. 7 loop
             if (B and Shift_Left (Unsigned_8 (1), I)) /= 0 then
-               Syms (K) := (Level0 => True, Duration0 => T1H,
+               Flat (K) := (Level0 => True, Duration0 => T1H,
                             Level1 => False, Duration1 => T1L);
             else
-               Syms (K) := (Level0 => True, Duration0 => T0H,
+               Flat (K) := (Level0 => True, Duration0 => T0H,
                             Level1 => False, Duration1 => T0L);
             end if;
             K := K + 1;
@@ -98,9 +101,10 @@ package body ESP32S3.TX1812 is
          Emit (S.Pixels (P).R);
          Emit (S.Pixels (P).B);
       end loop;
-      ESP32S3.RMT.Transmit (S.Chan, Syms);
-      --  The channel idles low after the burst; the >80 us before the next Show
-      --  provides the reset that latches the new colours.
+      --  RMT clocks out the whole frame -- one shot if it fits the channel's
+      --  RAM, else streamed via wrap re-fill (transparent to us).  The channel
+      --  idles low after the burst, giving the >80 us reset that latches it.
+      ESP32S3.RMT.Transmit (S.Chan, Flat);
    end Show;
 
 end ESP32S3.TX1812;

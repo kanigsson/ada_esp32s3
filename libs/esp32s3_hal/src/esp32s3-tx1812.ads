@@ -2,6 +2,11 @@ with Interfaces; use Interfaces;
 with ESP32S3.GPIO;
 with ESP32S3.RMT;
 
+--  N.B. a Strip is statically sized by its Count discriminant: it carries both
+--  the Count-pixel colour buffer AND the Count*24 RMT-symbol frame buffer, so
+--  declaring e.g. `Panel : Strip (64)` reserves all of it at elaboration (no
+--  heap) and the linker verifies it fits -- see the esp32s3_tx1812 example.
+
 --  ESP32-S3 driver for TX1812 addressable RGB LEDs.
 --
 --  The TX1812 (like the WS2812 / "NeoPixel" family) is a single-wire, daisy-
@@ -39,9 +44,15 @@ package ESP32S3.TX1812 is
    --  Claim RMT transmit channel Channel and route it to Pin; the Strip is then
    --  ready to Show.  Check Is_Valid afterwards (it fails if the channel is
    --  already taken).  Call this once before setting any colours.
+   --
+   --  Blocks (1 .. 4) gives the channel extra RMT RAM so up to ~Blocks*2 LEDs go
+   --  out in one shot without the wrap re-fill (it borrows the higher TX
+   --  channels' RAM -- see ESP32S3.RMT.Configure).  Longer strings stream via
+   --  wrap regardless, so the default of 1 is fine for any length.
    procedure Acquire (S       : in out Strip;
                       Pin     : ESP32S3.GPIO.Pin_Id;
-                      Channel : ESP32S3.RMT.TX_Index := 0);
+                      Channel : ESP32S3.RMT.TX_Index := 0;
+                      Blocks  : Positive := 1);
 
    --  True once Acquire has successfully claimed + configured the channel.
    function Is_Valid (S : Strip) return Boolean;
@@ -60,11 +71,20 @@ package ESP32S3.TX1812 is
    procedure Show (S : in out Strip);
 
 private
+   Symbols_Per_LED : constant := 24;                    --  24-bit GRB, 1 sym/bit
+
    type Pixel_Array is array (Positive range <>) of Color;
+
+   --  One LED's 24 RMT symbols.  Frame is Count of these -- a contiguous
+   --  Count*24-symbol buffer, but indexed by Count alone so the discriminant
+   --  constraint is legal.  Show overlays a flat Symbol_Array on it to transmit.
+   subtype LED_Symbols is ESP32S3.RMT.Symbol_Array (0 .. Symbols_Per_LED - 1);
+   type Frame_Array is array (Positive range <>) of LED_Symbols;
 
    type Strip (Count : Positive) is limited record
       Chan   : ESP32S3.RMT.TX_Channel;                 --  auto-released on final.
       Pixels : Pixel_Array (1 .. Count) := (others => Off);
+      Frame  : Frame_Array (1 .. Count);               --  pre-encoded, static
       Ready  : Boolean := False;
    end record;
 end ESP32S3.TX1812;
