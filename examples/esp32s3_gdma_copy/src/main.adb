@@ -11,10 +11,10 @@
 --  leak or be reused through a stale copy.  Report goes through the ROM printf
 --  glue (the reliable console path here).
 with Interfaces;   use Interfaces;
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GDMA;  use ESP32S3.GDMA;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -22,14 +22,33 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_gdma_banner");
-   procedure Copy_Result (Ok : int);
-   pragma Import (C, Copy_Result, "native_gdma_copy");
-   procedure Raii_Result (Five, Sixth, Reclaimed, Ok : int);
-   pragma Import (C, Raii_Result, "native_gdma_raii");
-   procedure Done;
-   pragma Import (C, Done, "native_gdma_done");
+   procedure Banner is
+   begin
+      Put_Line ("[gdma] bare-metal GDMA mem-to-mem + RAII channel self-test");
+   end Banner;
+
+   procedure Copy_Result (Ok : Boolean) is
+   begin
+      Put ("[gdma] mem2mem copy (64 B): ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Copy_Result;
+
+   procedure Raii_Result (Five, Sixth, Reclaimed, Ok : Boolean) is
+   begin
+      Put ("[gdma] raii: 5-claimed=");
+      Put (if Five then "y" else "n");
+      Put (" 6th-rejected=");
+      Put (if Sixth then "y" else "n");
+      Put (" reclaimed=");
+      Put (if Reclaimed then "y" else "n");
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Raii_Result;
+
+   procedure Done is
+   begin
+      Put_Line ("[gdma] done.");
+   end Done;
 
    type Buffer is array (0 .. 63) of Unsigned_8;
    Src : Buffer;
@@ -52,7 +71,7 @@ begin
          Copy (C, Dst'Address, Src'Address, Buffer'Length);
          Ok := (for all I in Buffer'Range => Dst (I) = Src (I));
       end if;
-      Copy_Result (Boolean'Pos (Ok));
+      Copy_Result (Ok);
    end;                                   --  C finalizes -> channel released
 
    --  test2: exhaust the pool, confirm a sixth claim fails, then prove the
@@ -78,9 +97,8 @@ begin
          Reclaimed := Is_Valid (C);
       end;
 
-      Raii_Result (Boolean'Pos (Five), Boolean'Pos (Sixth_Rejected),
-                   Boolean'Pos (Reclaimed),
-                   Boolean'Pos (Five and Sixth_Rejected and Reclaimed));
+      Raii_Result (Five, Sixth_Rejected, Reclaimed,
+                   Five and Sixth_Rejected and Reclaimed);
    end;
 
    Done;

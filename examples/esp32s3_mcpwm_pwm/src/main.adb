@@ -14,11 +14,11 @@
 --  frequency within tolerance) confirms real PWM on silicon.  Report goes
 --  through the ROM printf glue (the reliable console path here).
 with Interfaces;   use Interfaces;
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.MCPWM;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -28,20 +28,72 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    use ESP32S3.MCPWM;
 
-   procedure Banner;
-   pragma Import (C, Banner, "native_mcpwm_banner");
-   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz, Ok : int);
-   pragma Import (C, Result, "native_mcpwm_result");
-   procedure Pair (Duty_A_X10, Duty_B_X10, Overlap_X10, Ok : int);
-   pragma Import (C, Pair, "native_mcpwm_pair");
-   procedure Cap_Result (Freq_Hz, Duty_X10, Ok : int);
-   pragma Import (C, Cap_Result, "native_mcpwm_capture");
-   procedure Fault_Result (Run_Pct, Fault_Pct, Resume_Pct, Ok : int);
-   pragma Import (C, Fault_Result, "native_mcpwm_fault");
-   procedure Carrier_Result (Off_Pct, On_Pct, Ok : int);
-   pragma Import (C, Carrier_Result, "native_mcpwm_carrier");
-   procedure Done;
-   pragma Import (C, Done, "native_mcpwm_done");
+   procedure Banner is
+   begin
+      Put_Line ("[mcpwm] bare-metal MCPWM PWM-output self-test "
+                & "(GPIO-sampled, no wiring)");
+   end Banner;
+
+   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz : Integer; Ok : Boolean) is
+   begin
+      Put ("[mcpwm] duty set=");
+      Put (Set_Pct);
+      Put ("%  measured=");
+      Put_Fixed (Meas_Pct_X10, 10, 1);
+      Put ("%  freq=");
+      Put (Meas_Hz);
+      Put (" Hz  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Result;
+
+   procedure Pair (Duty_A_X10, Duty_B_X10, Overlap_X10 : Integer; Ok : Boolean) is
+   begin
+      Put ("[mcpwm] pair: A=");
+      Put_Fixed (Duty_A_X10, 10, 1);
+      Put ("%  B=");
+      Put_Fixed (Duty_B_X10, 10, 1);
+      Put ("%  overlap=");
+      Put_Fixed (Overlap_X10, 10, 1);
+      Put ("%  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Pair;
+
+   procedure Cap_Result (Freq_Hz, Duty_X10 : Integer; Ok : Boolean) is
+   begin
+      Put ("[mcpwm] capture: freq=");
+      Put (Freq_Hz);
+      Put (" Hz  duty=");
+      Put_Fixed (Duty_X10, 10, 1);
+      Put ("%  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Cap_Result;
+
+   procedure Fault_Result (Run_Pct, Fault_Pct, Resume_Pct : Integer; Ok : Boolean) is
+   begin
+      Put ("[mcpwm] fault: run=");
+      Put (Run_Pct);
+      Put ("%  tripped=");
+      Put (Fault_Pct);
+      Put ("%  resumed=");
+      Put (Resume_Pct);
+      Put ("%  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Fault_Result;
+
+   procedure Carrier_Result (Off_Pct, On_Pct : Integer; Ok : Boolean) is
+   begin
+      Put ("[mcpwm] carrier: off=");
+      Put (Off_Pct);
+      Put ("%  on=");
+      Put (On_Pct);
+      Put ("%  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Carrier_Result;
+
+   procedure Done is
+   begin
+      Put_Line ("[mcpwm] done.");
+   end Done;
 
    Out_Pin : constant ESP32S3.GPIO.Pin_Id := 4;
    Freq    : constant := 20_000;
@@ -175,8 +227,8 @@ begin
       Ok := abs (D - Float (Duties (I))) <= 4.0       --  duty within 4 %
               and then abs (F - Float (Freq)) <= Float (Freq) * 0.10;  --  freq within 10 %
 
-      Result (int (Float (Duties (I))), int (D * 10.0), int (F),
-              Boolean'Pos (Ok));
+      Result (Integer (Float (Duties (I))), Integer (D * 10.0), Integer (F),
+              Ok);
    end loop;
 
    --  Complementary pair + dead-time on channel 1: A on Pair_A, inverted B on
@@ -193,7 +245,7 @@ begin
    Ok := abs (Da - 50.0) <= 6.0       --  A ~ 50 % (less the dead-time gap)
            and then abs (Db - 50.0) <= 6.0   --  B ~ 50 % (complementary)
            and then Ov < 1.0;                --  never both high (dead-time)
-   Pair (int (Da * 10.0), int (Db * 10.0), int (Ov * 10.0), Boolean'Pos (Ok));
+   Pair (Integer (Da * 10.0), Integer (Db * 10.0), Integer (Ov * 10.0), Ok);
 
    ----------------------------------------------------------------------------
    --  Test 3: CAPTURE -- feed channel 0's own output (Out_Pin) into capture 0
@@ -212,7 +264,7 @@ begin
       CD := (if Period = 0 then 0.0 else Float (High) / Float (Period) * 100.0);
       Ok := abs (CF - Float (Freq)) <= Float (Freq) * 0.05
               and then abs (CD - 30.0) <= 3.0;
-      Cap_Result (int (CF), int (CD * 10.0), Boolean'Pos (Ok));
+      Cap_Result (Integer (CF), Integer (CD * 10.0), Ok);
    end;
 
    ----------------------------------------------------------------------------
@@ -238,7 +290,7 @@ begin
       Resume := Duty_Of (Out_Pin, 20);
       Ok := abs (Run - 50.0) <= 6.0 and then Trip < 2.0
               and then abs (Resume - 50.0) <= 6.0;
-      Fault_Result (int (Run), int (Trip), int (Resume), Boolean'Pos (Ok));
+      Fault_Result (Integer (Run), Integer (Trip), Integer (Resume), Ok);
    end;
 
    ----------------------------------------------------------------------------
@@ -259,7 +311,7 @@ begin
       delay until Clock + Milliseconds (2);
       On := Duty_Of (Carrier_Pin, 20);                   --  chopped -> ~50 %
       Ok := Off > 95.0 and then On in 30.0 .. 70.0;
-      Carrier_Result (int (Off), int (On), Boolean'Pos (Ok));
+      Carrier_Result (Integer (Off), Integer (On), Ok);
    end;
 
    Done;

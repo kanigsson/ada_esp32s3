@@ -4,25 +4,21 @@
 --  published test vectors -- deterministic, so no wiring is needed:
 --    * SHA-256("abc")  vs the FIPS-180 example digest;
 --    * AES-128 ECB     vs the FIPS-197 example (encrypt), then decrypt back.
-with Interfaces;   use Interfaces;
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.SHA;
 with ESP32S3.AES;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;     pragma Import (C, Banner,  "native_crypto_banner");
-   procedure SHA1_R (Ok : int);    pragma Import (C, SHA1_R,  "native_crypto_sha1");
-   procedure SHA224_R (Ok : int);  pragma Import (C, SHA224_R, "native_crypto_sha224");
-   procedure SHA_R (Ok : int);     pragma Import (C, SHA_R,   "native_crypto_sha");
-   procedure AES_E (Ok : int);     pragma Import (C, AES_E,   "native_crypto_aes_enc");
-   procedure AES_D (Ok : int);     pragma Import (C, AES_D,   "native_crypto_aes_dec");
-   procedure AES256 (Ok : int);    pragma Import (C, AES256,  "native_crypto_aes256");
-   procedure Done;       pragma Import (C, Done,    "native_crypto_done");
+   procedure Put_Result (Label : String; Ok : Boolean) is
+   begin
+      Put (Label);
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Put_Result;
 
    use type ESP32S3.SHA.Byte_Array;
    use type ESP32S3.AES.Block;
@@ -72,27 +68,31 @@ procedure Main is
       16#EA#, 16#FC#, 16#49#, 16#90#, 16#4B#, 16#49#, 16#60#, 16#89#);
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[crypto] bare-metal hardware SHA-1/224/256 + AES-128/256 self-test (test vectors)");
 
-   SHA1_R   (Boolean'Pos (ESP32S3.SHA.Hash_1   (Abc) = Sha1_Expect));
-   SHA224_R (Boolean'Pos (ESP32S3.SHA.Hash_224 (Abc) = Sha224_Expect));
-   SHA_R    (Boolean'Pos (ESP32S3.SHA.Hash_256 (Abc) = Sha_Expect));
+   Put_Result ("[crypto] SHA-1(""abc"")   vs FIPS-180 vector: ",
+               ESP32S3.SHA.Hash_1   (Abc) = Sha1_Expect);
+   Put_Result ("[crypto] SHA-224(""abc"") vs FIPS-180 vector: ",
+               ESP32S3.SHA.Hash_224 (Abc) = Sha224_Expect);
+   Put_Result ("[crypto] SHA-256(""abc"") vs FIPS-180 vector: ",
+               ESP32S3.SHA.Hash_256 (Abc) = Sha_Expect);
 
    declare
       C : constant ESP32S3.AES.Block := ESP32S3.AES.Encrypt_ECB (Aes_Key, Aes_Plain);
    begin
-      AES_E (Boolean'Pos (C = Aes_Cipher));
-      AES_D (Boolean'Pos (ESP32S3.AES.Decrypt_ECB (Aes_Key, Aes_Cipher) = Aes_Plain));
+      Put_Result ("[crypto] AES-128 encrypt vs FIPS-197 vector: ", C = Aes_Cipher);
+      Put_Result ("[crypto] AES-128 decrypt round-trip: ",
+                  ESP32S3.AES.Decrypt_ECB (Aes_Key, Aes_Cipher) = Aes_Plain);
    end;
 
    --  AES-256: encrypt to the FIPS vector and decrypt back.  (The S3 hardware
    --  has no 192-bit mode, so only 128 and 256 are exercised.)
-   AES256 (Boolean'Pos
-     (ESP32S3.AES.Encrypt_ECB (Aes_Key_256, Aes_Plain) = Aes_Cipher_256
+   Put_Result ("[crypto] AES-256 enc+dec vs FIPS-197 vector: ",
+     ESP32S3.AES.Encrypt_ECB (Aes_Key_256, Aes_Plain) = Aes_Cipher_256
         and then
-      ESP32S3.AES.Decrypt_ECB (Aes_Key_256, Aes_Cipher_256) = Aes_Plain));
+      ESP32S3.AES.Decrypt_ECB (Aes_Key_256, Aes_Cipher_256) = Aes_Plain);
 
-   Done;
+   Put_Line ("[crypto] done.");
 
    loop
       delay until Clock + Seconds (3600);

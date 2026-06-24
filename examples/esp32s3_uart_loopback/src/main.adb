@@ -15,10 +15,11 @@
 --
 --  A "PASS" line on the USB-Serial-JTAG console confirms each on silicon.  The
 --  report goes through the ROM printf glue (the reliable console path here).
-with Interfaces.C; use Interfaces.C;
+with Interfaces;    use Interfaces;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.UART;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -27,23 +28,6 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
    use ESP32S3.UART;
-
-   procedure Banner;
-   pragma Import (C, Banner, "native_uart_banner");
-   procedure Line (Kind : int);
-   pragma Import (C, Line, "native_uart_line");
-   procedure Hex (V : int);
-   pragma Import (C, Hex, "native_uart_hex");
-   procedure Eol;
-   pragma Import (C, Eol, "native_uart_eol");
-   procedure Verdict (Ok : int);
-   pragma Import (C, Verdict, "native_uart_verdict");
-   procedure Flow (Capped, Total, Ok : int);
-   pragma Import (C, Flow, "native_uart_flow");
-   procedure Invert (Tx_Only_Inverted, Tx_Rx_Matched, Ok : int);
-   pragma Import (C, Invert, "native_uart_invert");
-   procedure Done;
-   pragma Import (C, Done, "native_uart_done");
 
    Port : constant UART_Port := UART1;
 
@@ -63,13 +47,18 @@ procedure Main is
      (16#55#, 16#AA#, 16#00#, 16#FF#, 16#12#, 16#34#, 16#56#, 16#78#,
       16#9A#, 16#BC#, 16#DE#, 16#F0#, 16#0F#, 16#A5#, 16#5A#, 16#C3#);
 
-   procedure Dump (Kind : int; Data : Byte_Array; Count : Natural) is
+   --  Start a labelled byte line then dump Count bytes as " %02x".
+   --  Recv selects the label: True = "recv", False = "sent".
+   procedure Dump (Recv : Boolean; Data : Byte_Array; Count : Natural) is
    begin
-      Line (Kind);
+      Put ("[uart] ");
+      Put (if Recv then "recv" else "sent");
+      Put (":");
       for I in Data'First .. Data'First + Count - 1 loop
-         Hex (int (Data (I)));
+         Put (" ");
+         Put_Hex (Unsigned_32 (Data (I)) and 16#FF#, 2);
       end loop;
-      Eol;
+      New_Line;
    end Dump;
 
    --  Flow-control test payload: 64 bytes (>> Threshold, < 128-byte FIFO).
@@ -87,7 +76,8 @@ procedure Main is
    Tx_Rx_Match   : Boolean;
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
-   Banner;
+   Put_Line ("[uart] bare-metal UART self-test "
+             & "(internal TX->RX loopback, no wiring)");
 
    Setup (Port, Baud => 115_200);            --  8-N-1 defaults
 
@@ -106,9 +96,10 @@ begin
       end loop;
    end if;
 
-   Dump (0, Tx, Tx'Length);                  --  sent
-   Dump (1, Rx, Got);                        --  recv
-   Verdict (Boolean'Pos (Equal));
+   Dump (False, Tx, Tx'Length);              --  sent
+   Dump (True, Rx, Got);                     --  recv
+   Put ("[uart] loopback: ");
+   Put_Line (if Equal then "PASS" else "FAIL");
 
    ----------------------------------------------------------------------------
    --  Test 2: RTS/CTS hardware flow control.  RTS is matrix-looped to CTS on
@@ -139,7 +130,12 @@ begin
          end if;
       end loop;
    end if;
-   Flow (int (Capped), Flow_Tx'Length, Boolean'Pos (Equal));
+   Put ("[uart] flow: RX throttled to ");
+   Put (Capped);
+   Put (" of ");
+   Put (Flow_Tx'Length);
+   Put (" bytes, all drained: ");
+   Put_Line (if Equal then "PASS" else "FAIL");
 
    ----------------------------------------------------------------------------
    --  Test 3: per-line inversion, changed AFTER configure via Set_Inversion.
@@ -177,10 +173,14 @@ begin
       end if;
    end loop;
 
-   Invert (Boolean'Pos (Tx_Only_Broke), Boolean'Pos (Tx_Rx_Match),
-           Boolean'Pos (Tx_Only_Broke and Tx_Rx_Match));
+   Put ("[uart] invert: TX-only->link-breaks:");
+   Put (if Tx_Only_Broke then "y" else "n");
+   Put ("  TX+RX->match:");
+   Put (if Tx_Rx_Match then "y" else "n");
+   Put ("  ");
+   Put_Line (if Tx_Only_Broke and Tx_Rx_Match then "PASS" else "FAIL");
 
-   Done;
+   Put_Line ("[uart] done.");
 
    loop
       delay until Clock + Seconds (3600);

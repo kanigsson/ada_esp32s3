@@ -22,12 +22,12 @@
 --  so with a mic wired you can watch the level rise when you speak or tap it.
 --  With no mic the input floats -- expect a railed/quiet reading.
 with Interfaces;   use Interfaces;
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 with Ada.Unchecked_Conversion;
 
 with ESP32S3.I2S;   use ESP32S3.I2S;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the demo runs on core 0.
@@ -35,15 +35,6 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_pdm_banner");
-   procedure Hint (Clk, Dat : int);
-   pragma Import (C, Hint, "native_pdm_hint");
-   procedure Block (Idx, Mn, Mx, Pp, Signal : int);
-   pragma Import (C, Block, "native_pdm_block");
-   procedure Done;
-   pragma Import (C, Done, "native_pdm_done");
-
    --  PDM microphone pins (validated GPIO pins; the ESP drives Clk, reads Data).
    Clk_Pin  : constant ESP32S3.GPIO.Pin_Id := 5;
    Data_Pin : constant ESP32S3.GPIO.Pin_Id := 6;
@@ -60,8 +51,15 @@ procedure Main is
      new Ada.Unchecked_Conversion (Unsigned_16, Integer_16);
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
-   Hint (int (Clk_Pin), int (Data_Pin));
+   Put_Line ("[i2s-pdm] bare-metal I2S PDM microphone capture demo "
+             & "(needs an external PDM mic)");
+   Put ("[i2s-pdm] wire a PDM mic: CLK <- GPIO");
+   Put (Integer (Clk_Pin));
+   Put ("   DATA -> GPIO");
+   Put (Integer (Data_Pin));
+   Put_Line ("   (plus VDD/GND)");
+   Put_Line ("[i2s-pdm] with no mic the data line floats -- expect "
+             & "railed/quiet; speak/tap to see the level rise");
 
    Setup (I2S0, Sample_Rate => 16_000, Bits => Bits_16, Mode => PDM);
    --  PDM mic: clock OUT on Ws, data IN on Din (no BCK, no Dout for RX-only).
@@ -93,15 +91,25 @@ begin
             Railed : constant Boolean := Mn <= -32_000 or else Mx >= 32_000;
             Signal : constant Boolean := not Railed and then Mx - Mn > Floor;
          begin
-            Block (int (B), int (Mn), int (Mx), int (Mx - Mn),
-                   Boolean'Pos (Signal));
+            Put ("[i2s-pdm] block ");
+            Put (B);
+            Put (": min=");
+            Put (Mn);
+            Put (" max=");
+            Put (Mx);
+            Put (" peak-to-peak=");
+            Put (Mx - Mn);
+            Put (" ");
+            Put_Line (if Signal then "<-- signal present"
+                      elsif Railed then "(railed -- no mic?)"
+                      else "(quiet)");
          end;
       end;                                --  S finalizes -> port released
 
       delay until Clock + Milliseconds (100);
    end loop;
 
-   Done;
+   Put_Line ("[i2s-pdm] capture done.");
 
    loop
       delay until Clock + Seconds (3600);

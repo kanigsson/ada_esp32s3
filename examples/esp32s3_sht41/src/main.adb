@@ -9,10 +9,10 @@
 --
 --  Report goes through the ROM printf glue; the Ada driver does all the I2C work.
 with Interfaces;   use type Interfaces.Unsigned_32;
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.SHT41;
+with ESP32S3.Log;  use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the demo runs on core 0.
@@ -23,28 +23,23 @@ procedure Main is
    package SHT renames ESP32S3.SHT41;
    use type SHT.Status;
 
-   procedure Banner;     pragma Import (C, Banner,    "native_sht_banner");
-   procedure Serial (S : Interfaces.Unsigned_32; Ok : int);
-                         pragma Import (C, Serial,    "native_sht_serial");
-   procedure No_Device;  pragma Import (C, No_Device, "native_sht_no_device");
-   procedure Sample (Temp_MC, Hum_MRH : int);
-                         pragma Import (C, Sample,    "native_sht_sample");
-   procedure Done;       pragma Import (C, Done,      "native_sht_done");
-
    Dev : SHT.Device;
    St  : SHT.Status;
    SN  : Interfaces.Unsigned_32;
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
-   Banner;
+   Put_Line ("[sht] SHT41 temperature/humidity driver demo (SDA=IO8 SCL=IO7)");
 
    SHT.Setup (Dev, Sda => 8, Scl => 7);
 
    --  probe: the serial number doubles as a presence check.
    SHT.Read_Serial_Number (Dev, SN, St);
-   Serial (SN, Boolean'Pos (St = SHT.OK));
+   Put ("[sht] serial : 0x");
+   Put_Hex (SN, 8);
+   Put ("  ");
+   Put_Line (if St = SHT.OK then "(SHT41 present)" else "(no ACK!)");
    if St /= SHT.OK then
-      No_Device;
+      Put_Line ("[sht] no SHT41 found at 0x44 -- check wiring/power.");
       loop
          delay until Clock + Seconds (3600);
       end loop;
@@ -58,11 +53,15 @@ begin
       begin
          SHT.Measure (Dev, M, St);
          exit when St /= SHT.OK;
-         Sample (Temp_MC => int (M.Temperature), Hum_MRH => int (M.Humidity));
+         Put ("[sht] T=");
+         Put_Fixed (Integer (M.Temperature), 1000, 2);
+         Put (" C  RH=");
+         Put_Fixed (Integer (M.Humidity), 1000, 2);
+         Put_Line (" %");
       end;
    end loop;
 
-   Done;
+   Put_Line ("[sht] done.");
 
    loop
       delay until Clock + Seconds (3600);

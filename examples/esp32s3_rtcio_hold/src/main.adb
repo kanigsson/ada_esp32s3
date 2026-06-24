@@ -4,32 +4,23 @@
 --  is driven high and then HELD.  While held, a GPIO write to clear it is ignored
 --  (the pad stays high); after Release, the same write takes effect (the pad goes
 --  low).  The pad is read back with ESP32S3.GPIO.Read -- no wiring.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.RTC_IO; use ESP32S3.RTC_IO;
 with ESP32S3.GPIO;
+with ESP32S3.Log;    use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_rtcio_banner");
-   procedure Result (After_Set, While_Held, After_Release, Ok : int);
-   pragma Import (C, Result, "native_rtcio_result");
-   procedure Pull_Result (Pullup, Pulldown, Ok : int);
-   pragma Import (C, Pull_Result, "native_rtcio_pull");
-   procedure Done;
-   pragma Import (C, Done, "native_rtcio_done");
-
    Pin      : constant ESP32S3.GPIO.Pin_Id := 5;  --  RTC-capable pad (hold test)
    Pull_Pin : constant ESP32S3.GPIO.Pin_Id := 6;  --  RTC-capable pad (pull test)
 
    function Read return Boolean is (ESP32S3.GPIO.Read (Pin));
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[rtcio] bare-metal RTC-IO pad-hold self-test (no wiring)");
 
    ESP32S3.GPIO.Configure (Pin, ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Set (Pin);                         --  drive high
@@ -55,8 +46,14 @@ begin
       --  PASS: high after set, still high while held despite the clear, low once
       --  released and cleared.
       Ok := After_Set and then Held_Level and then not Released_Level;
-      Result (Boolean'Pos (After_Set), Boolean'Pos (Held_Level),
-              Boolean'Pos (Released_Level), Boolean'Pos (Ok));
+      Put ("[rtcio] GPIO5: set=");
+      Put (Boolean'Pos (After_Set));
+      Put ("  cleared-while-held=");
+      Put (Boolean'Pos (Held_Level));
+      Put ("  cleared-after-release=");
+      Put (Boolean'Pos (Released_Level));
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
    end;
 
    --  RTC pull test: route a high-Z pad into the RTC domain, then watch it follow
@@ -76,11 +73,15 @@ begin
       Down_Level := ESP32S3.GPIO.Read (Pull_Pin);             --  expect low
 
       Set_Pull (Pull_Pin, No_Pull);
-      Pull_Result (Boolean'Pos (Up_Level), Boolean'Pos (Down_Level),
-                   Boolean'Pos (Up_Level and then not Down_Level));
+      Put ("[rtcio] GPIO6 RTC pull: pull-up reads=");
+      Put (Boolean'Pos (Up_Level));
+      Put ("  pull-down reads=");
+      Put (Boolean'Pos (Down_Level));
+      Put ("  ");
+      Put_Line (if Up_Level and then not Down_Level then "PASS" else "FAIL");
    end;
 
-   Done;
+   Put_Line ("[rtcio] done.");
 
    loop
       delay until Clock + Seconds (3600);

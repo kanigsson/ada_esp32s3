@@ -6,9 +6,9 @@
 --  self-capacitance), and two different pads read different values -- which
 --  proves the capacitance-measuring FSM is running on silicon.  Touch a pad and
 --  its count rises.  No wiring needed for the baseline check.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
+with ESP32S3.Log;   use ESP32S3.Log;
 with ESP32S3.Touch; use ESP32S3.Touch;
 with ESP32S3.GPIO;
 
@@ -16,22 +16,41 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_touch_banner");
-   procedure Chan (Ch, Gpio, Raw : int);
-   pragma Import (C, Chan, "native_touch_chan");
-   procedure Result (Ok : int);
-   pragma Import (C, Result, "native_touch_result");
-   procedure Thresh (Raw, Bench, Touched_Hi, Touched_Lo, Ok : int);
-   pragma Import (C, Thresh, "native_touch_thresh");
-   procedure Done;
-   pragma Import (C, Done, "native_touch_done");
+
+   --  "[touch] channel %d (GPIO%d): raw count = %d\n".
+   procedure Chan (Ch, Gpio, Raw : Integer) is
+   begin
+      Put ("[touch] channel ");
+      Put (Ch);
+      Put (" (GPIO");
+      Put (Gpio);
+      Put ("): raw count = ");
+      Put (Raw);
+      New_Line;
+   end Chan;
+
+   --  "[touch] ch1: baseline=%d now=%d  Touched(baseline)=%d "
+   --  "Touched(baseline+200k)=%d  %s\n" (the two Touched flags print as 0/1).
+   procedure Thresh (Baseline, Now : Integer;
+                     Untouched, Shifted, Ok : Boolean) is
+   begin
+      Put ("[touch] ch1: baseline=");
+      Put (Baseline);
+      Put (" now=");
+      Put (Now);
+      Put ("  Touched(baseline)=");
+      Put (Boolean'Pos (Untouched));
+      Put (" Touched(baseline+200k)=");
+      Put (Boolean'Pos (Shifted));
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Thresh;
 
    A : constant Channel := 1;     --  GPIO1
    B : constant Channel := 3;     --  GPIO3
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[touch] bare-metal capacitive-touch read self-test (no wiring)");
 
    Setup;
    Enable (A);
@@ -43,9 +62,10 @@ begin
       Rb : constant Natural := Read (B);
       Ok : constant Boolean := Ra > 0 and then Rb > 0 and then Ra /= Rb;
    begin
-      Chan (int (A), int (Natural (Pad (A))), int (Ra));
-      Chan (int (B), int (Natural (Pad (B))), int (Rb));
-      Result (Boolean'Pos (Ok));
+      Chan (Integer (A), Natural (Pad (A)), Ra);
+      Chan (Integer (B), Natural (Pad (B)), Rb);
+      Put ("[touch] baseline counts non-zero + distinct: ");
+      Put_Line (if Ok then "PASS" else "FAIL");
    end;
 
    --  Touch-detection test: capture the untouched baseline, then check the
@@ -58,11 +78,10 @@ begin
       Shifted    : constant Boolean := Touched (A, Baseline + 200_000, Margin => 50_000);
       Ok         : constant Boolean := not Untouched and then Shifted;
    begin
-      Thresh (int (Baseline), int (Read (A)), Boolean'Pos (Untouched),
-              Boolean'Pos (Shifted), Boolean'Pos (Ok));
+      Thresh (Baseline, Read (A), Untouched, Shifted, Ok);
    end;
 
-   Done;
+   Put_Line ("[touch] done.");
 
    loop
       delay until Clock + Seconds (3600);

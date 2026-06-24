@@ -5,25 +5,16 @@
 --  pad's average (high samples / total) over a window -- NO wiring.  A sigma-delta
 --  stream's average equals its programmed density, so the sampled fraction should
 --  track the set value.  Also checks the controlled (RAII) Channel handle.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.SDM;   use ESP32S3.SDM;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_sdm_banner");
-   procedure Result (Set_Pct, Meas_Pct_X10, Ok : int);
-   pragma Import (C, Result, "native_sdm_result");
-   procedure Raii_Result (Eight, Ninth, Reclaimed, Ok : int);
-   pragma Import (C, Raii_Result, "native_sdm_raii");
-   procedure Done;
-   pragma Import (C, Done, "native_sdm_done");
-
    Pin : constant ESP32S3.GPIO.Pin_Id := 4;     --  SDM output, GPIO-sampled
 
    Densities : constant array (1 .. 3) of Density_Percent := (25.0, 50.0, 75.0);
@@ -47,7 +38,8 @@ procedure Main is
    Ok : Boolean;
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[sdm] bare-metal SDM sigma-delta density self-test "
+             & "(GPIO-sampled, no wiring)");
 
    declare
       Ch : Channel;
@@ -62,7 +54,12 @@ begin
          delay until Clock + Milliseconds (5);
          M  := Measure (50);
          Ok := abs (M - Float (Densities (I))) <= 6.0;     --  within 6 %
-         Result (int (Float (Densities (I))), int (M * 10.0), Boolean'Pos (Ok));
+         Put ("[sdm] density set=");
+         Put (Integer (Float (Densities (I))));
+         Put ("%   measured=");
+         Put_Fixed (Integer (M * 10.0), 10, 1);
+         Put ("%   ");
+         Put_Line (if Ok then "PASS" else "FAIL");
       end loop;
    end;                                  --  Ch finalizes -> output low, released
 
@@ -87,12 +84,17 @@ begin
          Reclaimed := Is_Valid (C);
       end;
 
-      Raii_Result (Boolean'Pos (Eight), Boolean'Pos (Ninth_Rejected),
-                   Boolean'Pos (Reclaimed),
-                   Boolean'Pos (Eight and Ninth_Rejected and Reclaimed));
+      Put ("[sdm] raii: 8-claimed=");
+      Put (if Eight then "y" else "n");
+      Put (" 9th-rejected=");
+      Put (if Ninth_Rejected then "y" else "n");
+      Put (" reclaimed=");
+      Put (if Reclaimed then "y" else "n");
+      Put ("  ");
+      Put_Line (if Eight and Ninth_Rejected and Reclaimed then "PASS" else "FAIL");
    end;
 
-   Done;
+   Put_Line ("[sdm] done.");
 
    loop
       delay until Clock + Seconds (3600);

@@ -22,9 +22,10 @@
 --  does not actually invert the input -- a quirk of the part, not the driver.)
 --
 --  Report goes through the ROM printf glue; the Ada driver does all the I2C work.
-with Interfaces.C; use Interfaces.C;
-with Ada.Real_Time; use Ada.Real_Time;
+with Interfaces;     use Interfaces;
+with Ada.Real_Time;  use Ada.Real_Time;
 
+with ESP32S3.Log;    use ESP32S3.Log;
 with ESP32S3.TCA9555;
 
 with System.BB.CPU_Primitives.Multiprocessors;
@@ -35,17 +36,50 @@ procedure Main is
    use type GPX.Status;
    use type GPX.Port_Value;
 
-   procedure Banner;     pragma Import (C, Banner,    "native_tca_banner");
-   procedure Probe (Inputs, Ok : int);
-                         pragma Import (C, Probe,     "native_tca_probe");
-   procedure No_Device;  pragma Import (C, No_Device, "native_tca_no_device");
-   procedure Out_Reg (Wrote, Got, Ok : int);
-                         pragma Import (C, Out_Reg,   "native_tca_outreg");
-   procedure Pin_R (Pin, Wrote, Got, Ok : int);
-                         pragma Import (C, Pin_R,     "native_tca_pin");
-   procedure Pol_Reg (Wrote, Got, Ok : int);
-                         pragma Import (C, Pol_Reg,   "native_tca_polreg");
-   procedure Done;       pragma Import (C, Done,      "native_tca_done");
+   --  Low 16 bits of a port value as an Unsigned_32, for "0x%04x" hex output.
+   function U16 (V : GPX.Port_Value) return Unsigned_32 is
+     (Unsigned_32 (V) and 16#FFFF#);
+
+   --  "[gpio] probe   : inputs=0x%04x  %s\n" (ok ? "(present)" : "(no ACK!)").
+   procedure Probe (Inputs : GPX.Port_Value; Ok : Boolean) is
+   begin
+      Put ("[gpio] probe   : inputs=0x");
+      Put_Hex (U16 (Inputs), 4);
+      Put ("  ");
+      Put_Line (if Ok then "(present)" else "(no ACK!)");
+   end Probe;
+
+   --  "[gpio] %-7s : wrote=0x%04x read=0x%04x  %s\n" for out-reg / pol-reg
+   --  (Name is "out-reg" or "pol-reg", both 7 chars so no padding is needed).
+   procedure Reg_Line (Name : String; Wrote, Got : GPX.Port_Value; Ok : Boolean)
+   is
+   begin
+      Put ("[gpio] ");
+      Put (Name);
+      Put (" : wrote=0x");
+      Put_Hex (U16 (Wrote), 4);
+      Put (" read=0x");
+      Put_Hex (U16 (Got), 4);
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Reg_Line;
+
+   --  "[gpio] pin %-2d  : set=%d  out-bit=%d  %s\n" (left-justified to width 2,
+   --  so a single-digit pin gets one trailing space).
+   procedure Pin_R (Pin, Wrote, Got : Integer; Ok : Boolean) is
+   begin
+      Put ("[gpio] pin ");
+      Put (Pin);
+      if Pin in 0 .. 9 then
+         Put (" ");
+      end if;
+      Put ("  : set=");
+      Put (Wrote);
+      Put ("  out-bit=");
+      Put (Got);
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Pin_R;
 
    Dev  : GPX.Device;
    S    : GPX.Session;
@@ -64,7 +98,8 @@ procedure Main is
 
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[gpio] TCA9555 16-bit I2C GPIO expander demo "
+             & "(0x20, SDA=IO8 SCL=IO7)");
 
    GPX.Setup (Dev, Addr => 0, Sda => 8, Scl => 7);
    GPX.Acquire (S, Dev);                    --  hold the expander for the test
@@ -75,9 +110,9 @@ begin
 
    --  probe: read the input port.
    GPX.Read_Port (S, Orig, St);
-   Gap; Probe (int (Orig), Boolean'Pos (St = GPX.OK));
+   Gap; Probe (Orig, St = GPX.OK);
    if St /= GPX.OK then
-      No_Device;
+      Put_Line ("[gpio] no TCA9555 found at 0x20 -- check wiring/power.");
       loop
          delay until Clock + Seconds (3600);
       end loop;
@@ -91,7 +126,7 @@ begin
          GPX.Read_Outputs (S, V, St);
       end if;
       Gap;
-      Out_Reg (int (P), int (V), Boolean'Pos (St = GPX.OK and then V = P));
+      Reg_Line ("out-reg", P, V, St = GPX.OK and then V = P);
    end loop;
 
    --  per-pin RMW of the output register.
@@ -99,13 +134,13 @@ begin
    GPX.Read_Outputs (S, V, St);
    Gap;
    Pin_R (5, 1, Boolean'Pos ((V and Bit5) /= 0),
-          Boolean'Pos (St = GPX.OK and then (V and Bit5) /= 0));
+          St = GPX.OK and then (V and Bit5) /= 0);
 
    GPX.Write_Pin (S, 5, GPX.Low, St);
    GPX.Read_Outputs (S, V, St);
    Gap;
    Pin_R (5, 0, Boolean'Pos ((V and Bit5) /= 0),
-          Boolean'Pos (St = GPX.OK and then (V and Bit5) = 0));
+          St = GPX.OK and then (V and Bit5) = 0);
 
    --  polarity-inversion register round-trip (write then read back).
    GPX.Set_Polarity (S, 16#A55A#, St);
@@ -113,11 +148,11 @@ begin
       GPX.Read_Polarity (S, V, St);
    end if;
    Gap;
-   Pol_Reg (16#A55A#, int (V), Boolean'Pos (St = GPX.OK and then V = 16#A55A#));
+   Reg_Line ("pol-reg", 16#A55A#, V, St = GPX.OK and then V = 16#A55A#);
    GPX.Set_Polarity (S, 0, St);             --  restore normal polarity
 
    GPX.Release (S);
-   Gap; Done;
+   Gap; Put_Line ("[gpio] done.");
 
    loop
       delay until Clock + Seconds (3600);

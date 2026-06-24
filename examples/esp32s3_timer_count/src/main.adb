@@ -5,26 +5,42 @@
 --  fixed delay (the two independent time bases should agree), then verify a
 --  one-shot alarm fires at the programmed count.  Also checks the controlled
 --  (RAII) Timer handle.
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
+with ESP32S3.Log;   use ESP32S3.Log;
 with ESP32S3.Timer; use ESP32S3.Timer;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_timer_banner");
-   procedure Count_Result (Expected, Measured, Ok : int);
-   pragma Import (C, Count_Result, "native_timer_count");
-   procedure Alarm_Result (Fired, Elapsed_Us, Ok : int);
-   pragma Import (C, Alarm_Result, "native_timer_alarm");
-   procedure Done;
-   pragma Import (C, Done, "native_timer_done");
+
+   --  "[timer] 1 MHz count over 50 ms: expected~%d measured=%d  %s\n".
+   procedure Count_Result (Expected, Measured : Integer; Ok : Boolean) is
+   begin
+      Put ("[timer] 1 MHz count over 50 ms: expected~");
+      Put (Expected);
+      Put (" measured=");
+      Put (Measured);
+      Put ("  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Count_Result;
+
+   --  "[timer] alarm@30000: fired=%d at~%d us  %s\n" (fired printed as 0/1).
+   procedure Alarm_Result (Fired : Boolean; Elapsed_Us : Integer; Ok : Boolean)
+   is
+   begin
+      Put ("[timer] alarm@30000: fired=");
+      Put (Boolean'Pos (Fired));
+      Put (" at~");
+      Put (Elapsed_Us);
+      Put (" us  ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Alarm_Result;
+
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[timer] bare-metal general-purpose timer self-test");
 
    declare
       T : Timer;
@@ -42,7 +58,7 @@ begin
          Ok : constant Boolean :=
            abs (Integer (Measured) - Expected) <= Expected / 50;   --  within 2 %
       begin
-         Count_Result (int (Expected), int (Measured), Boolean'Pos (Ok));
+         Count_Result (Expected, Integer (Measured), Ok);
       end;
       Stop (T);
 
@@ -63,14 +79,14 @@ begin
          Us := Integer (To_Duration (Clock - T0) * 1_000_000.0);
          --  Should fire near 30 ms (30000 us); allow generous slack for the
          --  polling loop and clock granularity.
-         Alarm_Result (Boolean'Pos (Fired), int (Us),
-                       Boolean'Pos (Fired and then abs (Us - 30_000) <= 5_000));
+         Alarm_Result (Fired, Us,
+                       Fired and then abs (Us - 30_000) <= 5_000);
          Clear_Alarm (T);
          Stop (T);
       end;
    end;                                  --  T finalizes -> stopped, released
 
-   Done;
+   Put_Line ("[timer] done.");
 
    loop
       delay until Clock + Seconds (3600);

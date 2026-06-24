@@ -17,13 +17,14 @@
 --  Report goes through the ROM printf glue; the Ada driver does all the UART +
 --  NMEA work.
 with System;
-with Interfaces;   use type Interfaces.Integer_32;
-with Interfaces.C; use Interfaces.C;
+with Interfaces;   use Interfaces;
+use type Interfaces.Integer_32;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.UART;
 with ESP32S3.GPS;
 with ESP32S3.GPS.L76K;   --  L76K-specific PCAS commands
+with ESP32S3.Log;        use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the demo runs on core 0.
@@ -36,25 +37,138 @@ procedure Main is
    use type GPS.Fix_Quality;
 
    --  PCAS04 mode number (1 .. 7) for a constellation selection.
-   function Config_Mode (C : L76K.Constellation) return int is
-     (int (L76K.Constellation'Pos (C)) + 1);
+   function Config_Mode (C : L76K.Constellation) return Integer is
+     (L76K.Constellation'Pos (C) + 1);
 
-   procedure Banner;   pragma Import (C, Banner,   "native_gps_banner");
-   procedure Live_Hdr; pragma Import (C, Live_Hdr, "native_gps_live_hdr");
-   procedure Check (Code, Ok : int);
-                       pragma Import (C, Check,    "native_gps_check");
-   procedure Live (Time_Valid, HH, MM, SS, Pos_Fresh,
-                   Lat_E7, Lon_E7, In_View, Max_SNR, Fix_Type : int);
-                       pragma Import (C, Live,     "native_gps_live");
-   procedure Raw (S : System.Address; N : int);
-                       pragma Import (C, Raw,      "native_gps_raw");
-   procedure Sat_Hdr (Count : int);
-                       pragma Import (C, Sat_Hdr,  "native_gps_sat_hdr");
-   procedure Sat (Sys, PRN, El, Az, SNR : int);
-                       pragma Import (C, Sat,      "native_gps_sat");
-   procedure Cfg (Mode : int);
-                       pragma Import (C, Cfg,      "native_gps_cfg");
-   procedure Done;     pragma Import (C, Done,     "native_gps_done");
+   --  Two-digit zero-padded field, matching the glue's put2 ((v/10)%10, v%10).
+   procedure Put2 (V : Integer) is
+   begin
+      Put (Character'Val (Character'Pos ('0') + (V / 10) mod 10));
+      Put (Character'Val (Character'Pos ('0') + V mod 10));
+   end Put2;
+
+   --  1e-7 degrees -> "[-]D.DDDDDDD" (7 fractional digits), like the glue's put_deg.
+   procedure Put_Deg (E7 : Integer) is
+      U   : constant Integer := abs E7;
+      Div : Integer := 1_000_000;
+   begin
+      if E7 < 0 then
+         Put ("-");
+      end if;
+      Put (U / 10_000_000);
+      Put (".");
+      while Div >= 1 loop
+         Put (Character'Val (Character'Pos ('0') + (U / Div) mod 10));
+         Div := Div / 10;
+      end loop;
+   end Put_Deg;
+
+   --  One self-test check line: "[gps] %-11s : %s" with the name selected by Code.
+   procedure Check (Code : Integer; Ok : Boolean) is
+      function Name return String is
+        (case Code is
+            when 0      => "gga accept",
+            when 1      => "position",
+            when 2      => "fix info",
+            when 3      => "utc time",
+            when 4      => "rmc accept",
+            when 5      => "date",
+            when 6      => "velocity",
+            when 7      => "bad-cks rej",
+            when 8      => "zda t/date",
+            when 9      => "gll pos",
+            when 10     => "vtg vel",
+            when 11     => "gsv view",
+            when 12     => "gsa dop",
+            when 13     => "gsv sats",
+            when others => "?");
+      M : constant String := Name;
+   begin
+      Put ("[gps] ");
+      Put (M);
+      for I in M'Length + 1 .. 11 loop
+         Put (" ");
+      end loop;
+      Put (" : ");
+      Put_Line (if Ok then "PASS" else "FAIL");
+   end Check;
+
+   --  One live status line; see the glue's native_gps_live.
+   procedure Live (Time_Valid : Boolean; HH, MM, SS : Integer;
+                   Pos_Fresh : Boolean; Lat_E7, Lon_E7 : Integer;
+                   In_View, Max_SNR, Fix_Type : Integer) is
+   begin
+      Put ("[gps] UTC=");
+      if Time_Valid then
+         Put2 (HH); Put (":"); Put2 (MM); Put (":"); Put2 (SS);
+      else
+         Put ("--:--:--");
+      end if;
+      if Pos_Fresh then
+         Put (" lat="); Put_Deg (Lat_E7);
+         Put (" lon="); Put_Deg (Lon_E7);
+      else
+         Put (" view="); Put (In_View);
+         Put (" snr="); Put (Max_SNR);
+         Put (" ");
+         Put (if Fix_Type = 2 then "3D"
+              elsif Fix_Type = 1 then "2D" else "no-fix");
+      end if;
+      New_Line;
+   end Live;
+
+   --  Echo a raw NMEA sentence (clipped to 52 chars; ".." marks truncation).
+   procedure Raw (S : System.Address; N : Integer) is
+      Lim  : constant Integer := (if N > 52 then 52 else N);
+      Bytes : array (0 .. Integer'Max (Lim - 1, 0)) of Character
+        with Import, Address => S;
+   begin
+      Put ("[gps] raw: ");
+      for I in 0 .. Lim - 1 loop
+         Put ((1 => Bytes (I)));
+      end loop;
+      if N > Lim then
+         Put ("..");
+      end if;
+      New_Line;
+   end Raw;
+
+   --  One satellite line; sys 0..5 = GP/GL/GA/BD/QZ/Other.
+   procedure Sat (Sys, PRN, El, Az, SNR : Integer) is
+      function Sys_Name return String is
+        (case Sys is
+            when 0      => "GP",
+            when 1      => "GL",
+            when 2      => "GA",
+            when 3      => "BD",
+            when 4      => "QZ",
+            when 5      => "??",
+            when others => "??");
+   begin
+      Put ("[gps]   ");
+      Put (Sys_Name); Put (PRN);
+      Put (" el="); Put (El);
+      Put (" az="); Put (Az);
+      Put (" snr="); Put (SNR);
+      New_Line;
+   end Sat;
+
+   --  Announce an L76K PCAS04 constellation change (mode 1..7).
+   procedure Cfg (Mode : Integer) is
+      function Mode_Name return String is
+        (case Mode is
+            when 1      => "GPS",
+            when 2      => "BeiDou",
+            when 3      => "GPS+BeiDou",
+            when 4      => "GLONASS",
+            when 5      => "GPS+GLONASS",
+            when 6      => "BeiDou+GLONASS",
+            when 7      => "GPS+BeiDou+GLONASS",
+            when others => "?");
+   begin
+      Put ("[gps] >> PCAS04: set GNSS = ");
+      Put_Line (Mode_Name);
+   end Cfg;
 
    --  Canonical NMEA examples (checksums verified): 48 07.038' N, 011 31.000' E.
    GGA : constant String :=
@@ -77,15 +191,16 @@ procedure Main is
    Ok : Boolean;
 
    --  Space the back-to-back self-test lines so the 64-byte console FIFO drains.
-   procedure Report (Code : int; Pass : Boolean) is
+   procedure Report (Code : Integer; Pass : Boolean) is
    begin
       delay until Clock + Milliseconds (40);
-      Check (Code, Boolean'Pos (Pass));
+      Check (Code, Pass);
    end Report;
 
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
-   Banner;
+   Put_Line ("[gps] NMEA GPS driver demo (UART0 rx=44 tx=43)");
+   Put_Line ("[gps] self-test: inject canned NMEA, check store");
 
    --------------------------------------------------------------------------
    --  Self-test (reader task still suspended -> deterministic store).
@@ -196,7 +311,7 @@ begin
    --  Live: bring up UART0 on the GPS pins and release the reader task.
    --------------------------------------------------------------------------
    delay until Clock + Milliseconds (40);
-   Live_Hdr;
+   Put_Line ("[gps] live (UART0 @ 9600) -- waiting for sentences...");
    GPS.Setup (Port => ESP32S3.UART.UART0, Rx => 44, Tx => 43, Baud => 9_600);
 
    for Tick in 1 .. 70 loop
@@ -213,15 +328,15 @@ begin
            T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < 5.0;
       begin
          GPS.Satellites_In_View (Sats, NSat);   --  table count (all systems)
-         Live (Time_Valid => Boolean'Pos (Time_Fresh),
-               HH         => int (T.Value.Hour),
-               MM         => int (T.Value.Minute),
-               SS         => int (T.Value.Second),
-               Pos_Fresh  => Boolean'Pos (Pos_Fresh),
-               Lat_E7     => int (P.Value.Latitude),
-               Lon_E7     => int (P.Value.Longitude),
-               In_View    => int (NSat),
-               Max_SNR    => int (S.Max_SNR),
+         Live (Time_Valid => Time_Fresh,
+               HH         => Integer (T.Value.Hour),
+               MM         => Integer (T.Value.Minute),
+               SS         => Integer (T.Value.Second),
+               Pos_Fresh  => Pos_Fresh,
+               Lat_E7     => Integer (P.Value.Latitude),
+               Lon_E7     => Integer (P.Value.Longitude),
+               In_View    => Integer (NSat),
+               Max_SNR    => Integer (S.Max_SNR),
                Fix_Type   => GPS.Fix_Type'Pos (S.Mode));
 
          --  Echo the actual raw sentence (spaced so the FIFO drains; long
@@ -233,24 +348,26 @@ begin
             Half : constant := 45;
          begin
             GPS.Last_Sentence (Buf, Len);
-            Raw (Buf'Address, int (Natural'Min (Len, Half)));
+            Raw (Buf'Address, Natural'Min (Len, Half));
             if Len > Half then
                delay until Clock + Milliseconds (40);
-               Raw (Buf (Buf'First + Half)'Address, int (Len - Half));
+               Raw (Buf (Buf'First + Half)'Address, Len - Half);
             end if;
          end;
 
          --  Every 10 s, dump the full satellite-in-view list, one per line.
          if Tick mod 10 = 0 then
             delay until Clock + Milliseconds (40);
-            Sat_Hdr (int (NSat));
+            Put ("[gps] satellites in view: ");
+            Put (Integer (NSat));
+            New_Line;
             for I in 1 .. NSat loop
                delay until Clock + Milliseconds (40);
                Sat (Sys => GPS.GNSS_System'Pos (Sats (I).System),
-                    PRN => int (Sats (I).PRN),
-                    El  => int (Sats (I).Elevation),
-                    Az  => int (Sats (I).Azimuth),
-                    SNR => int (Sats (I).SNR));
+                    PRN => Integer (Sats (I).PRN),
+                    El  => Integer (Sats (I).Elevation),
+                    Az  => Integer (Sats (I).Azimuth),
+                    SNR => Integer (Sats (I).SNR));
             end loop;
          end if;
 
@@ -267,7 +384,7 @@ begin
    end loop;
 
    delay until Clock + Milliseconds (40);
-   Done;
+   Put_Line ("[gps] done.");
 
    loop
       delay until Clock + Seconds (3600);

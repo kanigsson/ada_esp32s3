@@ -1,16 +1,13 @@
 pragma Warnings (Off);
-with Interfaces.C;
 with System;
 with Ada.Real_Time;  use Ada.Real_Time;
 
 --  Reusable driver from the shared HAL (libs/esp32s3_hal); this example
 --  no longer pokes registers directly -- it drives GPIO0 through ESP32S3.GPIO.
 with ESP32S3.GPIO;
+with ESP32S3.Log;    use ESP32S3.Log;
 
 package body GPIO is
-
-   procedure Log_Level (Level : Interfaces.C.int);
-   pragma Import (C, Log_Level, "native_gpio_log");
 
    Pin : constant ESP32S3.GPIO.Pin_Id := 0;
 
@@ -29,7 +26,7 @@ package body GPIO is
          delay until Next;
          High := not High;
          ESP32S3.GPIO.Write (Pin, High);
-         Log_Level (Interfaces.C.int (Boolean'Pos (High)));
+         Put_Line ("[gpio0] " & (if High then "HIGH" else "low "));
          Next := Next + Period;
       end loop;
    end Blinker;

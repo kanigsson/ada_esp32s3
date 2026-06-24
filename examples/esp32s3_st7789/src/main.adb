@@ -10,10 +10,10 @@
 --  locks the SPI host only for its own transfer and frees it again (the
 --  two-level locking this driver is built around).  The panel is the output;
 --  the console just narrates the steps (SPI is write-only -- nothing to read).
-with Interfaces.C; use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
+with ESP32S3.Log;       use ESP32S3.Log;
 with ESP32S3.ST7789;
 with ESP32S3.ST7789.Text;
 
@@ -23,10 +23,12 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    package LCD renames ESP32S3.ST7789;
 
-   procedure Banner;       pragma Import (C, Banner, "native_st_banner");
-   procedure Step (Code : int);
-                           pragma Import (C, Step,   "native_st_step");
-   procedure Done;         pragma Import (C, Done,   "native_st_done");
+   --  One step line, e.g. "[lcd] init".
+   procedure Step (Name : String) is
+   begin
+      Put ("[lcd] ");
+      Put_Line (Name);
+   end Step;
 
    Backlight : constant ESP32S3.GPIO.Pin_Id := 6;
 
@@ -40,23 +42,24 @@ procedure Main is
 
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[lcd] ST7789 240x240 SPI display demo "
+             & "(SPI2 sclk=12 mosi=13 dc=16 cs=10, bl=6)");
 
    --  Backlight is the example's job, not the driver's: drive IO6 high.
    ESP32S3.GPIO.Configure (Backlight, Mode => ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Set (Backlight);
 
    LCD.Setup (Dev, Sclk => 12, Mosi => 13, DC => 16, CS => 10);   --  240x240 @ 40 MHz
-   Step (0);
+   Step ("backlight + setup");
 
    LCD.Acquire (S, Dev);          --  protect the display for the whole demo
    LCD.Init (S);
-   Step (1);
+   Step ("init");
 
    --  Full-screen colour fills (each locks the SPI host only for its transfer).
-   LCD.Fill (S, LCD.Red);   Step (2); Hold;
-   LCD.Fill (S, LCD.Green); Step (3); Hold;
-   LCD.Fill (S, LCD.Blue);  Step (4); Hold;
+   LCD.Fill (S, LCD.Red);   Step ("fill red");   Hold;
+   LCD.Fill (S, LCD.Green); Step ("fill green"); Hold;
+   LCD.Fill (S, LCD.Blue);  Step ("fill blue");  Hold;
 
    --  Eight vertical colour bars (30 px each across the 240-wide panel).
    declare
@@ -70,13 +73,13 @@ begin
                         C => Bars (I));
       end loop;
    end;
-   Step (5); Hold;
+   Step ("colour bars"); Hold;
 
    --  A centred white box on a dark background.
    LCD.Fill (S, LCD.RGB (16, 16, 32));
    LCD.Fill_Rect (S, X => 70, Y => 70, W => 100, H => 100, C => LCD.White);
    LCD.Fill_Rect (S, X => 90, Y => 90, W => 60,  H => 60,  C => LCD.RGB (255, 128, 0));
-   Step (6); Hold;
+   Step ("centre box"); Hold;
 
    --  Text: 5x7 font at three scales on a dark background (.Text child layer).
    LCD.Fill (S, LCD.RGB (0, 0, 32));
@@ -90,10 +93,10 @@ begin
                                                      & "write-only",
                        FG => LCD.RGB (255, 200, 0), BG => LCD.RGB (0, 0, 32),
                        Scale => 2);
-   Step (7); Hold;
+   Step ("text"); Hold;
 
    LCD.Release (S);
-   Done;
+   Put_Line ("[lcd] done -- check the panel.");
 
    loop
       delay until Clock + Seconds (3600);

@@ -7,11 +7,11 @@
 --  word.  Also exercises the controlled (RAII) Session: Acquire on scope entry,
 --  auto-Release on scope exit.  Report goes through the ROM printf glue.
 with Interfaces;   use Interfaces;
-with Interfaces.C;  use Interfaces.C;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.I2S;   use ESP32S3.I2S;
 with ESP32S3.GPIO;
+with ESP32S3.Log;   use ESP32S3.Log;
 
 --  Pull the SMP slave-start entry into the link closure (glue.c calls it after
 --  elaboration); core 1 just idles -- the test runs on core 0.
@@ -19,13 +19,6 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   procedure Banner;
-   pragma Import (C, Banner, "native_i2s_banner");
-   procedure Result (N, Ok : int);
-   pragma Import (C, Result, "native_i2s_result");
-   procedure Done;
-   pragma Import (C, Done, "native_i2s_done");
-
    Data_Pin : constant ESP32S3.GPIO.Pin_Id := 4;   --  loopback data pad (no wiring)
 
    --  16-bit stereo samples: 64 words = 32 stereo frames = 128 bytes.
@@ -34,7 +27,8 @@ procedure Main is
    Rx : Samples := (others => 0);
 begin
    delay until Clock + Milliseconds (200);
-   Banner;
+   Put_Line ("[i2s] bare-metal I2S full-duplex DMA loopback self-test "
+             & "(no wiring)");
 
    for I in Samples'Range loop
       Tx (I) := Unsigned_16 ((I * 1031 + 17) mod 65536);
@@ -50,10 +44,13 @@ begin
       Acquire (S, I2S0);                  --  suspends until the port is free
       Transfer (S, Tx'Address, Rx'Address, Samples'Length * 2);
       Ok := (for all I in Samples'Range => Rx (I) = Tx (I));
-      Result (Samples'Length, Boolean'Pos (Ok));
+      Put ("[i2s] full-duplex loopback (");
+      Put (Samples'Length);
+      Put (" samples): ");
+      Put_Line (if Ok then "PASS" else "FAIL");
    end;                                   --  S finalizes -> port released
 
-   Done;
+   Put_Line ("[i2s] done.");
 
    loop
       delay until Clock + Seconds (3600);

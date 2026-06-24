@@ -19,6 +19,9 @@ package ESP32S3.Log is
    --  Write a string (no newline).
    procedure Put (S : String);
 
+   --  Write a single character.
+   procedure Put (C : Character);
+
    --  Write a string then a newline (just a newline when S is omitted/empty).
    procedure Put_Line (S : String := "");
 

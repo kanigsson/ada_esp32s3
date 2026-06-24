@@ -26,6 +26,12 @@ package body ESP32S3.Log is
       C_Cstr (Buf'Address);
    end Put;
 
+   procedure Put (C : Character) is
+      Buf : aliased constant String := (1 => C, 2 => ASCII.NUL);
+   begin
+      C_Cstr (Buf'Address);
+   end Put;
+
    --------------
    -- New_Line --
    --------------
