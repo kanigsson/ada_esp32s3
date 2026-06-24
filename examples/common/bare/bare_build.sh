@@ -36,9 +36,9 @@ GCC=xtensa-esp32-elf-gcc
 
 # Per-profile defaults so EVERY example builds under each runtime, without each
 # example's build.sh having to set them.  The exception-capable embedded/full
-# runtimes REFERENCE the C mem*/heap (memcpy from the exception machinery, malloc) --
-# newlib provided these under IDF -- so they need HEAP_SIZE (-> bare_heap + bare_libc;
-# otherwise the link fails with undefined memcpy/memmove/memset/memcmp) and a larger
+# runtimes REFERENCE mem*/heap (memcpy from the exception machinery, malloc) -- newlib
+# provided these under IDF -- so they need HEAP_SIZE (-> bare_heap + the Ada bare_mem/
+# bare_crt; otherwise the link fails with undefined memcpy/memmove/memset/memcmp) and a larger
 # env-task stack for exception handling.  light-tasking is heap-less
 # (No_Exception_Propagation; s-memory bump allocator) and stays bare.  Explicit
 # HEAP_SIZE / ENV_STACK_SIZE env vars (e.g. the ACATS harness) still override.
@@ -101,7 +101,8 @@ if [ "$(cat "$PROF_STAMP" 2>/dev/null)" != "$PROF_NOW" ]; then
     #  $EX/obj is gprbuild's Ada closure (.ali/.o, incremental); a stale tree built
     #  against the previous runtime mislinks under the new one, so clear it.
     rm -rf "$EX/obj"
-    rm -f "$EX/main/app_main.o" "$EX/.noidf/bare_heap.o" "$EX/.noidf/bare_libc.o" \
+    rm -f "$EX/main/app_main.o" "$EX/.noidf/bare_heap.o" \
+          "$EX/.noidf/bare_mem.o" "$EX/.noidf/bare_crt.o" \
           "$EX/app.bin" "$EX/app.elf"
 fi
 echo "$PROF_NOW" > "$PROF_STAMP"
@@ -222,8 +223,11 @@ if [ -n "$HEAP_SIZE" ]; then
     fi
     echo "[bare]      + heap ($HEAP_SIZE B) + freestanding libc (embedded/full profile)"
     $GCC $CFLAGS -DHEAP_SIZE="$HEAP_SIZE" $HEAP_PS -c "$BARE/bare_heap.c" -o "$OBJ/bare_heap.o"
-    $GCC $CFLAGS                          -c "$BARE/bare_libc.c" -o "$OBJ/bare_libc.o"
-    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/bare_libc.o")
+    #  Freestanding libc is now Ada (boot/bare_mem.adb + boot/bare_crt.adb),
+    #  compiled above by bare_boot.gpr; linked only for the heap profiles.
+    cp "$BARE/boot/obj/bare_mem.o" "$OBJ/bare_mem.o"
+    cp "$BARE/boot/obj/bare_crt.o" "$OBJ/bare_crt.o"
+    LIB_OBJS=("$OBJ/bare_heap.o" "$OBJ/bare_mem.o" "$OBJ/bare_crt.o")
 fi
 
 # Example-provided extra link inputs (esp32s3_psram: the vendored IDF
