@@ -20,8 +20,8 @@
 --
 --  Report goes through the ROM printf glue (the reliable console path here); the
 --  Ada driver does all the I2C/register work.
-with Interfaces;   use Interfaces;
-with Interfaces.C; use Interfaces.C;
+with Interfaces;    use Interfaces;
+with ESP32S3.Log;   use ESP32S3.Log;
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.GPIO;
@@ -50,18 +50,17 @@ procedure Main is
    Candidates : constant array (1 .. 2) of ESP32S3.I2C.Slave_Address :=
      (IMU.Address_SA0_Low, IMU.Address_SA0_High);
 
-   procedure Banner;        pragma Import (C, Banner,    "native_imu_banner");
-   procedure Who_Am_I (Id, Addr, Ok : int);
-                            pragma Import (C, Who_Am_I,  "native_imu_whoami");
-   procedure No_Device;     pragma Import (C, No_Device, "native_imu_no_device");
-   procedure Legend;        pragma Import (C, Legend,    "native_imu_legend");
-   procedure Step (Code, Ok : int);
-                            pragma Import (C, Step,      "native_imu_step");
-   procedure Sample (Ax, Ay, Az, Mag_CC, Gx, Gy, Gz : int);
-                            pragma Import (C, Sample,    "native_imu_sample");
-   procedure Temp (T_CC : int);
-                            pragma Import (C, Temp,      "native_imu_temp");
-   procedure Done;          pragma Import (C, Done,      "native_imu_done");
+   --  One setup-step line, e.g. "[imu] reset     : OK" ("%-9s" left-justified).
+   procedure Put_Step (Name : String; Ok : Boolean) is
+   begin
+      Put ("[imu] ");
+      Put (Name);
+      for I in Name'Length + 1 .. 9 loop
+         Put (" ");
+      end loop;
+      Put (" : ");
+      Put_Line (if Ok then "OK" else "FAIL");
+   end Put_Step;
 
    Dev    : IMU.Device;
    St     : IMU.Status;
@@ -91,7 +90,7 @@ procedure Main is
 
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
-   Banner;
+   Put_Line ("[imu] QMI8658C 6-axis IMU driver demo (SDA=IO8  SCL=IO7)");
 
    --  probe: try each SA0 address until WHO_AM_I answers 0x05.
    for I in Candidates'Range loop
@@ -105,9 +104,13 @@ begin
       end if;
    end loop;
 
-   Who_Am_I (int (Id), int (Addr), Boolean'Pos (Found));
+   Put ("[imu] who_am_i : 0x");
+   Put_Hex (Unsigned_32 (Id), 2);
+   Put (" @ 0x");
+   Put_Hex (Unsigned_32 (Addr), 2);
+   Put_Line (if Found then "  (QMI8658 present)" else "  (unexpected!)");
    if not Found then
-      No_Device;
+      Put_Line ("[imu] no QMI8658C found at 0x6B or 0x6A -- check wiring/power.");
       loop
          delay until Clock + Seconds (3600);
       end loop;
@@ -118,7 +121,7 @@ begin
 
    --  reset -> (settle) -> configure.
    IMU.Reset (Dev, St);
-   Step (0, Boolean'Pos (St = IMU.OK));
+   Put_Step ("reset", St = IMU.OK);
    delay until Clock + Milliseconds (15);     --  reset settle time
 
    IMU.Configure (Dev,
@@ -126,7 +129,7 @@ begin
                   Gyro  => IMU.Range_512DPS,
                   Rate  => IMU.ODR_235_Hz,
                   Result => St);
-   Step (1, Boolean'Pos (St = IMU.OK));
+   Put_Step ("configure", St = IMU.OK);
    if St /= IMU.OK then
       loop
          delay until Clock + Seconds (3600);
@@ -146,11 +149,13 @@ begin
       delay until Clock + Milliseconds (250);
       IMU.Read_Temperature (Dev, T_Raw, St);
       if St = IMU.OK then
-         Temp (int (Integer (T_Raw) * 100 / 256));   --  centi-degC
+         Put ("[imu] temp[C]=");
+         Put_Fixed (Integer (T_Raw) * 100 / 256, 100, 2);   --  centi-degC
+         New_Line;
       end if;
 
       delay until Clock + Milliseconds (250);
-      Legend;
+      Put_Line ("[imu] a=accel[mg]  |a|=total[m/s2]  g=gyro[mdps]");
       for Tick in 1 .. 10 loop
          delay until Clock + Milliseconds (250);
 
@@ -168,17 +173,22 @@ begin
               Isqrt (Ax_Mg * Ax_Mg + Ay_Mg * Ay_Mg + Az_Mg * Az_Mg);
             Mag_CMps2 : constant Integer := Mag_Mg * 981 / 1000;
          begin
-            Sample (Ax => int (Ax_Mg), Ay => int (Ay_Mg), Az => int (Az_Mg),
-                    Mag_CC => int (Mag_CMps2),
-                    Gx => int (Mg (G.X, G_Lsb)),
-                    Gy => int (Mg (G.Y, G_Lsb)),
-                    Gz => int (Mg (G.Z, G_Lsb)));
+            --  One compact line: a=<x><y><z>  |a|=<g.gg>  g=<x><y><z>
+            Put ("[imu] a=");
+            Put (Ax_Mg, Width => 6); Put (Ay_Mg, Width => 6); Put (Az_Mg, Width => 6);
+            Put (" |a|=");
+            Put_Fixed (Mag_CMps2, 100, 2);
+            Put (" g=");
+            Put (Mg (G.X, G_Lsb), Width => 7);
+            Put (Mg (G.Y, G_Lsb), Width => 7);
+            Put (Mg (G.Z, G_Lsb), Width => 7);
+            New_Line;
          end;
       end loop;
    end;
 
    delay until Clock + Milliseconds (250);   --  let the last sample line drain
-   Done;
+   Put_Line ("[imu] done.");
 
    loop
       delay until Clock + Seconds (3600);
