@@ -20,10 +20,20 @@ package body ESP32S3.RMT is
    --  uses block 4+r.
    ---------------------------------------------------------------------------
 
-   type Mem_Block is array (0 .. 47) of RMT_Symbol;
+   Block_Symbols : constant := 48;
+
+   type Mem_Block is array (0 .. Block_Symbols - 1) of RMT_Symbol;
    type Mem_Array is array (0 .. 7) of Mem_Block with Volatile;
    RMTMEM : Mem_Array
      with Import, Volatile, Address => System'To_Address (16#6001_6800#);
+
+   --  Flat view of the same 8 x 48 = 384-symbol RAM, so a multi-block channel
+   --  (and the wrap re-fill) can index across block boundaries: channel n's
+   --  symbol J lives at flat slot n*48 + J.
+   type Flat_Mem is array (0 .. 8 * Block_Symbols - 1) of RMT_Symbol
+     with Volatile;
+   Mem_Flat : Flat_Mem
+     with Import, Volatile, Address => RMTMEM'Address;
 
    --  RX config registers, re-imposed as an array (CONF0 + CONF1, stride 8).
    type RX_Regs is record
@@ -153,6 +163,23 @@ package body ESP32S3.RMT is
       end case;
    end Clear_TX_Done;
 
+   --  Per-channel TX threshold-reached interrupt-raw bit (wrap re-fill trigger).
+   function TX_Thr (Idx : TX_Index) return Boolean is
+     (case Idx is when 0 => RMT_Periph.INT_RAW.CH0_TX_THR_EVENT,
+                  when 1 => RMT_Periph.INT_RAW.CH1_TX_THR_EVENT,
+                  when 2 => RMT_Periph.INT_RAW.CH2_TX_THR_EVENT,
+                  when 3 => RMT_Periph.INT_RAW.CH3_TX_THR_EVENT);
+
+   procedure Clear_TX_Thr (Idx : TX_Index) is
+   begin
+      case Idx is
+         when 0 => RMT_Periph.INT_CLR.CH0_TX_THR_EVENT := True;
+         when 1 => RMT_Periph.INT_CLR.CH1_TX_THR_EVENT := True;
+         when 2 => RMT_Periph.INT_CLR.CH2_TX_THR_EVENT := True;
+         when 3 => RMT_Periph.INT_CLR.CH3_TX_THR_EVENT := True;
+      end case;
+   end Clear_TX_Thr;
+
    function RX_Done (Idx : RX_Index) return Boolean is
      (case Idx is when 0 => RMT_Periph.INT_RAW.CH4_RX_END,
                   when 1 => RMT_Periph.INT_RAW.CH5_RX_END,
@@ -201,50 +228,114 @@ package body ESP32S3.RMT is
 
    procedure Configure (C : in out TX_Channel;
                         Resolution_Hz : Positive;
-                        Pin : ESP32S3.GPIO.Pin_Id) is
+                        Pin    : ESP32S3.GPIO.Pin_Id;
+                        Blocks : Positive := 1) is
    begin
       if not C.Held then
          return;
       end if;
+      C.Blocks := Positive'Min (Blocks, 4 - Natural (C.Idx));   --  fit in 0..3
       RMT_Periph.CH_TX_CONF0 (Integer (C.Idx)) :=
-        (DIV_CNT => Div_Of (Resolution_Hz), MEM_SIZE => 1,
+        (DIV_CNT => Div_Of (Resolution_Hz),
+         MEM_SIZE => CH_TX_CONF0_MEM_SIZE_Field (C.Blocks),
          IDLE_OUT_EN => True, IDLE_OUT_LV => False,
          CARRIER_EN => False, CARRIER_EFF_EN => False, others => <>);
       Drive_Out (Pin, 81 + Natural (C.Idx));
    end Configure;
 
    procedure Transmit (C : TX_Channel; Symbols : Symbol_Array) is
-      Blk : constant Integer := Integer (C.Idx);
-      N   : constant Natural := Natural'Min (Symbols'Length, 47);
-      J   : Natural := 0;
+      Blk  : constant Integer := Integer (C.Idx);
+      Base : constant Natural := Blk * Block_Symbols;     --  flat slot of block
+      Cap  : constant Natural := C.Blocks * Block_Symbols - 1;
+      N    : constant Natural := Symbols'Length;
+      F    : constant Natural := Symbols'First;
+
+      --  Reset the read pointer, latch the config, and start the channel.
+      procedure Kick is
+      begin
+         Clear_TX_Done (C.Idx);
+         Clear_TX_Thr  (C.Idx);
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_RD_RST  := True;
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_RD_RST  := False;
+         RMT_Periph.CH_TX_CONF0 (Blk).APB_MEM_RST := True;
+         RMT_Periph.CH_TX_CONF0 (Blk).APB_MEM_RST := False;
+         RMT_Periph.CH_TX_CONF0 (Blk).CONF_UPDATE := True;
+         RMT_Periph.CH_TX_CONF0 (Blk).TX_START    := True;
+      end Kick;
    begin
       if not C.Held then
          return;
       end if;
-      --  Load the symbols, then a {0,0} end marker.
-      for I in Symbols'First .. Symbols'First + N - 1 loop
-         RMTMEM (Blk) (J) := Symbols (I);
-         J := J + 1;
-      end loop;
-      RMTMEM (Blk) (J) := (others => <>);          --  all-zero terminator
 
-      Clear_TX_Done (C.Idx);
-      --  Reset the read pointer and kick the channel.
-      RMT_Periph.CH_TX_CONF0 (Blk).MEM_RD_RST  := True;
-      RMT_Periph.CH_TX_CONF0 (Blk).MEM_RD_RST  := False;
-      RMT_Periph.CH_TX_CONF0 (Blk).APB_MEM_RST := True;
-      RMT_Periph.CH_TX_CONF0 (Blk).APB_MEM_RST := False;
-      RMT_Periph.CH_TX_CONF0 (Blk).CONF_UPDATE := True;
-      RMT_Periph.CH_TX_CONF0 (Blk).TX_START    := True;
-
-      declare
-         Guard : Natural := 5_000_000;
-      begin
-         while not TX_Done (C.Idx) and then Guard > 0 loop
-            Guard := Guard - 1;
+      if N <= Cap then
+         --  One shot: the whole burst fits the channel's RAM.
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_TX_WRAP_EN := False;
+         for J in 0 .. N - 1 loop
+            Mem_Flat (Base + J) := Symbols (F + J);
          end loop;
+         Mem_Flat (Base + N) := (others => <>);           --  end marker
+         Kick;
+         declare
+            Guard : Natural := 5_000_000;
+         begin
+            while not TX_Done (C.Idx) and then Guard > 0 loop
+               Guard := Guard - 1;
+            end loop;
+         end;
+         Clear_TX_Done (C.Idx);
+         return;
+      end if;
+
+      --  Wrap streaming: use one 48-symbol block as two 24-symbol halves and,
+      --  on each threshold event, re-fill the half that just played -- so an
+      --  arbitrarily long burst streams through 48 symbols of RAM.  A short
+      --  final half is padded with {0,0} end markers, which stops the channel.
+      declare
+         Half   : constant Natural := Block_Symbols / 2;  --  24
+         Cursor : Natural := F;                           --  next source symbol
+         Which  : Natural := 0;                           --  half to re-fill
+
+         procedure Fill_Half (H : Natural) is
+            HBase : constant Natural := Base + H * Half;
+         begin
+            for K in 0 .. Half - 1 loop
+               if Cursor < F + N then
+                  Mem_Flat (HBase + K) := Symbols (Cursor);
+                  Cursor := Cursor + 1;
+               else
+                  Mem_Flat (HBase + K) := (others => <>); --  end marker / pad
+               end if;
+            end loop;
+         end Fill_Half;
+      begin
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_SIZE       := 1;   --  wrap at 48
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_TX_WRAP_EN := True;
+         RMT_Periph.CH_TX_LIM (Blk).TX_LIM := CH_TX_LIM_TX_LIM_Field (Half);
+
+         Fill_Half (0);                                   --  prime both halves
+         Fill_Half (1);
+         Kick;
+
+         declare
+            Guard : Natural := 50_000_000;
+         begin
+            loop
+               exit when TX_Done (C.Idx) or else Guard = 0;
+               Guard := Guard - 1;
+               if TX_Thr (C.Idx) then
+                  Clear_TX_Thr (C.Idx);
+                  Fill_Half (Which);          --  re-fill the half just consumed
+                  Which := 1 - Which;
+               end if;
+            end loop;
+         end;
+
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_TX_WRAP_EN := False;
+         RMT_Periph.CH_TX_CONF0 (Blk).MEM_SIZE :=
+           CH_TX_CONF0_MEM_SIZE_Field (C.Blocks);
+         Clear_TX_Done (C.Idx);
+         Clear_TX_Thr  (C.Idx);
       end;
-      Clear_TX_Done (C.Idx);
    end Transmit;
 
    ----------------------------------------------------------------------------
