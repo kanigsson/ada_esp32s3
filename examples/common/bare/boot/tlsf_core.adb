@@ -38,13 +38,28 @@ package body Tlsf_Core is
    function Round_Up (X : Storage_Count) return Storage_Count is
      (((X + (Align - 1)) / Align) * Align);
 
+   --  Header size -- MUST be a compile-time static (a record-Object_Size based
+   --  value is elaborated into .bss and, with no adainit in this ZFP boot, never
+   --  set -> garbage Hdr_Sz -> wild pointers).  Static upper bound on the header
+   --  (Prev_Phys + Size + a flag byte), rounded to Align; >= Hdr'Object_Size on
+   --  both 32- and 64-bit.
+   --  Two word-sized fields (Prev_Phys + Size) + a flag byte.  Use Address_Size
+   --  for both (Storage_Count'Size is the SUBTYPE's minimal bit count, e.g. 63 on
+   --  a 64-bit host -> too small); rounded to Align this is >= Hdr'Object_Size.
+   Hdr_Bytes : constant :=
+     (2 * Standard'Address_Size + System.Storage_Unit) / System.Storage_Unit;
    Hdr_Sz : constant Storage_Count :=
-     Round_Up (Storage_Count (Hdr'Object_Size / System.Storage_Unit));
+     ((Storage_Count (Hdr_Bytes) + 15) / 16) * 16;
    Min_Payload : constant Storage_Count := Align;   --  holds the two links
 
    ---------------------------------------------------------------------------
    --  State
    ---------------------------------------------------------------------------
+   --  Zero initializers -> these land in .bss (NOT .data), which the bare boot's
+   --  start.S zeroes -- so they are valid at the first malloc despite the ZFP
+   --  boot having no adainit.  (The header SIZE, by contrast, had to be made a
+   --  compile-time static above: a record-Object_Size constant would have been
+   --  elaborated, which never runs here.)
    Heads      : array (0 .. FL_Count - 1, 0 .. SL_Count - 1) of System.Address :=
      (others => (others => System.Null_Address));
    FL_Bitmap  : Unsigned_32 := 0;
@@ -173,7 +188,8 @@ package body Tlsf_Core is
    begin
       Mapping (Size_Of (B), FL, SL);
       H := Heads (FL, SL);
-      To_Links (Payload (B)).all := (Next_Free => H, Prev_Free => System.Null_Address);
+      To_Links (Payload (B)).Next_Free := H;
+      To_Links (Payload (B)).Prev_Free := System.Null_Address;
       if H /= System.Null_Address then
          To_Links (Payload (H)).Prev_Free := B;
       end if;

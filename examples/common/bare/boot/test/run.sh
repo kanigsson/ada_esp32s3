@@ -7,5 +7,5 @@ NAT="$(ls -d "$HOME"/.local/share/alire/toolchains/gnat_native_*/bin 2>/dev/null
 [ -n "$NAT" ] && export PATH="$NAT:$PATH"
 mkdir -p "$HERE/obj"
 gnatmake -I"$HERE/.." -D "$HERE/obj" -O2 -g -gnata -gnatwa \
-    "$HERE/bare_heap_test.adb" -o "$HERE/bare_heap_test" >/dev/null
-exec "$HERE/bare_heap_test"
+    "$HERE/allocator_test.adb" -o "$HERE/allocator_test" >/dev/null
+exec "$HERE/allocator_test"
