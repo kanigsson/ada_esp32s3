@@ -70,26 +70,37 @@ handlers are wired up once at elaboration and stay for the life of the system, s
 the missing implicit restore-at-shutdown never matters in practice; explicit
 \texttt{Detach\_Handler} works if you do need it.
 
-\section{\texttt{Ada.Calendar} year range stops at 2099}
+\section{\texttt{Ada.Calendar} resolution: 5\,ns, with the full range to 2399}
 
-The bare \texttt{Ada.Calendar} declares \texttt{Year\_Number} as
+The bare \texttt{Ada.Calendar} originally declared \texttt{Year\_Number} as
 \texttt{1901\,..\,2099} (the Ada~95 bound), whereas Ada~2005 onward --- and the
-modern ACATS \texttt{C96004} --- require \texttt{2399}. This is not a one-line
-subtype change: the bare runtime's Calendar uses a \emph{Julian-day fixed-point}
-time representation deliberately sized so the 1901--2099 span fits in 64 bits at
-sub-second precision. Stretching the range to 2399 (roughly five centuries)
-overflows that representation --- which is exactly why mainline GNAT abandoned the
-Julian-day Calendar for an integer-nanosecond one. Reaching 2399 would mean
-swapping in a new time base across the whole Calendar, on a unit shared by the
-\texttt{embedded} and \texttt{full} profiles, at the risk of the Calendar tests
-that already pass.
+modern ACATS \texttt{C96004} --- require \texttt{2399}. The obstacle was the time
+representation: the Calendar uses a \emph{Julian-day fixed-point} base sized so the
+span fits in signed 64 bits at sub-second precision, and stretching the range to
+2399 (roughly five centuries) overflows that base at 1\,ns granularity --- which is
+why mainline GNAT eventually abandoned the Julian-day Calendar for an
+integer-nanosecond one.
 
-\textbf{Why it rarely bites.} The gap is the years 2100--2399. Everything within
-1901--2099 --- which comfortably covers the service life of any device this
-runtime will ever run on --- is fully conformant: arithmetic, formatting,
-\texttt{Split}/\texttt{Time\_Of}, and \texttt{delay until} on a
-\texttt{Calendar.Time} are all HW-verified (see the ACATS chapter). The cost of
-closing it is a Calendar rewrite; the benefit is dates after the year 2099.
+Rather than swap in a new time base (a risky rewrite of a unit shared by the
+\texttt{embedded} and \texttt{full} profiles), the range is bought by
+\emph{coarsening} the existing base by exactly $5\times$: the sub-day fixed-point
+scale changes from \texttt{Duration'Small\,/\,86\_400.0} to
+\texttt{/\,17\_280.0}\,($=86\_400/5$), and the Modified-Julian-Day and Julian-Day
+type ranges widen to cover 2399-12-31 (\texttt{Time'Last} compile-checks to
+\texttt{197\_641}). The 1858 epoch and the day-arithmetic algorithm are untouched.
+The trade is precision for range: the Calendar's resolution becomes $5$\,ns instead
+of $1$\,ns, and in exchange \texttt{Year\_Number} now runs the full
+\texttt{1901\,..\,2399}. \texttt{C96004} \textbf{PASSES} (HW-verified, both
+profiles), and the change is applied by \texttt{gen\_runtime.sh} when it
+materialises the runtime.
+
+\textbf{Why the 5\,ns rarely bites.} \texttt{Ada.Calendar} is a wall-clock: its job
+is civil date-and-time stamping, where a five-nanosecond quantum on a value that
+counts whole seconds is meaningless. Any code that genuinely needs sub-microsecond
+timing uses \texttt{Ada.Real\_Time} instead, whose \texttt{Time\_Span} keeps its
+full \texttt{Duration'Small} (1\,ns) precision and is untouched by this change.
+Arithmetic, formatting, \texttt{Split}/\texttt{Time\_Of}, and \texttt{delay until}
+on a \texttt{Calendar.Time} remain HW-verified across the whole 1901--2399 span.
 
 \section{Per-task heap reclamation under task churn}
 

@@ -227,10 +227,14 @@ counter. Shifting a Calendar deadline back into the raw base (adding the BB-time
 \texttt{Epoch}) in \texttt{Timed\_Sleep} fixes both --- they now \texttt{PASS}
 (they are slow and silent, so they join the wide-watchdog list). After these
 fixes the residue on the wider list is what you would expect: the documented
-frontiers (\texttt{CXD1006}, \texttt{CB1010}, \texttt{C480001}, \texttt{CXC7004}),
-the interactive interrupt and suspension tests that need a bench-generated
-interrupt, and \texttt{C96004}'s post-2099 Calendar range --- no crashes, and no
-surprise failures in the conformant core.
+frontiers (\texttt{CXD1006}, \texttt{CB1010}, \texttt{C480001}, \texttt{CXC7004})
+and the interactive interrupt and suspension tests that need a bench-generated
+interrupt --- no crashes, and no surprise failures in the conformant core.
+(\texttt{C96004}'s post-2099 Calendar range was later closed too, by coarsening the
+Julian-day base $5\times$ to reach 2399; see the Limitations chapter. A companion
+fix set \texttt{System.Tick} to the true \texttt{1/240\,MHz} clock period --- it had
+shipped as \texttt{0.0}, telling clock-resolution tests the clock was infinitely
+precise --- which is what \texttt{C96001}/\texttt{C96004} read.)
 
 \section{The embedded profile}
 
@@ -299,10 +303,12 @@ provided on the \texttt{embedded} and \texttt{full} profiles, from a shared
 
 Hardware-verified: \texttt{C961001} (Formatting \texttt{Image}/\texttt{Value} conformance) and
 \texttt{C960002} (\texttt{Delay\_Until}) PASS on both profiles, and the \texttt{with Calendar;}
-tests \texttt{C96005}/\texttt{C96006} PASS. The one Calendar test that does \emph{not} pass is
-\texttt{C96004}, which requires \texttt{Year\_Number'Last = 2399} (Ada~2005); the bare
-runtime's Julian-day Calendar is bounded to the Ada~95 \texttt{2099}, and lifting it needs a
-new time base rather than a subtype edit (see the Limitations chapter). \texttt{light-tasking} is deliberately
+tests \texttt{C96005}/\texttt{C96006} PASS. \texttt{C96004}, which requires
+\texttt{Year\_Number'Last = 2399} (Ada~2005), now PASSES as well: rather than the
+full time-base rewrite first assumed, the Julian-day base is coarsened $5\times$
+(sub-day scale \texttt{Duration'Small\,/\,17\_280.0}), trading 1\,ns Calendar
+resolution for 5\,ns and buying the extra three centuries within signed 64 bits ---
+see the Limitations chapter. \texttt{light-tasking} is deliberately
 \emph{excluded}: it is a \texttt{No\_Exception\_Propagation} profile, so every
 \texttt{Time\_Error}/\texttt{Constraint\_Error} becomes a board reset --- \texttt{Ada.Calendar}
 is unusable and grades nothing there, which is exactly why bb-runtimes omits it from the Jorvik

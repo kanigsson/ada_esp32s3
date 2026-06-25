@@ -9,9 +9,13 @@ and how to use the pure-Ada ext4 filesystem.
 ## Build
 
 ```sh
-make            # -> main.pdf  (needs pdflatex; runs it twice for the ToC)
+make            # -> main.pdf  (needs pdflatex + makeindex; runs several passes)
 make clean
 ```
+
+A CI workflow (`.github/workflows/book.yml`) builds the same PDF in a TeX Live
+container. Pushing a version tag (`v*`) publishes it as a GitHub Release;
+dispatching the workflow by hand uploads it as a build artifact.
 
 ## Layout
 
@@ -25,3 +29,5 @@ make clean
 | `ch_hal3.tex` | RTC, RTC-IO, Touch, SHA, AES |
 | `ch_driver_design.tex` | How to write a task-safe driver (Engine / ownership gateway); why and benefits |
 | `ch_storage.tex` | SD\_SPI, SDMMC, and the ext4 filesystem |
+| `ch_app_internal.tex` | Appendix B — reference for every on-chip peripheral driver |
+| `ch_app_external.tex` | Appendix C — reference for every external-device driver |

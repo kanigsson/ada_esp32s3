@@ -7,6 +7,9 @@ $(MAIN).pdf: $(MAIN).tex $(CHAPTERS) Ada.pdf
 	-makeindex $(MAIN).idx
 	pdflatex -interaction=nonstopmode -halt-on-error $(MAIN).tex
 	pdflatex -interaction=nonstopmode -halt-on-error $(MAIN).tex
+	# Final pass: the index pulled in by makeindex shifts pagination, so one
+	# more pass settles forward cross-references (e.g. appendix B -> C).
+	pdflatex -interaction=nonstopmode -halt-on-error $(MAIN).tex
 
 # Vector cover logo: convert the committed Ada.svg to a PDF for \includegraphics.
 # Ada.pdf is committed too, so a normal build never needs inkscape; this rule only

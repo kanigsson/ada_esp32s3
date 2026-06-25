@@ -237,6 +237,49 @@ exception
 end;
 \end{lstlisting}
 
+\subsection{Free-count integrity: the phantom-free tripwire}
+
+A subtle class of corruption is the \emph{free-count drift}: the superblock and
+block-group descriptors cache how many blocks and inodes are free, and if a
+\texttt{Free} adjusts that cache for a bit that was \emph{already} clear --- a
+double-free, or a stale/incoherent bitmap read off a flaky SD card --- the cached
+count creeps above what the bitmap actually says. \texttt{e2fsck} then reports a
+Pass-5 count mismatch on an otherwise-sound filesystem.
+
+The fix makes \texttt{Free} \emph{idempotent} by construction. \texttt{Clear\_Bit}
+now reports whether the bit was actually set, and the group/superblock counts are
+bumped \emph{only} when it was --- so a double or phantom free is a no-op rather
+than a drift, and the count cannot diverge from the bitmap.
+
+\begin{lstlisting}
+--  Bitmap.Clear_Bit returns False if the bit was already clear:
+if Bitmap.Clear_Bit (Group_BM, Index) then
+   Dec_Used (Group);          --  bit really was set: adjust the counts
+else
+   Phantom_Frees := Phantom_Frees + 1;   --  already free: no drift, but flag it
+end if;
+\end{lstlisting}
+
+Crucially the already-clear path is \emph{not} silent --- that would mask a genuine
+double-free bug. A \texttt{Phantom\_Free\_Count} tripwire counts the events (a plain
+counter, not a \texttt{pragma Assert}, because the target also builds with
+\texttt{-gnata} and an assert would abort the filesystem operation). The host test
+harness asserts the count is zero after every scenario, and the on-target
+\texttt{esp32s3\_ext4\_write} example reports it as a battery check
+(\texttt{[PASS] no phantom frees}; a flaky card flips it to \texttt{[FAIL]}).
+
+\begin{lstlisting}
+Bitmap.Reset_Phantom_Free_Count;            --  arm the tripwire
+--  ... exercise allocate / free / truncate / unlink ...
+Check ("no phantom frees (count consistent with bitmap)",
+       Bitmap.Phantom_Free_Count = 0);
+\end{lstlisting}
+
+The original drift was ultimately traced to a \emph{worn} SD card: a brand-new card
+runs the whole battery \texttt{e2fsck}-clean with zero phantom frees. The tripwire
+is what turned an intermittent, card-dependent count mismatch into a single
+yes/no signal --- surfacing the fault instead of hiding it.
+
 \subsection{How it is validated}
 
 Because the filesystem is pure logic over the block interface, it is developed and

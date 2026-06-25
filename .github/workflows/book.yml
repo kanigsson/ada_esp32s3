@@ -1,0 +1,57 @@
+name: Book PDF
+
+# Compile book/ (the LaTeX book "Bare-Metal Ada on the ESP32-S3") into a PDF and,
+# on a version tag, publish it as a GitHub Release.
+#
+#   * push a tag  v*   (e.g. v1.0)  -> build the PDF and attach it to a Release
+#   * run manually (Actions tab)    -> build the PDF and upload it as an artifact
+#                                      (a Release is created too if you dispatch
+#                                       the workflow from a tag ref)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write          # needed to create the Release and upload assets
+
+concurrency:
+  group: book-pdf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Full TeX Live in a container; latexmk runs pdflatex + makeindex and
+      # reruns until the index and cross-references converge.  book/Ada.pdf is
+      # committed, so the cover image needs no inkscape here.
+      - name: Build the book PDF
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: book
+          root_file: main.tex
+          # latexmk default args already include -halt-on-error
+          # -interaction=nonstopmode; -pdf selects pdflatex.
+
+      - name: Name the artifact
+        run: cp book/main.pdf "Bare-Metal-Ada-on-the-ESP32-S3.pdf"
+
+      - name: Upload PDF as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-pdf
+          path: Bare-Metal-Ada-on-the-ESP32-S3.pdf
+          if-no-files-found: error
+
+      # Only when the ref is a tag: cut a Release with the PDF attached.
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Book ${{ github.ref_name }} — Bare-Metal Ada on the ESP32-S3"
+          files: Bare-Metal-Ada-on-the-ESP32-S3.pdf
+          generate_release_notes: true

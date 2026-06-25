@@ -1,0 +1,1437 @@
+\chapter{Internal Peripheral Drivers}
+\label{app:internal}
+
+This appendix is a per-driver reference for the SoC's \emph{on-chip} peripherals
+--- the blocks built into the ESP32-S3 itself (GPIO, the serial buses, the
+timers and PWM units, DMA, the analog and audio paths, the low-power domain, and
+the crypto accelerators). The companion appendix~\ref{app:external} covers the
+drivers for \emph{external} parts wired to these peripherals. The narrative HAL
+chapters (\S\ref{ch:hal} onward) introduce the conventions and the design
+rationale; this appendix collects, for each driver, a short description, a digest
+of its public API, and a worked example drawn from the \texttt{examples/} tree.
+
+A few patterns recur and are worth stating once. The bus drivers (UART, SPI,
+I2C, I2S, LCD, TWAI) seal their unsynchronised register access in a private
+\texttt{.Engine} child and hand the application an acquired, auto-releasing
+\texttt{Session}; the resource drivers (LEDC, MCPWM, Timer, PCNT, SDM, RMT, GDMA,
+ADC) hand out a \emph{limited, controlled} handle that claims hardware on
+\texttt{Claim}/\texttt{Acquire} and frees it on scope exit, even during exception
+unwinding. Both idioms depend on finalization, so those drivers require the
+\texttt{embedded} or \texttt{full} profile; the register-poke drivers (GPIO,
+RNG, RTC, RTC-IO, Touch, SHA, AES, SDMMC) work under every profile, and each
+section notes which case applies. See the driver-design chapter
+(\S\ref{ch:driver-design}) for why the ownership gateway is built this way.
+
+\section{GPIO --- General-Purpose I/O}
+\label{app:int:gpio}
+
+The ESP32-S3 routes every digital pad through a \emph{GPIO matrix}: a pad can be
+a software-driven GPIO or be cross-connected to any peripheral's input/output
+signal. The Ada driver \texttt{ESP32S3.GPIO} sits on top of the generated
+register layer (\texttt{Interfaces.ESP32S3.GPIO} plus \texttt{IO\_MUX}) and
+exposes the plain-GPIO case: configure a pad's direction, pull and drive
+strength, then \texttt{Set} / \texttt{Clear} / \texttt{Toggle} / \texttt{Write}
+/ \texttt{Read} it. \texttt{Configure} always selects the matrix path
+(\texttt{MCU\_SEL = 1}, output index 256); routing a pad to a \emph{peripheral}
+signal instead is the job of that peripheral's own \texttt{Configure\_Pins}.
+
+The pad space is modelled by \texttt{Pad\_Number} (\texttt{-1\,..\,48}), with
+\texttt{-1} the \texttt{No\_Pin} sentinel for an optional unrouted line. The
+subtype \texttt{Pin\_Id} carries a \emph{static} predicate that excludes the
+pads the silicon does not bring out (22\,..\,25) and those bonded to the
+in-package flash and octal PSRAM (26\,..\,37): naming one of those as a static
+value is a compile-time error, and a dynamic value is caught at run time under
+\texttt{-gnata}. \texttt{Set} / \texttt{Clear} / \texttt{Write} use the
+hardware-atomic W1TS/W1TC banks and \texttt{Read} is a pure load, so those are
+concurrency-safe as written; the read-modify-write paths (\texttt{Configure},
+\texttt{Toggle}) are serialised through a protected object, so the package needs
+a tasking runtime. A companion child, \texttt{ESP32S3.GPIO.Interrupts}, owns the
+single GPIO interrupt source, demultiplexes it by latched status, and dispatches
+a per-pin \texttt{Callback} that runs in interrupt context under the level-3
+ceiling.
+
+\begin{lstlisting}
+package ESP32S3.GPIO is
+   type Pad_Number is range -1 .. 48;
+   No_Pin : constant Pad_Number := -1;
+
+   subtype Pin_Id is Pad_Number range 0 .. 48 with
+     Static_Predicate => Pin_Id in 0 .. 21 | 38 .. 48;
+   subtype Optional_Pin is Pad_Number with
+     Static_Predicate => Optional_Pin in -1 | 0 .. 21 | 38 .. 48;
+
+   type Pin_Mode       is (Input, Output);
+   type Pull_Mode      is (Floating, Pull_Up, Pull_Down);
+   type Drive_Strength is (Drive_Weak, Drive_Medium, Drive_Strong, Drive_Strongest);
+
+   procedure Configure (Pin : Pin_Id; Mode : Pin_Mode;
+                        Pull  : Pull_Mode      := Floating;
+                        Drive : Drive_Strength := Drive_Medium);
+   procedure Set    (Pin : Pin_Id);   --  atomic W1TS
+   procedure Clear  (Pin : Pin_Id);   --  atomic W1TC
+   procedure Toggle (Pin : Pin_Id);
+   procedure Write  (Pin : Pin_Id; On : Boolean);
+   function  Read   (Pin : Pin_Id) return Boolean;
+end ESP32S3.GPIO;
+
+--  Pin interrupts (ESP32S3.GPIO.Interrupts):
+type Trigger  is (Rising_Edge, Falling_Edge, Any_Edge, Low_Level, High_Level);
+type Callback is access procedure;
+procedure Enable  (Pin : Pin_Id; On : Trigger; Action : Callback);
+procedure Disable (Pin : Pin_Id);
+\end{lstlisting}
+
+The \texttt{gpio0\_blink} example drives GPIO0 from a library-level task ---
+configure once as a push-pull output, then toggle on a fixed period:
+
+\begin{lstlisting}
+with ESP32S3.GPIO;
+with Ada.Real_Time; use Ada.Real_Time;
+
+Pin : constant ESP32S3.GPIO.Pin_Id := 0;
+task Blinker;
+task body Blinker is
+   Period : constant Time_Span := Milliseconds (250);   --  ~2 Hz
+   Next   : Time;
+   High   : Boolean := False;
+begin
+   ESP32S3.GPIO.Configure
+     (Pin, ESP32S3.GPIO.Output, Drive => ESP32S3.GPIO.Drive_Strong);
+   Next := Clock + Period;
+   loop
+      delay until Next;
+      High := not High;
+      ESP32S3.GPIO.Write (Pin, High);
+      Next := Next + Period;
+   end loop;
+end Blinker;
+\end{lstlisting}
+
+\cnote{ESP-IDF wraps the same matrix in \texttt{gpio\_config()} +
+\texttt{gpio\_set\_level()}, taking a raw \texttt{int} pin number checked only at
+run time. The Ada \texttt{Pin\_Id} predicate moves that check to compile time for
+the common static-pin case --- a flash/PSRAM pad never even links.}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_gpio0\_blink}.
+
+\section{UART --- Asynchronous Serial}
+\label{app:int:uart}
+
+The chip has three general-purpose UART controllers; the bare runtime uses
+USB-Serial-JTAG for its console, so even UART0's pads are free to repurpose.
+\texttt{ESP32S3.UART} is the only interface the application sees: the raw
+register driver lives in a private child, \texttt{ESP32S3.UART.Engine}, that
+cannot be \texttt{with}-ed from outside the subtree, so the unsynchronised
+primitives can never be reached by accident.
+
+Configuration is split in two. \texttt{Setup} runs once per port at startup
+(single-threaded) and fixes baud, frame format and pin routing --- all four
+lines (\texttt{Tx}, \texttt{Rx}, \texttt{Rts}, \texttt{Cts}) are
+\texttt{Optional\_Pin}, so a link routes only what it uses. Everything after
+that goes through an acquired \texttt{Session}: \texttt{Acquire} hands out a
+limited, non-copyable token that owns the port exclusively (other tasks suspend
+until it is released), and every transfer \emph{and} every later
+reconfiguration (\texttt{Set\_Baud}, \texttt{Configure\_Pins},
+\texttt{Set\_Inversion}, \ldots) is a method on the held \texttt{Session} --- so
+a reconfigure can never race another task's transfer. The \texttt{Session} is a
+controlled type that auto-releases on scope exit (including during exception
+unwinding), so this driver, like the other task-safe HAL drivers, targets the
+\texttt{embedded}/\texttt{full} profile (full exceptions and finalization).
+\texttt{Enable\_Loopback} ties TX back to RX inside the controller for a
+no-wiring self-test.
+
+\begin{lstlisting}
+package ESP32S3.UART is
+   type UART_Port  is (UART0, UART1, UART2);
+   subtype Baud_Rate is Positive range 300 .. 5_000_000;
+   type Data_Bits   is range 5 .. 8;
+   type Parity_Mode is (None, Even, Odd);
+   type Stop_Bits   is (One, Two);
+   type Byte        is new Interfaces.Unsigned_8;
+   type Byte_Array  is array (Natural range <>) of Byte;
+   type Session     is limited private;            --  auto-releasing
+
+   procedure Setup (Port : UART_Port;
+                    Baud : Baud_Rate   := 115_200;
+                    Bits : Data_Bits   := 8;
+                    Parity : Parity_Mode := None;
+                    Stop   : Stop_Bits   := One;
+                    Tx, Rx, Rts, Cts : ESP32S3.GPIO.Optional_Pin
+                                       := ESP32S3.GPIO.No_Pin;
+                    Rx_Flow_Threshold : Natural := 100);
+
+   procedure Acquire (S : in out Session; Port : UART_Port);
+   procedure Write   (S : Session; Data : Byte_Array);
+   procedure Read    (S : Session; Data : out Byte_Array; Count : out Natural);
+   function  Available (S : Session) return Natural;
+   procedure Enable_Loopback (S : Session; On : Boolean := True);
+   procedure Release (S : in out Session);
+   Not_Initialized, Not_Owned : exception;
+end ESP32S3.UART;
+\end{lstlisting}
+
+The \texttt{uart\_loopback} self-test brings up UART1, ties TX to RX internally,
+and round-trips a known buffer --- no wiring needed:
+
+\begin{lstlisting}
+with ESP32S3.UART; use ESP32S3.UART;
+
+Port : constant UART_Port := UART1;
+Tx   : constant Byte_Array := (16#55#, 16#AA#, 16#00#, 16#FF#, 16#12#, 16#34#);
+S    : Session;
+Rx   : Byte_Array (Tx'Range);
+Got  : Natural;
+begin
+   Setup (Port, Baud => 115_200);     --  8-N-1 defaults
+   Acquire (S, Port);
+   Enable_Loopback (S);               --  internal TX->RX
+   Write (S, Tx);
+   Read  (S, Rx, Got);
+   Release (S);
+   --  Got = Tx'Length and Rx = Tx  on a healthy data path
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_uart\_loopback}.
+
+\section{SPI --- Serial Peripheral Interface}
+\label{app:int:spi}
+
+\texttt{ESP32S3.SPI} is a task-safe, full-duplex \emph{master} over the two
+general-purpose hosts, \texttt{SPI2} and \texttt{SPI3} (\texttt{SPI0}/\texttt{SPI1}
+drive the in-package flash and PSRAM and are deliberately not offered). As with
+UART, the unsynchronised register driver is sealed in a private child,
+\texttt{ESP32S3.SPI.Engine}, and reached only through an acquired
+\texttt{Session}.
+
+\texttt{Setup} brings a host up at one of the four clock modes (CPOL/CPHA 0\,..\,3)
+and a bit clock from roughly 80\,kHz to 80\,MHz, and claims a GDMA channel;
+\texttt{Set\_Clock} re-tunes the rate without re-claiming DMA, which lets a
+device driver init slowly then run fast (an SD card negotiates at
+$\le$400\,kHz, then switches to several MHz). \texttt{Configure\_Pins} routes
+\texttt{Sclk}/\texttt{Mosi}/\texttt{Miso}/\texttt{Cs} to pads (each an
+\texttt{Optional\_Pin}), and \texttt{Enable\_Loopback} ties MOSI to MISO through
+one pad for a self-test. The single transfer primitive is a blocking,
+full-duplex DMA \texttt{Transfer} of 1\,..\,4095 bytes between two SRAM buffers,
+addressed by \texttt{System.Address}. The controlled \texttt{Session}
+auto-releases on scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
+
+\begin{lstlisting}
+package ESP32S3.SPI is
+   type SPI_Host is (SPI2, SPI3);
+   subtype SPI_Mode is Natural range 0 .. 3;
+   type Session is limited private;            --  auto-releasing
+
+   procedure Setup       (Host : SPI_Host; Mode : SPI_Mode := 0;
+                          Clock_Hz : Positive := 1_000_000);
+   procedure Set_Clock   (Host : SPI_Host; Hz : Positive);
+   procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
+   procedure Configure_Pins (Host : SPI_Host;
+                             Sclk, Mosi, Miso : ESP32S3.GPIO.Optional_Pin;
+                             Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
+
+   procedure Acquire  (S : in out Session; Host : SPI_Host);
+   procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+   procedure Release  (S : in out Session);
+   Not_Initialized, Not_Owned : exception;
+end ESP32S3.SPI;
+\end{lstlisting}
+
+A no-wiring round-trip: bring up SPI2, loop MOSI to MISO on a free pad, and DMA
+a buffer through it --- what comes back on \texttt{Rx} equals what went out:
+
+\begin{lstlisting}
+with ESP32S3.SPI; use ESP32S3.SPI;
+with Interfaces;
+
+Tx : aliased array (0 .. 7) of Interfaces.Unsigned_8
+       := (16#01#, 16#23#, 16#45#, 16#67#, 16#89#, 16#AB#, 16#CD#, 16#EF#);
+Rx : aliased array (Tx'Range) of Interfaces.Unsigned_8 := (others => 0);
+S  : Session;
+begin
+   Setup (SPI2, Mode => 0, Clock_Hz => 1_000_000);
+   Enable_Loopback (SPI2, Pad => 8);          --  MOSI -> MISO on GPIO8
+   Acquire (S, SPI2);
+   Transfer (S, Tx'Address, Rx'Address, Tx'Length);
+   Release (S);                                --  Rx now mirrors Tx
+\end{lstlisting}
+
+The same driver carries real traffic in \texttt{esp32s3\_sd\_spi} (an SD card on
+\texttt{SPI2}, init at 400\,kHz then data at 8\,MHz) and behind the ST7789
+display driver.
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_sd\_spi} (and the ST7789
+display) exercise this driver against real hardware.
+
+\section{I2C --- Two-Wire Master}
+\label{app:int:i2c}
+
+\texttt{ESP32S3.I2C} is a polled, single-segment master over the two
+controllers \texttt{I2C0} and \texttt{I2C1}. Each \texttt{Write} or
+\texttt{Read} is one complete \texttt{START}\,\ldots\,\texttt{STOP} transaction
+of up to \texttt{Max\_Transfer} (32) bytes --- the controller's FIFO depth.
+\texttt{Setup} fixes the SCL bit clock (100\,kHz standard / 400\,kHz fast are
+typical), and \texttt{Configure\_Pins} routes \texttt{Scl}/\texttt{Sda} as
+open-drain lines with the internal pull-ups on, enough for bring-up (add real
+resistors for a production bus). The same sealed-\texttt{Engine},
+\texttt{Acquire}-a-\texttt{Session} structure as the other buses applies, and the
+controlled \texttt{Session} auto-releases, so the package targets
+\texttt{embedded}/\texttt{full}.
+
+A 7-bit \texttt{Slave\_Address} is given without the R/W bit (the driver adds
+it). \texttt{Write} reports \texttt{Success} = \texttt{True} only if the slave
+ACKed the address and every byte; a zero-length \texttt{Write} is an
+address-only probe, which makes bus scanning trivial, and \texttt{Check\_Ack =>
+False} clocks the frame out regardless of ACK. Unlike UART/SPI there is no
+on-chip loopback: I2C's SDA is a bidirectional wired-AND node and the matrix
+gives each pad one output source, so verifying the read/ACK direction needs a
+real device or a jumper.
+
+\begin{lstlisting}
+package ESP32S3.I2C is
+   type I2C_Host is (I2C0, I2C1);
+   subtype Slave_Address is Natural range 0 .. 16#7F#;
+   type Byte       is new Interfaces.Unsigned_8;
+   type Byte_Array is array (Natural range <>) of Byte;
+   Max_Transfer : constant := 32;
+   type Session  is limited private;            --  auto-releasing
+
+   procedure Setup          (Host : I2C_Host; Clock_Hz : Positive := 100_000);
+   procedure Configure_Pins (Host : I2C_Host;
+                             Scl, Sda : ESP32S3.GPIO.Pin_Id);
+
+   procedure Acquire (S : in out Session; Host : I2C_Host);
+   procedure Write   (S : Session; Addr : Slave_Address; Data : Byte_Array;
+                      Success : out Boolean; Check_Ack : Boolean := True);
+   procedure Read    (S : Session; Addr : Slave_Address; Data : out Byte_Array;
+                      Success : out Boolean);
+   procedure Release (S : in out Session);
+   Not_Initialized, Not_Owned : exception;
+end ESP32S3.I2C;
+\end{lstlisting}
+
+The \texttt{i2c\_loopback} self-test brings up \texttt{I2C0} and probes an empty
+bus: an ACK-checked write to an absent address must come back NACKed
+(\texttt{Success = False}), proving START, addressing and ACK detection on
+silicon:
+
+\begin{lstlisting}
+with ESP32S3.I2C; use ESP32S3.I2C;
+
+Host   : constant I2C_Host      := I2C0;
+Absent : constant Slave_Address := 16#55#;   --  nothing answers here
+S      : Session;
+Ok     : Boolean;
+begin
+   Setup (Host, Clock_Hz => 100_000);
+   Configure_Pins (Host, Scl => 6, Sda => 4);
+   Acquire (S, Host);
+   Write (S, Absent, (1 => 16#00#), Ok);     --  address-only-ish probe
+   Release (S);
+   --  PASS when (not Ok): the master saw the NACK from the empty bus
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_i2c\_loopback}.
+
+\section{RNG --- Hardware Random Number Generator}
+\label{app:int:rng}
+
+\texttt{ESP32S3.RNG} reads the on-chip random number generator: each load of its
+data register yields a fresh 32-bit word, drawn from analog and clock-jitter
+noise. The package is deliberately the simplest in the HAL --- \texttt{Read} is a
+single atomic register load and \texttt{Fill} writes only the caller's buffer,
+so there is no shared mutable state and \emph{no} protected object. It is marked
+\texttt{Preelaborate} and stays usable from a ZFP (no-runtime) context as well
+as the tasking profiles; concurrent readers simply get independent words.
+
+Two caveats carry over from the spec. First, this is the RNG \emph{peripheral}
+register, not ESP-IDF's \texttt{WDEV\_RND\_REG} --- that one only yields entropy
+with the RF clock domain up (Wi-Fi/BT), which the bare runtime never starts, so
+it would read a constant here. Second, without an active hardware entropy source
+(RF, or SAR-ADC bootloader entropy) the output is fine for dithering, non-secret
+IDs, test data or seeding a software PRNG, but should \emph{not} be treated as a
+CSPRNG. Don't poll faster than the hardware refreshes, or successive words may
+correlate.
+
+\begin{lstlisting}
+package ESP32S3.RNG with Preelaborate is
+   subtype Word is ESP32S3_Registers.UInt32;
+   function Read return Word with Inline;       --  one fresh 32-bit value
+
+   type Byte       is mod 2 ** 8 with Size => 8;
+   type Byte_Array is array (Natural range <>) of Byte with Pack;
+   procedure Fill (Buffer : out Byte_Array);    --  any length, word at a time
+end ESP32S3.RNG;
+\end{lstlisting}
+
+Reading a word and filling an arbitrary-length buffer:
+
+\begin{lstlisting}
+with ESP32S3.RNG;
+
+W   : ESP32S3.RNG.Word;
+Key : ESP32S3.RNG.Byte_Array (0 .. 11);    --  12 random bytes (3 words + 0 tail)
+begin
+   W := ESP32S3.RNG.Read;        --  e.g. seed a software PRNG with W
+   ESP32S3.RNG.Fill (Key);       --  fill the whole buffer with random bytes
+\end{lstlisting}
+
+\noindent\textbf{Example:} no dedicated example; the driver is a one-call read
+(\texttt{ESP32S3.RNG.Read}) usable directly from any profile, ZFP included.
+
+\section{Temperature --- On-Chip Die Sensor}
+\label{app:int:temperature}
+
+\texttt{ESP32S3.Temperature} reads the SoC's internal temperature sensor. It
+reports \emph{die} temperature, not ambient air: the chip self-heats under load,
+so an idle board reads a few degrees above room temperature, with roughly
+$\pm$1\,\textdegree C accuracy after the factory trim and best near the middle of
+the selected range. Bring-up follows ESP-IDF's \texttt{temperature\_sensor\_ll}
+sequence --- gate and pulse-reset the SAR clock, open the analog REGI2C bus,
+program the DAC range (a ROM call), then power the sensor up.
+
+\texttt{Initialize} is optional: the first \texttt{Read\_*} brings the sensor up
+with the default range if you skip it, and you may call \texttt{Initialize}
+again to switch range. Five \texttt{Measure\_Range} values bracket different
+spans; pick the one that contains your expected die temperature for best
+accuracy. Readings come as signed centi-degrees
+(\texttt{Read\_Centi\_Celsius}, e.g.\ 1807 = 18.07\,\textdegree C), whole degrees
+(\texttt{Read\_Celsius}), or the raw 8-bit code (\texttt{Read\_Raw}) if you
+prefer your own curve. The sensor is owned by a protected object so concurrent
+reads are serialised (each busy-waits microseconds for a fresh conversion under
+the lock), which means the package requires a tasking runtime.
+
+\begin{lstlisting}
+package ESP32S3.Temperature is
+   type Measure_Range is
+     (Range_Minus10_80,    --  -10 ..  80 C  (default)
+      Range_20_100,        --   20 .. 100 C
+      Range_50_125,        --   50 .. 125 C
+      Range_Minus30_50,    --  -30 ..  50 C
+      Range_Minus40_20);   --  -40 ..  20 C
+
+   procedure Initialize (Span : Measure_Range := Range_Minus10_80);
+   function  Read_Centi_Celsius return Integer;    --  1807 = 18.07 C
+   function  Read_Celsius       return Integer;    --  truncated toward zero
+   function  Read_Raw           return ESP32S3_Registers.Byte;
+end ESP32S3.Temperature;
+\end{lstlisting}
+
+Initialise for a room-temperature board, then read the die temperature:
+
+\begin{lstlisting}
+with ESP32S3.Temperature;
+
+Centi : Integer;
+Whole : Integer;
+begin
+   ESP32S3.Temperature.Initialize (ESP32S3.Temperature.Range_Minus10_80);
+   Centi := ESP32S3.Temperature.Read_Centi_Celsius;   --  e.g. 4231 = 42.31 C
+   Whole := ESP32S3.Temperature.Read_Celsius;         --  e.g. 42
+\end{lstlisting}
+
+\noindent\textbf{Example:} no dedicated example; the driver is a direct read
+(\texttt{ESP32S3.Temperature.Read\_Celsius}) after the optional
+\texttt{Initialize}.
+
+\section{LEDC --- LED Controller (PWM)}
+\label{app:int:ledc}
+
+The ESP32-S3's LEDC block is the simple ``dim an LED / generate a clean PWM''
+peripheral: eight low-speed channels fed by four timers. A channel selects a
+timer (which fixes its frequency and duty resolution) and drives a GPIO with a
+duty cycle changeable at run time. Unlike MCPWM, it has no dead-time, fault or
+capture logic.
+
+The Ada driver in \texttt{ESP32S3.LEDC} hands a channel out as a \texttt{Channel}
+handle that is \emph{limited} (non-copyable, so two tasks cannot drive one
+channel) and \emph{controlled} (it stops the output and returns the channel to
+the free pool on scope exit, including on an exception). Because you exclusively
+own a claimed channel, \texttt{Set\_Duty} needs no lock. The finalization
+dependency targets the embedded/full profile, not the light-tasking build.
+
+One chip caveat surfaces in the API: a channel uses timer \texttt{(Index mod 4)},
+so channels whose indices differ by 4 (e.g.\ 0 and 4) share one frequency and
+resolution. Use channels 0..3 for four independent frequencies. Achievable
+frequency depends on the duty bits: $f_{\max} = 80\,\mathrm{MHz} / 2^{\texttt{Bits}}$.
+
+\begin{lstlisting}
+type Channel_Index is range 0 .. 7;
+subtype Resolution    is Positive range 1 .. 14;   --  duty-cycle bits
+subtype Duty_Percent  is Float range 0.0 .. 100.0;
+
+type Channel is limited private;                   --  non-copyable, auto-releasing
+
+procedure Claim     (C : in out Channel; Index : Channel_Index);
+function  Is_Valid  (C : Channel) return Boolean;
+procedure Release   (C : in out Channel);
+procedure Configure (C    : in out Channel;
+                     Freq : Positive;
+                     Pin  : ESP32S3.GPIO.Pin_Id;
+                     Bits : Resolution := 10);
+procedure Set_Duty  (C : Channel; Percent : Duty_Percent);  --  loads next period
+procedure Stop      (C : Channel);                          --  force output low
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   Ch0    : Channel;
+   Duties : constant array (1 .. 2) of Duty_Percent := (25.0, 75.0);
+begin
+   Claim (Ch0, 0);
+   Configure (Ch0, Freq => 5_000, Pin => 4, Bits => 10);   --  5 kHz, 10-bit
+   for I in Duties'Range loop
+      Set_Duty (Ch0, Duties (I));
+      delay until Clock + Milliseconds (5);                --  let the duty latch
+      --  (the self-test now GPIO-samples pin 4 to verify duty + frequency)
+   end loop;
+end;   --  Ch0 finalizes: output stopped, channel freed
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_ledc\_pwm}.
+
+\section{MCPWM --- Motor-Control PWM}
+\label{app:int:mcpwm}
+
+MCPWM is the heavyweight PWM block: two units (\texttt{MCPWM0}, \texttt{MCPWM1}),
+each with three generator channels and three capture channels. A generator
+produces edge-aligned PWM on output A (high at period start, low when the
+up-counter reaches the duty comparator). It can also drive a \emph{complementary}
+pair --- an inverted B output with programmable dead-time inserted on each edge so
+A and B are never high together (the half-bridge / H-bridge motor case) --- plus
+carrier (chopper) modulation, fault/trip-zone shutdown, and edge capture.
+
+The Ada driver in \texttt{ESP32S3.MCPWM} models both a generator channel
+(\texttt{Channel}) and a capture channel (\texttt{Capture}) as limited, controlled
+handles. A unit's clock must be brought up once with \texttt{Setup} (PWM clock =
+160\,MHz) before any of its channels can be claimed; claiming a channel of an
+un-set-up unit raises \texttt{Not\_Initialized}. Capture timestamps are in
+\texttt{Capture\_Clock\_Hz} (80\,MHz) ticks. A claimed handle's operations,
+including \texttt{Set\_Duty}, need no further locking.
+
+\cnote{ESP-IDF's \texttt{mcpwm\_*} component spreads a generator across timer,
+operator, comparator and generator objects you wire together. Here one
+\texttt{Configure\_Channel} call (frequency, pin, optional complement pin,
+dead-time) does the equivalent, and ownership is enforced by the type system
+rather than by convention.}
+
+\begin{lstlisting}
+type MCPWM_Unit    is (MCPWM0, MCPWM1);
+type Channel_Index is (Ch0, Ch1, Ch2);
+type Channel is limited private;     type Capture is limited private;
+Not_Initialized : exception;
+
+procedure Setup   (Unit : MCPWM_Unit);                       --  once per unit
+procedure Claim   (C : in out Channel; Unit : MCPWM_Unit; Index : Channel_Index);
+procedure Configure_Channel
+  (C : Channel; Freq : Positive; Pin : ESP32S3.GPIO.Pin_Id;
+   Complement_Pin : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
+   Dead_Time_Ns   : Natural := 0);
+procedure Start (C : Channel);   procedure Stop (C : Channel);
+procedure Set_Duty (C : Channel; Percent : Duty_Percent);
+procedure Set_Carrier (C : Channel; Enable : Boolean := True; ...);
+--  Fault / trip-zone:
+procedure Configure_Fault (Unit : MCPWM_Unit; Input : Fault_Input;
+                           Pin : ESP32S3.GPIO.Pin_Id; Active_High : Boolean := True);
+procedure Protect_Channel (C : Channel; Input : Fault_Input;
+                           Mode : Fault_Mode := One_Shot; Action : Trip_Action := Force_Low);
+procedure Clear_Fault (C : Channel);   function Faulted (C : Channel) return Boolean;
+--  Capture:
+Capture_Clock_Hz : constant := 80_000_000;
+procedure Configure_Capture (Cap : Capture; Pin : ESP32S3.GPIO.Pin_Id;
+                             Edge : Cap_Edge := Both_Edges);
+function  Capture_Pending (Cap : Capture) return Boolean;
+procedure Read_Capture (Cap : Capture; Value : out Interfaces.Unsigned_32;
+                        Falling : out Boolean);
+\end{lstlisting}
+
+\begin{lstlisting}
+Setup (MCPWM0);
+Claim (Gen0, MCPWM0, Ch0);
+Configure_Channel (Gen0, Freq => 20_000, Pin => 4);      --  20 kHz, edge-aligned
+Start (Gen0);
+Set_Duty (Gen0, 75.0);
+
+--  Complementary half-bridge pair with 1 us dead-time on channel 1:
+Claim (Gen1, MCPWM0, Ch1);
+Configure_Channel (Gen1, Freq => 20_000, Pin => 6,
+                   Complement_Pin => 7, Dead_Time_Ns => 1_000);
+Start (Gen1);  Set_Duty (Gen1, 50.0);   --  A and B each ~50 %, never overlapping
+
+--  Over-current trip: force channel 0 low when Fault0 asserts, latched:
+Configure_Fault (MCPWM0, Fault0, Pin => 8, Active_High => True);
+Protect_Channel (Gen0, Fault0, One_Shot, Force_Low);
+--  ... later, once the fault clears:  Clear_Fault (Gen0);
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_mcpwm\_pwm}.
+
+\section{Timer --- General-Purpose Timers}
+\label{app:int:timer}
+
+The S3's two timer groups, \texttt{TIMG0} and \texttt{TIMG1}, each contain one
+54-bit up/down counter clocked from the APB clock through a 16-bit prescaler,
+with a programmable alarm. (The per-group watchdogs are a separate block and are
+left untouched.) The Ada driver in \texttt{ESP32S3.Timer} exposes one
+general-purpose timer per group as a limited, controlled \texttt{Timer} handle,
+released --- and the counter stopped --- automatically on scope exit.
+
+\texttt{Configure} sets the tick rate in ticks per second (default 1\,MHz =
+1\,\textmu{}s per tick; the range is roughly \texttt{80\_000\_000} down to
+\texttt{80\_000\_000/65536}) and leaves the counter stopped at 0.
+\texttt{Set\_Alarm} arms a one-shot: \texttt{Alarm\_Fired} reports the latched
+interrupt-status flag, which stays set until \texttt{Clear\_Alarm}. Counts are
+read back as the 64-bit \texttt{Ticks} type. As a finalization-using driver it
+targets the embedded/full profile.
+
+\begin{lstlisting}
+type Timer_Index is range 0 .. 1;       --  0 = TIMG0, 1 = TIMG1
+type Ticks       is new Interfaces.Unsigned_64;
+type Timer is limited private;
+
+procedure Claim     (T : in out Timer; Index : Timer_Index);
+function  Is_Valid  (T : Timer) return Boolean;
+procedure Release   (T : in out Timer);
+procedure Configure (T : in out Timer; Tick_Hz : Positive := 1_000_000);
+procedure Start (T : Timer);   procedure Stop (T : Timer);   procedure Reset (T : Timer);
+function  Value (T : Timer) return Ticks;
+procedure Set_Alarm  (T : Timer; At_Ticks : Ticks);
+function  Alarm_Fired (T : Timer) return Boolean;
+procedure Clear_Alarm (T : Timer);
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   T : Timer;
+begin
+   Claim (T, 0);
+   Configure (T, Tick_Hz => 1_000_000);          --  1 tick = 1 us
+   Reset (T);  Start (T);
+   delay until Clock + Milliseconds (50);
+   pragma Assert (Value (T) in 49_000 .. 51_000); --  ~50_000 ticks, cross-checked
+
+   Reset (T);
+   Set_Alarm (T, 30_000);                         --  fire at 30 ms
+   Start (T);
+   while not Alarm_Fired (T) loop null; end loop;
+   Clear_Alarm (T);  Stop (T);
+end;   --  T finalizes: stopped and released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_timer\_count}.
+
+\section{PCNT --- Pulse Counter}
+\label{app:int:pcnt}
+
+PCNT counts edges on an input signal. The S3 has four counter units, each
+accumulating into a \emph{signed 16-bit} counter that wraps at $\pm 32768$; the
+classic uses are quadrature decoding, tachometers and flow-meters. The Ada driver
+in \texttt{ESP32S3.PCNT} exposes the common ``count edges on a pin'' case --- the
+per-unit direction-control input and the threshold-event comparators are left at
+their pass-through defaults.
+
+A unit is handed out as a limited, controlled \texttt{Unit} handle (auto-released
+on scope exit). \texttt{Configure} routes a pin into the counter and starts it; by
+default each rising edge increments, or set \texttt{Both\_Edges} to count both.
+\texttt{Count} returns the signed value as an \texttt{Integer}, and
+\texttt{Pause}/\texttt{Resume} hold and continue counting while retaining the
+count.
+
+\begin{lstlisting}
+type Unit_Index is range 0 .. 3;        --  the four counter units
+type Unit is limited private;
+
+procedure Claim     (U : in out Unit; Index : Unit_Index);
+function  Is_Valid  (U : Unit) return Boolean;
+procedure Release   (U : in out Unit);
+procedure Configure (U : in out Unit; Pin : ESP32S3.GPIO.Pin_Id;
+                     Both_Edges : Boolean := False);
+function  Count  (U : Unit) return Integer;   --  signed, wraps at +/- 32768
+procedure Clear  (U : Unit);
+procedure Pause  (U : Unit);
+procedure Resume (U : Unit);
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   U : Unit;
+begin
+   Claim (U, 0);
+   Configure (U, Pin => 4);             --  count rising edges on GPIO4
+   for I in 1 .. 100 loop               --  the self-test drives the same pad ...
+      ESP32S3.GPIO.Set (4);   delay until Clock + Microseconds (20);
+      ESP32S3.GPIO.Clear (4); delay until Clock + Microseconds (20);
+   end loop;
+   pragma Assert (Count (U) = 100);     --  ... and counts the edges back
+end;   --  U finalizes: paused and released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_pcnt\_count}.
+
+\section{SDM --- Sigma-Delta Modulator}
+\label{app:int:sdm}
+
+The SDM block (part of the GPIO sigma-delta unit, \texttt{GPIO\_SD}) provides
+eight 1-bit density-modulated outputs. Each channel emits a high-frequency pulse
+stream whose average density is set by a signed 8-bit value; passed through an
+external RC low-pass filter it becomes a cheap analog output for LED dimming, a
+bias voltage, or simple audio. The Ada driver in \texttt{ESP32S3.SDM} exposes a
+channel as a limited, controlled \texttt{Channel} handle.
+
+\texttt{Configure} routes the output to a pin and starts it at 0\,\% density.
+\texttt{Carrier\_Hz} requests the pulse-stream (carrier) frequency: the modulator
+runs at the APB clock ($\sim$80\,MHz) divided by an integer 1..256, so the
+achieved rate is the nearest \texttt{APB/N}, roughly 312\,500\,Hz to 80\,MHz. A
+higher carrier is easier to smooth; the exact value rarely matters and is rounded
+to the nearest available divider. \texttt{Set\_Density} is a single register
+write.
+
+\begin{lstlisting}
+type Channel_Index   is range 0 .. 7;      --  the eight SDM channels
+subtype Density_Percent is Float range 0.0 .. 100.0;
+type Channel is limited private;
+
+procedure Claim     (C : in out Channel; Index : Channel_Index);
+function  Is_Valid  (C : Channel) return Boolean;
+procedure Release   (C : in out Channel);
+procedure Configure (C : in out Channel; Pin : ESP32S3.GPIO.Pin_Id;
+                     Carrier_Hz : Positive := 1_000_000);
+procedure Set_Density (C : Channel; Percent : Density_Percent);
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   Ch        : Channel;
+   Densities : constant array (1 .. 3) of Density_Percent := (25.0, 50.0, 75.0);
+begin
+   Claim (Ch, 0);
+   --  A lower carrier oversamples cleanly when the pad is GPIO-sampled back:
+   Configure (Ch, Pin => 4, Carrier_Hz => 400_000);
+   for I in Densities'Range loop
+      Set_Density (Ch, Densities (I));
+      delay until Clock + Milliseconds (5);
+      --  averaged pad reading should track the set density within a few percent
+   end loop;
+end;   --  Ch finalizes: output low, channel released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_sdm\_output}.
+
+\section{RMT --- Remote Control Transceiver}
+\label{app:int:rmt}
+
+RMT is the ``infinitely-flexible pulse generator'': it transmits and receives
+sequences of \{level, duration\} pulses, making it the workhorse for IR remotes,
+WS2812 (``NeoPixel'') LEDs, 1-Wire, and arbitrary bit-banged timing. The S3 has
+eight channels --- 0..3 transmit, 4..7 receive --- each backed by a 48-symbol RAM
+block. One \texttt{RMT\_Symbol} packs two \{level, duration\} pulses into 32 bits
+(durations are 15-bit channel ticks, where the tick length is
+$1/\texttt{Resolution\_Hz}$).
+
+The Ada driver in \texttt{ESP32S3.RMT} uses \emph{distinct} limited, controlled
+handle types --- \texttt{TX\_Channel} and \texttt{RX\_Channel} --- so transmit and
+receive channels can't be confused. \texttt{Transmit} blocks until the burst
+finishes; bursts larger than the channel's RAM are streamed by re-filling the
+symbol RAM in halves as it drains, so \texttt{Symbols} may be any length. The
+\texttt{Blocks} parameter (1..4) borrows the RAM of higher-numbered TX channels
+to raise the one-shot ceiling. On the receive side, \texttt{Start} arms the
+channel and \texttt{Receive} blocks until the line stays idle for
+\texttt{Idle\_Ticks}. Because \texttt{Transmit} busy-polls its re-fill, keep
+higher-priority interrupts short.
+
+\begin{lstlisting}
+type TX_Index    is range 0 .. 3;   type RX_Index is range 0 .. 3;
+type Tick_Count  is range 0 .. 32_767;     --  duration in channel ticks (15-bit)
+
+type RMT_Symbol is record
+   Level0 : Boolean := False;   Duration0 : Tick_Count := 0;
+   Level1 : Boolean := False;   Duration1 : Tick_Count := 0;
+end record;
+for RMT_Symbol'Size use 32;
+type Symbol_Array is array (Natural range <>) of RMT_Symbol;
+
+type TX_Channel is limited private;   type RX_Channel is limited private;
+
+--  Transmit:
+procedure Claim     (C : in out TX_Channel; Index : TX_Index);
+procedure Configure (C : in out TX_Channel; Resolution_Hz : Positive;
+                     Pin : ESP32S3.GPIO.Pin_Id; Blocks : Positive := 1);
+procedure Transmit  (C : TX_Channel; Symbols : Symbol_Array);
+--  Receive:
+procedure Claim     (C : in out RX_Channel; Index : RX_Index);
+procedure Configure (C : in out RX_Channel; Resolution_Hz : Positive;
+                     Pin : ESP32S3.GPIO.Pin_Id; Idle_Ticks : Tick_Count := 2_000);
+procedure Start     (C : RX_Channel);
+procedure Receive   (C : RX_Channel; Into : out Symbol_Array; Count : out Natural);
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   Tx   : TX_Channel;   Rx : RX_Channel;
+   Sent : constant Symbol_Array :=
+     ((Level0 => True, Duration0 =>  50, Level1 => False, Duration1 =>  60),
+      (Level0 => True, Duration0 =>  80, Level1 => False, Duration1 =>  90),
+      (Level0 => True, Duration0 => 120, Level1 => False, Duration1 => 130));
+   Got   : Symbol_Array (0 .. 15);
+   Count : Natural;
+begin
+   Claim (Tx, 0);   Claim (Rx, 0);
+   Configure (Tx, Resolution_Hz => 1_000_000, Pin => 4);            --  1 us / tick
+   Configure (Rx, Resolution_Hz => 1_000_000, Pin => 4, Idle_Ticks => 1_000);
+   Start    (Rx);              --  arm the receiver first
+   Transmit (Tx, Sent);        --  drive the burst onto the pad
+   Receive  (Rx, Got, Count);  --  block until idle, read it back (single-pad loopback)
+end;   --  Tx, Rx finalize: released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_rmt\_loopback}.
+
+\section{GDMA --- General DMA}
+\label{app:int:gdma}
+
+The ESP32-S3 has a single AHB GDMA block with five channel pairs (\texttt{0..4}).
+Each pair carries an independent transmit (OUT) and receive (IN) path, and either
+can be wired to any peripheral through the GDMA crossbar --- a channel is a
+runtime-assigned resource, not fixed per peripheral. The Ada driver
+(\texttt{ESP32S3.GDMA}) models that directly: \texttt{Claim} hands out a free
+\texttt{Channel} bound to a \texttt{Peripheral} (\texttt{Mem2Mem}, \texttt{SPI2},
+\texttt{I2S0}, \texttt{LCD\_CAM}, \texttt{ADC\_DAC}, \ldots); peripheral drivers
+such as I2S and LCD claim a channel and drive their own descriptors over it.
+
+A \texttt{Channel} is \texttt{limited private} --- non-copyable, so two tasks
+cannot alias one channel --- and \emph{controlled}: claiming goes through a
+protected allocator, and the handle auto-releases on scope exit (including during
+exception unwinding) so a channel cannot leak or be reused through a stale copy.
+Because finalization is involved, this driver targets the embedded/full profile
+(excluded from the light-tasking build). Transfers are bounded by
+\texttt{Max\_Transfer = 4095} (the 12-bit buffer-size field); the implemented
+memory-to-memory \texttt{Copy} loops one channel's OUT path into its own IN path,
+and source, destination and descriptors must all live in internal SRAM. Beyond
+\texttt{Copy}, the peripheral-bound \texttt{Start}/\texttt{Start\_Loop}/%
+\texttt{Done}/\texttt{Wait} API arms a single buffer (or a self-looping gapless
+one) in a \texttt{Direction} and lets the peripheral pace the move.
+
+\begin{lstlisting}
+type Channel_Id is mod 5;
+type Peripheral is
+  (Mem2Mem, SPI2, SPI3, UHCI0, I2S0, I2S1, LCD_CAM, AES, SHA, ADC_DAC, RMT);
+type Channel is limited private;            --  non-copyable, auto-released
+type Direction is (Mem_To_Periph, Periph_To_Mem);
+Max_Transfer : constant := 4095;
+
+procedure Claim   (C : in out Channel; Peri : Peripheral);
+function  Is_Valid (C : Channel) return Boolean;
+procedure Release (C : in out Channel);
+procedure Copy    (C : Channel; Dst, Src : System.Address; Length : Natural);
+procedure Start   (C : Channel; Dir : Direction;
+                   Buffer : System.Address; Length : Natural);
+procedure Start_Loop (C : Channel; Buffer : System.Address; Length : Natural);
+function  Done    (C : Channel; Dir : Direction) return Boolean;
+procedure Wait    (C : Channel; Dir : Direction);
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   C  : Channel;                            --  limited: cannot be aliased
+   Ok : Boolean := False;
+begin
+   Claim (C, Mem2Mem);
+   if Is_Valid (C) then
+      Copy (C, Dst'Address, Src'Address, Buffer'Length);
+      Ok := (for all I in Buffer'Range => Dst (I) = Src (I));
+   end if;
+   Copy_Result (Ok);
+end;                                        --  C finalizes -> channel released
+\end{lstlisting}
+
+\cnote{In ESP-IDF a channel is a \texttt{gdma\_channel\_handle\_t} you
+\texttt{gdma\_new\_channel} / \texttt{gdma\_del\_channel} by hand, with descriptor
+lifetimes left to you. Here the limited-controlled \texttt{Channel} \emph{is} the
+allocation: leaving scope frees it, and the type system forbids the aliasing that
+leaks one.}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_gdma\_copy}.
+
+\section{I2S --- Digital Audio Serial Bus}
+\label{app:int:i2s}
+
+The S3 has two I2S controllers (\texttt{I2S0}, \texttt{I2S1}), each moving PCM
+samples only through the GDMA crossbar --- the block has no CPU FIFO, so data
+flows exclusively via DMA. The Ada driver (\texttt{ESP32S3.I2S}) brings a port up
+as a stereo master that generates BCLK and WS and shifts a sample buffer out (TX)
+and/or captures one in (RX), in either \texttt{Standard} (verbatim I2S/TDM) or
+\texttt{PDM} mode. In PDM mode the on-chip sigma-delta converters sit between the
+buffer and the wire: TX turns each PCM sample into a 1-bit pulse-density stream,
+RX decimates a 1-bit PDM input back to PCM, while \texttt{Write}/\texttt{Read}/%
+\texttt{Transfer} stay unchanged (the converters high-pass filter, so a constant
+level does not survive a PDM round trip).
+
+Mirroring \texttt{ESP32S3.SPI}, the raw register access lives in the private child
+\texttt{ESP32S3.I2S.Engine} (which claims the GDMA channel); the application sees
+only the parent. \texttt{Setup} configures a port once at startup; thereafter
+\texttt{Acquire} hands out a \texttt{Session} --- limited, non-copyable, and
+controlled --- that owns the port exclusively and auto-releases on scope exit, so a
+fault between \texttt{Acquire} and \texttt{Release} cannot leak the lock.
+Transfers (\texttt{Write}, \texttt{Read}, \texttt{Transfer}, plus the gapless
+\texttt{Start\_Continuous}/\texttt{Capture}/\texttt{Stop} streaming path) run
+outside the lock and raise \texttt{Not\_Owned} if the session does not hold a
+port, or \texttt{Not\_Initialized} if a port was never \texttt{Setup}. The driver
+needs a tasking runtime (Jorvik or richer) and, via finalization, targets the
+embedded/full profile.
+
+\begin{lstlisting}
+type I2S_Port    is (I2S0, I2S1);
+type Sample_Bits is (Bits_8, Bits_16, Bits_24, Bits_32);
+type I2S_Mode    is (Standard, PDM);
+type Session     is limited private;        --  non-copyable, auto-released
+Not_Initialized, Not_Owned : exception;
+
+procedure Setup (Port : I2S_Port; Sample_Rate : Positive := 16_000;
+                 Bits : Sample_Bits := Bits_16; Mode : I2S_Mode := Standard);
+procedure Enable_Loopback (Port : I2S_Port; Pad : ESP32S3.GPIO.Pin_Id);
+procedure Configure_Pins  (Port : I2S_Port;
+                           Bclk, Ws, Dout, Din, Mclk : Optional_Pin := No_Pin);
+procedure Acquire  (S : in out Session; Port : I2S_Port);
+procedure Write    (S : Session; Tx : System.Address; Length : Natural);
+procedure Read     (S : Session; Rx : System.Address; Length : Natural);
+procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
+procedure Start_Continuous (S : Session; Tx : System.Address; Length : Natural);
+procedure Capture  (S : Session; Rx : System.Address; Length : Natural);
+procedure Stop     (S : Session);
+procedure Release  (S : in out Session);
+\end{lstlisting}
+
+\begin{lstlisting}
+Setup (I2S0, Sample_Rate => 16_000, Bits => Bits_16);
+Enable_Loopback (I2S0, Pad => Data_Pin);    --  out->in on one pad, no wiring
+declare
+   S  : Session;                            --  limited: cannot be copied/shared
+   Ok : Boolean := False;
+begin
+   Acquire (S, I2S0);                       --  suspends until the port is free
+   Transfer (S, Tx'Address, Rx'Address, Samples'Length * 2);
+   Ok := (for all I in Samples'Range => Rx (I) = Tx (I));
+end;                                        --  S finalizes -> port released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_i2s\_loopback} (Standard
+full-duplex) and \texttt{examples/esp32s3\_i2s\_pdm} (PDM microphone capture).
+
+\section{LCD --- i8080 Parallel Display}
+\label{app:int:lcd}
+
+The LCD half of the S3's LCD\_CAM controller drives an 8-bit Intel-8080
+(``i80''/MCU) parallel display: a byte buffer is streamed out the data bus, one
+byte per pixel clock (PCLK), over the GDMA crossbar. The Ada driver
+(\texttt{ESP32S3.LCD}) covers exactly this 8-bit i80 transmit path (the
+camera-receive half and the RGB/16-bit modes are not modelled). \texttt{Setup}
+brings the controller up at (about) \texttt{Pclk\_Hz} --- quantised as
+\texttt{20\,MHz / round(20\,MHz / Pclk\_Hz)} --- and claims its GDMA channel.
+
+The single controller is guarded by a protected object; \texttt{Acquire} hands out
+a limited, controlled \texttt{Session} that owns it exclusively and releases on
+scope exit. Notably, both transfers \emph{and} post-\texttt{Setup} reconfiguration
+go through the held session: \texttt{Configure\_Pins} (route the eight data lines
+\texttt{Data\_Pins} and PCLK) and \texttt{Enable\_Clock\_Out} (free-run the clock
+with no data) require ownership, so changing a setting can never race another
+task. \texttt{Transmit} streams \texttt{1..4095} bytes from internal SRAM and
+reports completion in \texttt{Ok}. Every operation raises \texttt{Not\_Owned}
+without the lock, or \texttt{Not\_Initialized} if \texttt{Setup} did not succeed
+(including a failed channel claim). All register access lives in the private
+\texttt{ESP32S3.LCD.Engine} child; via finalization the driver targets the
+embedded/full profile.
+
+\begin{lstlisting}
+No_Pin : constant ESP32S3.GPIO.Pad_Number := ESP32S3.GPIO.No_Pin;
+type Data_Pins is array (0 .. 7) of ESP32S3.GPIO.Optional_Pin;  -- D0..D7
+type Session   is limited private;          --  non-copyable, auto-released
+Not_Initialized, Not_Owned : exception;
+
+procedure Setup (Pclk_Hz : Positive := 1_000_000);
+procedure Acquire (S : in out Session);
+procedure Configure_Pins   (S : Session; Data : Data_Pins;
+                            Pclk : ESP32S3.GPIO.Optional_Pin);
+procedure Enable_Clock_Out (S : Session; Pclk_Pad : ESP32S3.GPIO.Pin_Id);
+procedure Transmit (S : Session; Tx : System.Address; Length : Natural;
+                    Ok : out Boolean);
+procedure Release  (S : in out Session);
+\end{lstlisting}
+
+\begin{lstlisting}
+Setup (Pclk_Hz => 200 * 1000);              --  200 kHz pixel clock
+declare
+   S  : Session;
+   Ok : Boolean;
+begin
+   Acquire (S);
+   Configure_Pins (S, D_Pins, Pclk => Pclk_Pin);  --  route pads on held ctrl
+   Transmit (S, Buf'Address, Buffer'Length, Ok);  --  blocks until done
+   Release (S);
+   Put_Line (if Ok then "PASS" else "FAIL");
+end;
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_lcd\_i8080}.
+
+\section{ADC --- SAR Analog-to-Digital Converter}
+\label{app:int:adc}
+
+The S3 has two SAR ADC units, each with up to ten 12-bit channels on fixed GPIOs:
+ADC1 channel \texttt{n} maps to \texttt{GPIO(n+1)} (ch0\,=\,GPIO1\ldots ch9\,=\,GPIO10),
+ADC2 channel \texttt{n} to \texttt{GPIO(n+11)}. The Ada driver
+(\texttt{ESP32S3.ADC}) does software-triggered single (one-shot) conversions
+through the RTC controller; each returns a raw \texttt{0..4095} code, with
+per-channel \texttt{Attenuation} (\texttt{Db\_0} $\approx$ 1.1\,V full-scale
+\ldots \texttt{Db\_12} $\approx$ 3.3\,V) setting the input range.
+
+A unit is a shared resource handed out as a \texttt{Reader} --- limited
+(non-copyable) and controlled (released automatically on scope exit) --- so
+claiming a unit cannot leak. After \texttt{Claim}, check \texttt{Is\_Valid};
+\texttt{Read} samples a channel (blocking, a few microseconds), returning
+\texttt{0} on an invalid handle. \texttt{Channel\_Pin} reports the GPIO a channel
+is wired to (routing/documentation), and the diagnostics \texttt{Cal\_Code}
+(self-calibrated initial code) and \texttt{Last\_Done} (the SAR DONE flag) help
+confirm a conversion actually ran. Via finalization the driver targets the
+embedded/full profile.
+
+\begin{lstlisting}
+type ADC_Unit      is (ADC1, ADC2);
+type Channel_Index is range 0 .. 9;
+type Attenuation   is (Db_0, Db_2_5, Db_6, Db_12);
+subtype Raw_Value  is Natural range 0 .. 4095;        --  12-bit result
+type Reader        is limited private;                --  auto-released
+
+procedure Claim   (R : in out Reader; Unit : ADC_Unit);
+function  Is_Valid (R : Reader) return Boolean;
+procedure Release (R : in out Reader);
+function  Read    (R : Reader; Ch : Channel_Index;
+                   Atten : Attenuation := Db_12) return Raw_Value;
+function  Channel_Pin (Unit : ADC_Unit; Ch : Channel_Index)
+                       return ESP32S3.GPIO.Pin_Id;
+function  Cal_Code  (Unit : ADC_Unit) return Natural;
+function  Last_Done return Boolean;
+\end{lstlisting}
+
+\begin{lstlisting}
+declare
+   R : Reader;
+   High, Low : Natural := 0;
+begin
+   Claim (R, ADC1);                         --  ADC1 ch0 -> GPIO1
+   ESP32S3.GPIO.Configure (Pin, ESP32S3.GPIO.Output);
+   ESP32S3.GPIO.Set (Pin);                  --  drive the sensed pad high
+   delay until Clock + Milliseconds (2);
+   High := Read (R, Ch);                    --  expect near full scale
+   ESP32S3.GPIO.Clear (Pin);
+   delay until Clock + Milliseconds (2);
+   Low := Read (R, Ch);                     --  expect near zero
+end;                                        --  R finalizes -> unit released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_adc\_read}.
+
+\section{TWAI --- CAN Controller}
+\label{app:int:twai}
+
+The S3's TWAI block (Two-Wire Automotive Interface) is a single
+SJA1000-compatible CAN 2.0 controller. The Ada driver (\texttt{ESP32S3.TWAI})
+sends and receives both standard (11-bit \texttt{Standard\_Id}) and extended
+(29-bit \texttt{Extended\_Id}, CAN 2.0B) frames, data or remote-request (RTR).
+Each frame type carries its own identifier subtype, so the id is range-checked to
+its standard and \texttt{Send} is overloaded on the frame type --- a 29-bit id
+cannot end up in a standard frame. A real bus needs an external transceiver; for a
+wiring-free self-test, \texttt{Self\_Test} mode transmits and self-receives a
+frame (no second node to acknowledge), with TX looped back to RX through one pad
+via \texttt{Enable\_Loopback}.
+
+The single controller is guarded by a protected object; \texttt{Acquire} hands out
+a limited, controlled \texttt{Session} owning it exclusively, auto-released on
+scope exit. \texttt{Setup} (mode + bit rate, accepting all ids) runs once;
+transfers and post-\texttt{Setup} reconfiguration (\texttt{Configure\_Pins},
+\texttt{Enable\_Loopback}) all go through the held session and raise
+\texttt{Not\_Owned} otherwise (or \texttt{Not\_Initialized} before \texttt{Setup}).
+Because a received frame may be either width, receiving is a two-step idiom:
+\texttt{Available} reports a waiting frame, \texttt{Is\_Extended} its width, then
+the matching \texttt{Receive} overload reads it (returning \texttt{Got => False}
+if the waiting frame is the other width, leaving it buffered). All register access
+lives in the private \texttt{ESP32S3.TWAI.Engine} child; via finalization the
+driver targets the embedded/full profile.
+
+\begin{lstlisting}
+type Bus_Mode    is (Normal, Listen_Only, Self_Test);
+subtype Data_Length is Natural range 0 .. 8;
+type Data_Bytes  is array (0 .. 7) of Interfaces.Unsigned_8;
+subtype Standard_Id is Interfaces.Unsigned_32 range 0 .. 16#7FF#;        -- 11-bit
+subtype Extended_Id is Interfaces.Unsigned_32 range 0 .. 16#1FFF_FFFF#;  -- 29-bit
+type Standard_Frame is record
+   Id : Standard_Id := 0; Remote : Boolean := False;
+   Length : Data_Length := 0; Data : Data_Bytes := (others => 0);
+end record;
+type Extended_Frame is record ... end record;   --  same shape, Extended_Id
+type Session is limited private;
+
+procedure Setup (Mode : Bus_Mode := Normal; Bit_Rate : Positive := 125_000);
+procedure Acquire (S : in out Session);
+procedure Enable_Loopback (S : Session; Pad : ESP32S3.GPIO.Pin_Id);
+procedure Send (S : Session; F : Standard_Frame);   --  overloaded on frame type
+procedure Send (S : Session; F : Extended_Frame);
+function  Available   (S : Session) return Boolean;
+function  Is_Extended (S : Session) return Boolean;
+procedure Receive (S : Session; F : out Standard_Frame; Got : out Boolean);
+procedure Receive (S : Session; F : out Extended_Frame; Got : out Boolean);
+\end{lstlisting}
+
+\begin{lstlisting}
+Setup (Mode => Self_Test, Bit_Rate => 125_000);
+declare
+   S   : Session;
+   RS  : Standard_Frame;
+   Got : Boolean;
+begin
+   Acquire (S);
+   Enable_Loopback (S, Pad);                --  out->in on one pad, no wiring
+   Send (S, Std);                           --  picks the Standard_Frame overload
+   Got := Available (S) and then not Is_Extended (S);
+   if Got then
+      Receive (S, RS, Got);                 --  matching width -> Got => True
+   end if;
+end;                                        --  S finalizes -> controller released
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_twai\_loopback}.
+
+\section{RTC --- Real-Time Clock and Deep Sleep}
+\label{app:int:rtc}
+
+The ESP32-S3's RTC (low-power) domain stays alive while the digital core is
+powered down. In deep sleep, CPU and main RAM lose power; only the RTC domain
+survives, so on wake the chip \emph{resets} and re-runs from the start --- but
+anything kept in the 8\,KB of RTC slow memory (at \texttt{0x5000\_0000}) persists
+across the reset. \texttt{ESP32S3.RTC} exposes that retained region, the cause of
+the current boot (power-on versus a deep-sleep wake), and deep-sleep entry with a
+timer or an RTC-GPIO (EXT1) wake source.
+
+The deep-sleep timer runs on the uncalibrated RTC slow clock
+(\textasciitilde136\,kHz), so \texttt{Deep\_Sleep\_For} is approximate. The entry
+procedures do not return on success: the chip powers its digital core down and
+resets on wake. Retained memory can be reached word-by-word with
+\texttt{Read}/\texttt{Write}, by overlaying a variable on the \texttt{Slow\_Memory}
+address, or through the generic \texttt{Retained} package. The operations are plain
+register pokes with no tasking or finalization, so the driver works under every
+runtime profile.
+
+\begin{lstlisting}
+Slow_Memory      : constant System.Address := ...;   --  0x5000_0000
+Slow_Memory_Size : constant := 8 * 1024;
+subtype Word_Index is Natural range 0 .. Slow_Memory_Size / 4 - 1;
+
+function  Read  (Index : Word_Index) return Interfaces.Unsigned_32;
+procedure Write (Index : Word_Index; Value : Interfaces.Unsigned_32);
+
+generic                                  --  typed retained object
+   type Item is private;
+   Offset : Natural := 0;
+package Retained is
+   Object : Item with Import, Volatile, Address => ...;
+end Retained;
+
+type Wake_Cause is (Power_On, Deep_Sleep_Timer, Deep_Sleep_GPIO, Other_Reset);
+function Last_Wake return Wake_Cause;
+
+procedure Deep_Sleep_For   (Wake_After : Duration);            --  timer wake
+procedure Deep_Sleep_Until (Pin : ESP32S3.GPIO.Pin_Id;        --  EXT1 wake
+                            High : Boolean := True);
+procedure Disable_Super_Watchdog;
+\end{lstlisting}
+
+A boot counter kept in retained word 0 survives the deep-sleep reset; the wake
+cause turns into \texttt{Deep\_Sleep\_Timer} on each timer wake.
+
+\begin{lstlisting}
+use ESP32S3.RTC;
+WC         : constant Wake_Cause := Last_Wake;
+Boot_Count : Unsigned_32 := Read (0);          --  retained across deep sleep
+begin
+   Disable_Super_Watchdog;                     --  a wake can leave it armed
+   if WC = Deep_Sleep_Timer or else WC = Deep_Sleep_GPIO then
+      Boot_Count := Boot_Count + 1;
+   else
+      Boot_Count := 1;                          --  power-on / flash reset
+   end if;
+   Write (0, Boot_Count);                       --  persist it
+
+   if Boot_Count < 4 then
+      Deep_Sleep_For (2.0);                      --  ~2 s; DOES NOT RETURN
+   end if;                                       --  chip resets on wake
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_rtc\_sleep}.
+
+\section{RTC-IO --- Low-Power GPIO and Pad Hold}
+\label{app:int:rtcio}
+
+GPIO0 through GPIO21 are RTC-capable: they belong to the low-power IO domain. The
+headline feature is pad \emph{hold} --- latch a pad at its current output level so
+it keeps driving while the rest of the chip changes, and, crucially, while the
+chip is in deep sleep (the digital core powers down, but a held RTC pad stays put)
+and across the reset a deep-sleep wake causes. Use it to keep a load enabled or a
+reset line asserted while you sleep. A held pad ignores ordinary GPIO writes until
+you \texttt{Release} it.
+
+\texttt{ESP32S3.RTC\_IO} also exposes the RTC-domain pulls, which are distinct
+from the digital IO\_MUX pulls configured through \texttt{ESP32S3.GPIO}: route a
+pad into the RTC domain with \texttt{Enable\_RTC\_Input}, then \texttt{Set\_Pull}
+gives it a defined level that holds (including in deep sleep). Register pokes only,
+so RTC-IO works under every runtime profile.
+
+\begin{lstlisting}
+subtype RTC_Pin is ESP32S3.GPIO.Pin_Id range 0 .. 21;
+
+procedure Hold    (Pin : RTC_Pin);    --  latch pad at its current level
+procedure Release (Pin : RTC_Pin);    --  follow the GPIO register again
+function  Is_Held (Pin : RTC_Pin) return Boolean;
+
+procedure Enable_RTC_Input (Pin : RTC_Pin);   --  route into RTC domain
+type Pull_Mode is (No_Pull, Up, Down);
+procedure Set_Pull (Pin : RTC_Pin; Mode : Pull_Mode);
+\end{lstlisting}
+
+Driving a pad high and holding it makes a subsequent GPIO clear a no-op until
+release:
+
+\begin{lstlisting}
+Pin : constant ESP32S3.GPIO.Pin_Id := 5;     --  RTC-capable pad
+begin
+   ESP32S3.GPIO.Configure (Pin, ESP32S3.GPIO.Output);
+   ESP32S3.GPIO.Set (Pin);                    --  drive high
+
+   Hold (Pin);                                --  latch it high
+   ESP32S3.GPIO.Clear (Pin);                  --  IGNORED while held
+   --  Read (Pin) still reports high here
+
+   Release (Pin);                             --  unlatch
+   ESP32S3.GPIO.Clear (Pin);                  --  now takes effect -> low
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_rtcio\_hold}.
+
+\section{Touch --- Capacitive Touch Sensor}
+\label{app:int:touch}
+
+The S3's capacitive touch sensor (v2) provides 14 channels, channel $n$ wired to
+GPIO$n$ ($n = 1\ldots14$). Each channel measures the self-capacitance of its pad
+by counting charge/discharge cycles in a fixed window; a finger near the pad
+raises the capacitance and changes the count. A hardware FSM scans the enabled
+channels continuously on the RTC timer, and \texttt{Read} returns the latest raw
+count.
+
+\texttt{ESP32S3.Touch} keeps the model deliberately simple: bring the controller
+up once with \texttt{Setup}, \texttt{Enable} the channels you want, then
+\texttt{Read} their raw counts. \texttt{Touched} is a software comparison against a
+caller-captured \texttt{Reference} with a \texttt{Margin} --- deterministic, with
+no on-chip threshold registers in play. It lives in the RTC/SENS domain and is
+register pokes only, so it works under every runtime profile.
+
+\begin{lstlisting}
+type Channel is range 1 .. 14;               --  channel n -> GPIO n
+function Pad (Ch : Channel) return ESP32S3.GPIO.Pin_Id;
+
+procedure Setup;                             --  start the scanning FSM (once)
+procedure Enable (Ch : Channel);            --  add a channel to the scan
+function  Read   (Ch : Channel) return Natural;   --  latest raw count
+
+function Touched (Ch        : Channel;
+                  Reference : Natural;
+                  Margin    : Natural := 20_000) return Boolean;
+\end{lstlisting}
+
+A bare pad reads a stable non-zero baseline; two different pads read different
+values, proving the FSM runs on silicon:
+
+\begin{lstlisting}
+A : constant Channel := 1;     --  GPIO1
+B : constant Channel := 3;     --  GPIO3
+begin
+   Setup;
+   Enable (A);
+   Enable (B);
+   delay until Clock + Milliseconds (50);     --  let the FSM scan
+
+   declare
+      Ra : constant Natural := Read (A);
+      Rb : constant Natural := Read (B);
+   begin
+      --  Ra, Rb both non-zero and distinct => capacitance FSM is live
+      null;
+   end;
+
+   --  Touch detection against a captured baseline:
+   Baseline : constant Natural := Read (A);
+   Hit      : constant Boolean := Touched (A, Baseline, Margin => 50_000);
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_touch\_read}.
+
+\section{SHA --- Hardware Hash Accelerator}
+\label{app:int:sha}
+
+The SHA accelerator computes SHA-1, SHA-224 and SHA-256 of a byte message in
+hardware. All three variants share the same 512-bit block and padding, differing
+only in the hardware mode and digest length. \texttt{ESP32S3.SHA} exposes them as
+three one-shot functions that take a \texttt{Byte\_Array} of any length (padded
+internally) and return the fixed-size digest.
+
+The accelerator is a single shared resource, so a protected object serializes the
+message-load / start / read handshake, making concurrent \texttt{Hash} calls from
+different tasks safe. There is no finalization --- just register pokes --- so the
+driver works under every runtime profile. (The block hardware also does
+SHA-384/512 on a 1024-bit block; those are not exposed here.)
+
+\begin{lstlisting}
+type Byte_Array is array (Natural range <>) of Interfaces.Unsigned_8;
+
+subtype SHA1_Digest   is Byte_Array (0 .. 19);   --  160-bit
+subtype SHA224_Digest is Byte_Array (0 .. 27);   --  224-bit
+subtype SHA256_Digest is Byte_Array (0 .. 31);   --  256-bit
+
+function Hash_1   (Data : Byte_Array) return SHA1_Digest;
+function Hash_224 (Data : Byte_Array) return SHA224_Digest;
+function Hash_256 (Data : Byte_Array) return SHA256_Digest;
+\end{lstlisting}
+
+Hashing \texttt{"abc"} and comparing against the FIPS-180 vector:
+
+\begin{lstlisting}
+use type ESP32S3.SHA.Byte_Array;
+
+Abc : constant ESP32S3.SHA.Byte_Array := (16#61#, 16#62#, 16#63#);  --  "abc"
+
+Sha_Expect : constant ESP32S3.SHA.SHA256_Digest :=
+  (16#BA#, 16#78#, 16#16#, 16#BF#, 16#8F#, 16#01#, 16#CF#, 16#EA#,
+   16#41#, 16#41#, 16#40#, 16#DE#, 16#5D#, 16#AE#, 16#22#, 16#23#,
+   16#B0#, 16#03#, 16#61#, 16#A3#, 16#96#, 16#17#, 16#7A#, 16#9C#,
+   16#B4#, 16#10#, 16#FF#, 16#61#, 16#F2#, 16#00#, 16#15#, 16#AD#);
+begin
+   --  PASS when the hardware digest matches the published vector:
+   if ESP32S3.SHA.Hash_256 (Abc) = Sha_Expect then ... end if;
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_crypto}.
+
+\section{AES --- Hardware AES Accelerator}
+\label{app:int:aes}
+
+The AES accelerator performs single-block (128-bit) AES in hardware.
+\texttt{ESP32S3.AES} exposes the ECB building block --- one-block encrypt and
+decrypt --- for 128- and 256-bit keys. As with SHA, the engine is a single shared
+resource guarded by a protected object, so calls from different tasks are safe,
+and the register-poke implementation needs no finalization and works under every
+runtime profile.
+
+\cnote{The ESP32-S3 AES hardware supports only 128- and 256-bit keys; there is no
+192-bit mode on this silicon (selecting ``AES-192'' silently falls back to AES-128
+on the first 16 key bytes). The \texttt{Supported\_Key} precondition turns an
+unsupported key length into a contract violation instead of a silent fallback ---
+callers that pass the \texttt{Key\_128} / \texttt{Key\_256} subtypes satisfy it
+statically, at no run-time cost.}
+
+\begin{lstlisting}
+type Block is array (0 .. 15) of Interfaces.Unsigned_8;   --  128-bit block
+
+type Key_Bytes is array (Natural range <>) of Interfaces.Unsigned_8;
+subtype Key_128 is Key_Bytes (0 .. 15);
+subtype Key_256 is Key_Bytes (0 .. 31);
+
+function Supported_Key (Key : Key_Bytes) return Boolean is
+  (Key'Length = 16 or else Key'Length = 32);
+
+function Encrypt_ECB (Key : Key_Bytes; Plain  : Block) return Block
+  with Pre => Supported_Key (Key);
+function Decrypt_ECB (Key : Key_Bytes; Cipher : Block) return Block
+  with Pre => Supported_Key (Key);
+\end{lstlisting}
+
+Encrypting the FIPS-197 example block and round-tripping it back:
+
+\begin{lstlisting}
+use type ESP32S3.AES.Block;
+
+Aes_Key : constant ESP32S3.AES.Key_128 :=
+  (16#00#, 16#01#, 16#02#, 16#03#, 16#04#, 16#05#, 16#06#, 16#07#,
+   16#08#, 16#09#, 16#0A#, 16#0B#, 16#0C#, 16#0D#, 16#0E#, 16#0F#);
+Aes_Plain : constant ESP32S3.AES.Block :=
+  (16#00#, 16#11#, 16#22#, 16#33#, 16#44#, 16#55#, 16#66#, 16#77#,
+   16#88#, 16#99#, 16#AA#, 16#BB#, 16#CC#, 16#DD#, 16#EE#, 16#FF#);
+Aes_Cipher : constant ESP32S3.AES.Block :=
+  (16#69#, 16#C4#, 16#E0#, 16#D8#, 16#6A#, 16#7B#, 16#04#, 16#30#,
+   16#D8#, 16#CD#, 16#B7#, 16#80#, 16#70#, 16#B4#, 16#C5#, 16#5A#);
+begin
+   --  encrypt matches the vector, and decrypt recovers the plaintext:
+   if ESP32S3.AES.Encrypt_ECB (Aes_Key, Aes_Plain)  = Aes_Cipher and then
+      ESP32S3.AES.Decrypt_ECB (Aes_Key, Aes_Cipher) = Aes_Plain
+   then ... end if;
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_crypto}.
+
+\section{SDMMC --- Native SD/MMC Host Controller}
+\label{app:int:sdmmc}
+
+The dedicated SDHOST controller drives an SD card on the real SD bus --- a clock,
+a bidirectional command line, and 1 or 4 data lines --- with its own
+command/response state machine. Unlike the SPI-mode SD path, this is how you reach
+an SDHC/SDXC card at speed (up to 50\,MHz in High-Speed mode).
+\texttt{ESP32S3.SDMMC} moves data in PIO/FIFO mode (the CPU pushes/pops each
+512-byte block through the controller FIFO), so there are no GDMA descriptors and
+no finalization: a library-level protected object serializes the single shared
+controller, and it works under every runtime profile, including light tasking. The
+API is always 512-byte logical blocks (LBA); the SDHC/SDXC versus SDSC addressing
+difference is resolved internally. (Covered in full in the Mass Storage chapter,
+\S\ref{ch:storage}.)
+
+\begin{lstlisting}
+type Slot      is (Slot1, Slot2);
+type Bus_Width is (Width_1, Width_4);
+type Block         is array (0 .. 511) of Interfaces.Unsigned_8;
+type Block_Address is new Interfaces.Unsigned_32;
+type Card_Kind is (Unknown, SDSC, SDHC);             --  SDHC also covers SDXC
+type Status    is (OK, No_Card, Unusable, Init_Timeout, Cmd_Timeout,
+                   Cmd_CRC, Read_Error, Write_Error);
+type Card is limited private;
+
+procedure Setup (C : out Card; On : Slot;
+                 Clk, Cmd, D0 : ESP32S3.GPIO.Pin_Id;
+                 D1, D2, D3   : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
+                 Width        : Bus_Width := Width_1;
+                 Init_Clock_Hz, Data_Clock_Hz : Positive;
+                 High_Speed   : Boolean := False);
+procedure Initialize  (C : in out Card; Result : out Status);
+function  Kind        (C : Card) return Card_Kind;
+procedure Read_Block  (C : in out Card; LBA : Block_Address;
+                       Data : out Block; Result : out Status);
+procedure Write_Block (C : in out Card; LBA : Block_Address;
+                       Data : Block; Result : out Status);
+\end{lstlisting}
+
+Bringing up Slot1 in 4-bit mode and doing a non-destructive sector round-trip:
+
+\begin{lstlisting}
+use type ESP32S3.SDMMC.Status;
+Test_LBA : constant ESP32S3.SDMMC.Block_Address := 16#2000#;   --  sector 8192
+C    : ESP32S3.SDMMC.Card;
+St   : ESP32S3.SDMMC.Status;
+Orig : ESP32S3.SDMMC.Block;
+begin
+   ESP32S3.SDMMC.Setup
+     (C, On => ESP32S3.SDMMC.Slot1,
+      Clk => 14, Cmd => 15, D0 => 2, D1 => 4, D2 => 12, D3 => 13,
+      Width => ESP32S3.SDMMC.Width_4,
+      Init_Clock_Hz => 400_000, Data_Clock_Hz => 20_000_000);
+
+   ESP32S3.SDMMC.Initialize (C, St);
+   if St = ESP32S3.SDMMC.OK then
+      ESP32S3.SDMMC.Read_Block  (C, Test_LBA, Orig, St);   --  read scratch sector
+      ESP32S3.SDMMC.Write_Block (C, Test_LBA, Orig, St);   --  write it back unchanged
+   end if;
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_sdmmc}.
