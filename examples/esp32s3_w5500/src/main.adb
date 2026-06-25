@@ -7,6 +7,11 @@
 --  server below is just Create/Bind/Listen/Accept/Receive/Send/Close, the same
 --  code shape you would write on a desktop.
 --
+--  Unlike the client examples (http/ntp/dns/weather), which hide the chip bring-up
+--  in a W5500_Dev package and so keep main portable GNAT.Sockets, this one inlines
+--  the bring-up and interrupt arming on purpose -- it is the "whole stack in one
+--  file" example.  The echo loop itself is still portable GNAT.Sockets.
+--
 --  Board wiring: MISO=IO45 MOSI=IO4 SCLK=IO1 SCSn=IO39  INTn=IO3(pu) RSTn=IO11(pu).
 --  Try it from a host on the same LAN:  nc 192.168.1.50 5000
 with Interfaces;

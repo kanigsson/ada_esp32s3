@@ -7,6 +7,11 @@
 --
 --  No static address: the router assigns one.  After the first bind the chip is
 --  configured, so the higher layers (socket engine, GNAT.Sockets) are ready.
+--
+--  DHCP is necessarily chip-level, not portable GNAT.Sockets: it must run before an
+--  address exists and then program the obtained IP/mask/gateway into the interface
+--  -- operations below the sockets API on any platform (raw sockets + ioctl on a
+--  desktop; Net.Configure here).  So this example rides ESP32S3.W5500.DHCP directly.
 with Ada.Real_Time; use Ada.Real_Time;
 
 with ESP32S3.SPI;
