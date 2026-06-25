@@ -94,7 +94,8 @@ project ESP32S3_HAL is
             "esp32s3-es8311.ads",      "esp32s3-es8311.adb",
             "esp32s3-tx1812.ads",      "esp32s3-tx1812.adb",
             "esp32s3-w5500.ads",       "esp32s3-w5500.adb",
-            "esp32s3-w5500-sockets.ads", "esp32s3-w5500-sockets.adb");
+            "esp32s3-w5500-sockets.ads", "esp32s3-w5500-sockets.adb",
+            "esp32s3-w5500-interrupts.ads", "esp32s3-w5500-interrupts.adb");
       when "embedded" | "full" =>
          for Source_Dirs use ("src", "svd", "src/ext4");
    end case;

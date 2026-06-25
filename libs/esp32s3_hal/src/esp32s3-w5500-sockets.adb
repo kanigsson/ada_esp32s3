@@ -32,6 +32,7 @@ package body ESP32S3.W5500.Sockets is
    --  Sn_IR flags (write 1 to clear).
    IR_CON     : constant Byte := 16#01#;
    IR_DISCON  : constant Byte := 16#02#;
+   IR_RECV    : constant Byte := 16#04#;
    IR_TIMEOUT : constant Byte := 16#08#;
    IR_SEND_OK : constant Byte := 16#10#;
 
@@ -87,11 +88,23 @@ package body ESP32S3.W5500.Sockets is
       end loop;
    end Issue;
 
-   --  The single point the polling waits spin on chip status; the interrupts
-   --  child will replace this with a Suspend_Until_True on INTn.
-   procedure Wait_Event is
+   --  Optional INTn waiter (registered via Set_Event_Waiter); null => poll.
+   Waiter : Event_Waiter := null;
+
+   procedure Set_Event_Waiter (W : Event_Waiter) is
    begin
-      delay until Clock + Milliseconds (1);
+      Waiter := W;
+   end Set_Event_Waiter;
+
+   --  The single point the blocking waits funnel through: sleep on INTn for this
+   --  socket if a waiter is registered (the interrupts child), else poll.
+   procedure Wait_Event (S : Socket) is
+   begin
+      if Waiter /= null then
+         Waiter (S.Index);
+      else
+         delay until Clock + Milliseconds (1);
+      end if;
    end Wait_Event;
 
    ---------------------------------------------------------------------------
@@ -186,7 +199,7 @@ package body ESP32S3.W5500.Sockets is
             end if;
          end;
          exit when Clock >= Deadline;
-         Wait_Event;
+         Wait_Event (S);
       end loop;
       Result := Timed_Out;
    end Connect;
@@ -207,13 +220,45 @@ package body ESP32S3.W5500.Sockets is
    function Is_Established (S : Socket) return Boolean is
      (R8 (S, Sn_SR) = SR_ESTABLISHED);
 
+   procedure Wait_Connected (S : in out Socket; Result : out Status) is
+   begin
+      if not S.Is_Open then
+         Result := Not_Open;  return;
+      end if;
+      loop
+         case State (S) is
+            when Established =>
+               W8 (S, Sn_IR, IR_CON);    --  clear CON so INTn re-arms for data
+               Result := OK;  return;
+            when Closed      => Result := Error;  return;   --  listen ended
+            when others      => Wait_Event (S);             --  Listening/transient
+         end case;
+      end loop;
+   end Wait_Connected;
+
+   procedure Wait_Data (S : in out Socket; Result : out Status) is
+   begin
+      if not S.Is_Open then
+         Result := Not_Open;  return;
+      end if;
+      loop
+         if R16_Stable (S, Sn_RX_RSR) > 0 then
+            Result := OK;  return;
+         end if;
+         case State (S) is
+            when Close_Wait | Closed => Result := Closed_By_Peer;  return;
+            when others              => Wait_Event (S);
+         end case;
+      end loop;
+   end Wait_Data;
+
    procedure Disconnect (S : in out Socket) is
    begin
       if S.Is_Open and then S.Proto = TCP_Proto then
          Issue (S, Cmd_Discon);
          for Tries in 1 .. 1000 loop                       --  best-effort wait
             exit when R8 (S, Sn_SR) = SR_CLOSED;
-            Wait_Event;
+            Wait_Event (S);
          end loop;
       end if;
       S.Is_Open := False;  S.Proto := None;
@@ -241,7 +286,7 @@ package body ESP32S3.W5500.Sockets is
                W8 (S, Sn_IR, IR_TIMEOUT);  return False;
             end if;
          end;
-         Wait_Event;
+         Wait_Event (S);
       end loop;
    end Flush_Send;
 
@@ -295,6 +340,7 @@ package body ESP32S3.W5500.Sockets is
             Into (Into'First .. Into'First + N - 1));
       W16 (S, Sn_RX_RD, RD + Unsigned_16 (N));
       Issue (S, Cmd_Recv);
+      W8 (S, Sn_IR, IR_RECV);     --  clear RECV so INTn re-arms for the next data
       Count := N;  Result := OK;
    end Receive;
 

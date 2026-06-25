@@ -41,6 +41,13 @@ package ESP32S3.W5500.Sockets is
    type Socket_State is
      (Closed, Init, Listening, Established, Close_Wait, Udp, Other);
 
+   --  Interrupt integration (optional).  By default the blocking operations
+   --  POLL.  An ESP32S3.W5500.Interrupts child can register a waiter here so the
+   --  waits instead SLEEP on INTn; pass null to revert to polling.  If you never
+   --  register one, everything stays polled -- no interrupt code is even linked.
+   type Event_Waiter is access procedure (Index : Socket_Id);
+   procedure Set_Event_Waiter (W : Event_Waiter);
+
    ---------------------------------------------------------------------------
    --  Open / close.  Index selects one of the eight hardware sockets.
    ---------------------------------------------------------------------------
@@ -82,6 +89,10 @@ package ESP32S3.W5500.Sockets is
    function State         (S : Socket) return Socket_State;
    function Is_Established (S : Socket) return Boolean;
 
+   --  Server: block until a client connects (=> Established) or the socket
+   --  closes.  Sleeps on INTn if an Event_Waiter is registered, else polls.
+   procedure Wait_Connected (S : in out Socket; Result : out Status);
+
    --  TCP graceful disconnect (DISCON: FIN + handshake), then the handle is closed.
    procedure Disconnect (S : in out Socket);
 
@@ -91,6 +102,11 @@ package ESP32S3.W5500.Sockets is
 
    --  Bytes waiting in the RX buffer (Sn_RX_RSR).
    function Available (S : Socket) return Natural;
+
+   --  Block until data is available to Receive, or the peer closes.  Sleeps on
+   --  INTn if an Event_Waiter is registered, else polls.  Result = OK when data
+   --  is ready, Closed_By_Peer when the connection has closed.
+   procedure Wait_Data (S : in out Socket; Result : out Status);
 
    --  Send up to Data'Length bytes; Sent = how many were transmitted (may be less
    --  than Data'Length if the TX buffer was partly full).

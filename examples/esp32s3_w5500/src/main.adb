@@ -18,6 +18,7 @@ with Ada.Real_Time; use Ada.Real_Time;
 with ESP32S3.SPI;
 with ESP32S3.W5500;
 with ESP32S3.W5500.Sockets;
+with ESP32S3.W5500.Interrupts;
 with ESP32S3.Log;  use ESP32S3.Log;
 with W5500_Dev;
 
@@ -29,6 +30,7 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    package Net  renames ESP32S3.W5500;
    package Sock renames ESP32S3.W5500.Sockets;
+   package Ints renames ESP32S3.W5500.Interrupts;
    use type Sock.Status;
    use type Sock.Socket_State;
    use type Net.Link_State;
@@ -83,9 +85,17 @@ begin
       delay until Clock + Milliseconds (250);
    end loop;
    Put_Line (if Net.Link (Dev) = Net.Up then "[w5500] link up" else "[w5500] link down");
+
+   --  Arm INTn so the blocking socket waits below sleep on the interrupt instead
+   --  of polling.  (Delete this one line to fall back to polling -- the socket
+   --  engine works either way.)
+   Ints.Enable (Dev);
+   Put_Line (if Ints.Armed then "[w5500] interrupts armed (INTn=IO3)"
+                           else "[w5500] polling (no INTn)");
    Put_Line ("[w5500] TCP echo on 192.168.1.50:5000  (try:  nc 192.168.1.50 5000)");
 
-   --  One client at a time on hardware socket 0: listen, echo, repeat.
+   --  One client at a time on hardware socket 0: listen, echo, repeat.  Every
+   --  wait below (accept, then per-message) sleeps on INTn when armed.
    loop
       Sock.Open_TCP (Dev'Access, S, Index => 0, Local_Port => Listen_Port,
                      Result => St);
@@ -95,22 +105,16 @@ begin
       end if;
       Sock.Listen (S, St);
 
-      --  wait for a client (stay in SOCK_LISTEN until one connects)
-      while Sock.State (S) = Sock.Listening loop
-         delay until Clock + Milliseconds (50);
-      end loop;
-
-      if Sock.Is_Established (S) then
+      Sock.Wait_Connected (S, St);        --  sleep until a client connects
+      if St = Sock.OK then
          Put_Line ("[w5500] client connected");
          loop
-            Sock.Receive (S, Buf, N, St);
+            Sock.Wait_Data (S, St);       --  sleep until data (or peer close)
             exit when St = Sock.Closed_By_Peer;
+            Sock.Receive (S, Buf, N, St);
             if N > 0 then
                Sock.Send (S, Buf (0 .. N - 1), Sent, St);   --  echo it back
-            else
-               delay until Clock + Milliseconds (5);        --  nothing waiting
             end if;
-            exit when Sock.State (S) = Sock.Closed;
          end loop;
          Put_Line ("[w5500] client disconnected");
       end if;
