@@ -4,12 +4,14 @@
 This appendix is the companion to appendix~\ref{app:internal}: where that one
 covers the SoC's on-chip peripherals, this one covers the drivers for
 \emph{external} parts --- the I/O expanders, sensors, clocks, codec, display,
-GPS module, SD card and LED string that hang off the ESP32-S3's buses. Each
-driver layers on one (or two) of the on-chip drivers: the I2C devices ride
-\texttt{ESP32S3.I2C}, the display rides \texttt{ESP32S3.SPI}, the codec uses
-\texttt{ESP32S3.I2C} for control and \texttt{ESP32S3.I2S} for audio, the GPS
-service reads \texttt{ESP32S3.UART}, and the LED string is clocked out over
-\texttt{ESP32S3.RMT}.
+GPS module, SD card, LED string and Ethernet controller that hang off the
+ESP32-S3's buses. Each driver layers on one (or two) of the on-chip drivers: the
+I2C devices ride \texttt{ESP32S3.I2C}, the display rides \texttt{ESP32S3.SPI}, the
+codec uses \texttt{ESP32S3.I2C} for control and \texttt{ESP32S3.I2S} for audio, the
+GPS service reads \texttt{ESP32S3.UART}, and the LED string is clocked out over
+\texttt{ESP32S3.RMT}. The W5500 Ethernet controller is the largest of these --- a
+whole networking stack --- so it has its own chapter
+(\ref{ch:networking}); this appendix gives only its bus and a pointer.
 
 The same ownership discipline recurs. Most of these drivers expose a
 \texttt{Device} configured once by \texttt{Setup} and, for the multi-step ones, a
@@ -776,3 +778,26 @@ end loop;
 \end{lstlisting}
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_tx1812}.
+
+\section{W5500 --- SPI Ethernet Controller}
+\label{app:ext:w5500}
+
+The WIZnet W5500 is an Ethernet controller with a hardwired TCP/IP stack (ARP,
+ICMP, IP, TCP, UDP in silicon), eight hardware sockets and 32\,KB of buffer RAM,
+driven over SPI. On this board it sits on \texttt{ESP32S3.SPI} (SPI2) with
+\texttt{MISO=IO45}, \texttt{MOSI=IO4}, \texttt{SCLK=IO1}, \texttt{SCSn=IO39},
+\texttt{INTn=IO3} and \texttt{RSTn=IO11}; the chip-select is an ordinary GPIO held
+low across each variable-length SPI frame.
+
+Unlike the other external parts, the W5500 is a whole subsystem rather than a single
+driver: a transport layer (\texttt{ESP32S3.W5500}), a socket engine
+(\texttt{ESP32S3.W5500.Sockets}), optional interrupts, a DHCP client, and an adapter
+(\texttt{ESP32S3.W5500.Net\_Device}) that presents the chip as a standard
+\texttt{GNAT.Sockets} interface. Because that is far more than an API digest, it has
+its own chapter --- see chapter~\ref{ch:networking}, ``Networking: GNAT.Sockets over
+the W5500,'' for the driver layers, the chip-neutral \texttt{Net\_Devices}
+interface, the DNS and DHCP helpers, and the worked examples (echo server, HTTP,
+NTP, DNS, DHCP, and a weather client). Like the other controlled-handle drivers it
+requires the embedded or full profile.
+
+\noindent\textbf{Examples:} \texttt{examples/esp32s3\_w5500*}.

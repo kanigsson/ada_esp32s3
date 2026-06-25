@@ -1,0 +1,400 @@
+\chapter{Networking: GNAT.Sockets over the W5500}
+\label{ch:networking}
+
+Storage gave the application a filesystem; this chapter gives it a network. The
+striking thing about the networking layer is the API the application sees: it is
+the \emph{standard} \texttt{GNAT.Sockets} --- \texttt{Create\_Socket},
+\texttt{Connect\_Socket}, \texttt{Send\_Socket}, a \texttt{Stream} over a socket.
+Portable networking code compiles and runs here unchanged, within the subset this
+chapter describes. Underneath that familiar surface sits a small stack: a
+chip-neutral interface every NIC implements, and the WIZnet W5500 driver as the
+first chip behind it.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[node distance=2mm]
+\node[layer, fill=blue!9] (app)  {Your application --- portable \texttt{GNAT.Sockets} code, \texttt{DNS\_Client}};
+\node[layer, below=of app]  (fac)  {\texttt{GNAT.Sockets} facade --- interface registry, address types, the \texttt{Stream}};
+\node[layer, below=of fac]  (intf) {\texttt{Net\_Devices.Device'Class} --- the chip-neutral contract (dispatched on)};
+\node[layer, below=of intf] (wrap) {\texttt{ESP32S3.W5500.Net\_Device} --- the W5500 as the first backend};
+\node[layer, below=of wrap] (eng)  {\texttt{ESP32S3.W5500.Sockets} --- the socket engine (\texttt{.Interrupts}, \texttt{.DHCP} alongside)};
+\node[layer, below=of eng]  (xport){\texttt{ESP32S3.W5500} --- VDM frame transport + bring-up};
+\node[layer, below=of xport] (spi) {\texttt{ESP32S3.SPI} --- task-safe SPI master $\rightarrow$ the chip};
+\end{tikzpicture}
+\caption{The networking stack. Everything above \texttt{Net\_Devices.Device'Class}
+is chip-independent; everything below it is the W5500 driver. A second NIC slots in
+as another backend without the layers above noticing.}
+\label{fig:net-layers}
+\end{figure}
+
+\cnote{On an ESP-IDF system you reach for lwIP and the BSD socket API, with the
+Wi-Fi or Ethernet \texttt{netif} underneath. The shape here is the same --- a
+sockets API over a driver --- but the W5500 carries its \emph{own} TCP/IP stack in
+silicon, so there is no lwIP to link: the ``stack'' is eight hardware sockets on
+the chip, and our job is only to drive them and present the sockets API.}
+
+\section{The W5500 and its driver}
+\label{ch:net:w5500}
+
+The WIZnet W5500 is an Ethernet controller with a \emph{hardwired} TCP/IP stack:
+ARP, ICMP, IP, TCP and UDP are implemented in the chip, which exposes eight
+independent \emph{hardware sockets} and 32\,KB of buffer RAM, and is driven over
+SPI. You do not run a protocol stack on the host; you write a destination address
+and payload into a socket's registers and tell it to \texttt{SEND}. On this board
+the chip is wired to SPI2 with \texttt{MISO=IO45}, \texttt{MOSI=IO4},
+\texttt{SCLK=IO1}, \texttt{SCSn=IO39}, \texttt{INTn=IO3} (pull-up) and
+\texttt{RSTn=IO11} (pull-up); the chip-select is an ordinary GPIO held low across
+each frame, exactly as the SD-card driver does.
+
+The driver is built in layers, each a child package, so the application can stop at
+whichever level it needs:
+
+\begin{itemize}[nosep]
+\item \texttt{ESP32S3.W5500} --- the transport. The W5500's SPI ``variable data
+length'' frame is a 16-bit address, a control byte (block-select + read/write), and
+the data; this layer reads and writes registers and the socket buffers over the
+task-safe SPI master, and brings the chip up (reset, \texttt{VERSIONR} probe, MAC /
+IP / subnet / gateway, PHY link).
+\item \texttt{ESP32S3.W5500.Sockets} --- the \emph{socket engine}. A self-contained
+\texttt{Socket} handle with \texttt{Open\_TCP} / \texttt{Open\_UDP},
+\texttt{Listen}, \texttt{Connect}, \texttt{Send} / \texttt{Receive},
+\texttt{Send\_To} / \texttt{Receive\_From}, and a \texttt{Status} error model. This
+is the level the higher layers build on.
+\item \texttt{ESP32S3.W5500.Interrupts} --- optional. The single \texttt{INTn} line
+(falling edge on \texttt{IO3}) wakes tasks blocked in \texttt{Wait\_Data} /
+\texttt{Wait\_Connected} via per-socket suspension objects, so they sleep instead
+of poll. Leaving it out costs nothing --- the engine polls.
+\item \texttt{ESP32S3.W5500.DHCP} --- a DHCP client (see
+\S\ref{ch:net:dns-dhcp}).
+\item \texttt{ESP32S3.W5500.Net\_Device} --- the adapter that presents the chip as a
+\texttt{GNAT.Sockets} interface (\S\ref{ch:net:netdevice}).
+\end{itemize}
+
+The engine and everything above it use controlled SPI handles and
+\texttt{Ada.Real\_Time}, so the networking stack requires the \texttt{embedded} or
+\texttt{full} profile.
+
+\section{What GNAT.Sockets provides}
+\label{ch:net:gnatsockets}
+
+\texttt{GNAT.Sockets} on a desktop is GNAT's binding to the operating system's
+socket API. There is no operating system here, so this is a hand-written subset of
+the \emph{same} package, backed by the W5500. Code written to it reads like any
+sockets program:
+
+\begin{lstlisting}
+type Port_Type is range 0 .. 65535;
+type Family_Type is (Family_Inet);                 --  IPv4
+type Mode_Type   is (Socket_Stream, Socket_Datagram);
+
+type Inet_Addr_Type is private;
+function Inet_Addr (Image : String) return Inet_Addr_Type;   --  "a.b.c.d"
+function Image (Value : Inet_Addr_Type) return String;
+Any_Inet_Addr : constant Inet_Addr_Type;                     --  0.0.0.0
+
+type Sock_Addr_Type is record
+   Family : Family_Type := Family_Inet;
+   Addr   : Inet_Addr_Type;
+   Port   : Port_Type := 0;
+end record;
+
+type Socket_Type is private;
+Socket_Error : exception;
+
+procedure Create_Socket  (Socket : out Socket_Type; Family : Family_Type := Family_Inet;
+                          Mode : Mode_Type := Socket_Stream);
+procedure Bind_Socket    (Socket : in out Socket_Type; Address : Sock_Addr_Type);
+procedure Listen_Socket  (Socket : in out Socket_Type; Length : Natural := 15);
+procedure Accept_Socket  (Server : Socket_Type; Socket : out Socket_Type;
+                          Address : out Sock_Addr_Type);
+procedure Connect_Socket (Socket : in out Socket_Type; Server : Sock_Addr_Type);
+procedure Send_Socket    (Socket : Socket_Type; Item : Stream_Element_Array;
+                          Last : out Stream_Element_Offset; To : access Sock_Addr_Type := null);
+procedure Receive_Socket (Socket : Socket_Type; Item : out Stream_Element_Array;
+                          Last : out Stream_Element_Offset; From : access Sock_Addr_Type := null);
+procedure Close_Socket   (Socket : in out Socket_Type);
+function  Stream (Socket : Socket_Type) return Stream_Access;
+\end{lstlisting}
+
+A \texttt{Receive\_Timeout} socket option is provided through the standard
+\texttt{Set\_Socket\_Option}, so a blocked receive can give up rather than hang:
+
+\begin{lstlisting}
+Set_Socket_Option (Sock, Socket_Level, (Receive_Timeout, Timeout => 3.0));
+\end{lstlisting}
+
+When the timeout elapses, \texttt{Receive\_Socket} raises \texttt{Socket\_Error},
+just as it does on a desktop --- so portable code that already guards against that
+works unchanged.
+
+A few necessary departures from desktop \texttt{GNAT.Sockets}:
+
+\begin{itemize}[nosep]
+\item \textbf{IPv4 only} (\texttt{Family\_Inet}); the backend has no IPv6 yet.
+\item \textbf{One bare-metal init.} Desktop \texttt{Initialize} takes no argument;
+here you must say which chip backs the facade (\S\ref{ch:net:netdevice}).
+\item \textbf{A finite number of sockets} --- the sum the interfaces provide (eight
+per W5500). \texttt{Create\_Socket} past that raises \texttt{Socket\_Error}.
+\item \textbf{Accept.} The W5500's listening socket \emph{becomes} the connection,
+so \texttt{Accept\_Socket} returns the listener itself as the connected socket; to
+accept another client, \texttt{Listen\_Socket} again.
+\end{itemize}
+
+\section{Wiring a driver in: the Net\_Device interface}
+\label{ch:net:netdevice}
+
+The facade does not talk to the W5500 directly. Between them sits one small
+package, \texttt{Net\_Devices}, defining the contract a network interface must
+satisfy --- the part the facade actually needs. It is an Ada \texttt{interface}
+(dispatched on at run time), plus chip-neutral address and status types:
+
+\begin{lstlisting}
+type Device is limited interface;
+type Device_Access is access all Device'Class;
+
+function Socket_Count (Self : Device) return Positive is abstract;
+function Local_IP     (Self : Device) return IPv4_Address is abstract;
+function Subnet_Mask  (Self : Device) return IPv4_Address is abstract;
+
+procedure Open (Self : in out Device; Index : Natural; Mode : Transport;
+                Local_Port : Port_Number; Result : out Status) is abstract;
+procedure Close          (Self : in out Device; Index : Natural) is abstract;
+procedure Listen         (Self : in out Device; Index : Natural; Result : out Status) is abstract;
+procedure Wait_Connected (Self : in out Device; Index : Natural; Result : out Status) is abstract;
+procedure Peer           (Self : in out Device; Index : Natural;
+                          Addr : out IPv4_Address; Port : out Port_Number) is abstract;
+procedure Connect        (Self : in out Device; Index : Natural; Host : IPv4_Address;
+                          Port : Port_Number; Result : out Status) is abstract;
+procedure Wait_Data      (Self : in out Device; Index : Natural; Result : out Status) is abstract;
+procedure Send           (Self : in out Device; Index : Natural; Data : Stream_Element_Array;
+                          Sent : out Natural; Result : out Status) is abstract;
+procedure Receive        (Self : in out Device; Index : Natural; Into : out Stream_Element_Array;
+                          Count : out Natural; Result : out Status) is abstract;
+procedure Send_To        (Self : in out Device; Index : Natural; Host : IPv4_Address;
+                          Port : Port_Number; Data : Stream_Element_Array; Result : out Status) is abstract;
+procedure Receive_From   (Self : in out Device; Index : Natural; From : out IPv4_Address;
+                          From_Port : out Port_Number; Into : out Stream_Element_Array;
+                          Count : out Natural; Result : out Status) is abstract;
+procedure Set_Receive_Timeout (Self : in out Device; Index : Natural; To : Duration) is abstract;
+\end{lstlisting}
+
+Sockets are addressed by an \texttt{Index} the device maps to its own per-socket
+state (the W5500's eight hardware sockets). This is the \emph{offloaded-stack}
+model: the device hands out TCP/UDP sockets directly. A raw-MAC chip with no stack
+of its own would instead drive a software TCP/IP stack that implements this same
+interface.
+
+\subsection{The W5500 as a backend}
+
+\texttt{ESP32S3.W5500.Net\_Device} is the first concrete \texttt{Net\_Devices.%
+Device}. An \texttt{Instance} wraps one chip and owns that chip's eight
+\texttt{Sockets.Socket} handles; each operation delegates to the engine and
+converts the (identically-ordered) status and the address bytes. For the common
+single-NIC board, one call wires everything together:
+
+\begin{lstlisting}
+type Instance is limited new Net_Devices.Device with private;
+procedure Attach (Self : in out Instance; Dev : access ESP32S3.W5500.Device);
+--  Single-NIC convenience: attach a built-in Instance and register it as default.
+procedure Register_Default (Dev : access ESP32S3.W5500.Device);
+\end{lstlisting}
+
+The facade keeps a small \emph{registry} of interfaces and dispatches every socket
+operation through it; a \texttt{Socket\_Type} records which interface it lives on
+and which of that interface's sockets it is. Registration returns an id:
+
+\begin{lstlisting}
+type Interface_Id is range 0 .. 3;
+function  Add_Interface (Device : Net_Devices.Device_Access) return Interface_Id;
+procedure Initialize    (Device : Net_Devices.Device_Access);   --  register as default
+\end{lstlisting}
+
+So a board's bring-up ends with \texttt{ESP32S3.W5500.Net\_Device.Register\_Default
+(Dev'Access)}, and from there the code is ordinary \texttt{GNAT.Sockets}. Because
+the facade names only \texttt{Net\_Devices}, supporting a different chip means
+writing one new backend (another implementation of the interface) and registering
+it --- nothing above \texttt{Net\_Devices.Device'Class} changes, and a board may
+register more than one. \emph{Per-destination routing across interfaces is not
+wired yet: today every socket uses the default interface; the registry and the
+per-socket interface id are the hooks a routing layer will use.}
+
+\cnote{The interface plays the role of a Linux \texttt{net\_device} /
+\texttt{struct net\_device\_ops}, or a \texttt{netif} driver in lwIP: a fixed set
+of operations a chip implements so the protocol layer above stays generic. Here the
+``protocol layer'' is the W5500's silicon; the interface is just how the facade
+reaches it.}
+
+\section{DNS the portable way, DHCP the chip way}
+\label{ch:net:dns-dhcp}
+
+Two protocols sit just above sockets, and where they live tells you something about
+the architecture.
+
+\textbf{DNS} is an ordinary UDP request/response that happens \emph{after} the
+interface is up, so it needs nothing chip-specific. It is written purely against
+\texttt{GNAT.Sockets} and lives in a standalone, portable package --- the same
+source would resolve names on a desktop:
+
+\begin{lstlisting}
+--  in DNS_Client
+function Resolve (Server : Inet_Addr_Type; Name : String;
+                  Addr : out Inet_Addr_Type;
+                  Timeout : Duration := 0.0;
+                  Local_Port : Port_Type := 13_001) return Boolean;
+\end{lstlisting}
+
+\textbf{DHCP} is the opposite kind of protocol: its job is to \emph{bootstrap} the
+interface --- it must talk before an address exists and then program the obtained
+IP, mask and gateway into the NIC. Both are operations outside the sockets API on
+every platform (raw sockets and \texttt{ioctl} on a desktop; the W5500's
+\texttt{Configure} registers here). So the DHCP client cannot be portable the way
+DNS is; it rightly lives at the chip layer, \texttt{ESP32S3.W5500.DHCP}, built
+straight on the socket engine. It runs the DORA exchange (Discover / Offer /
+Request / Ack) and, on success, configures the chip. \texttt{Maintain} starts a
+background task that acquires a lease and then keeps it --- renewing at $T1$,
+rebinding at $T2$, re-acquiring on expiry:
+
+\begin{lstlisting}
+procedure Maintain (Dev : Sockets.Device_Access; MAC : MAC_Address;
+                    Socket : Socket_Id := 0; On_Bound : Bound_Callback := null);
+\end{lstlisting}
+
+\section{The examples}
+\label{ch:net:examples}
+
+Six examples in \texttt{examples/} exercise the stack from the bottom up. Each
+shares a tiny \texttt{W5500\_Dev} bring-up package (SPI + reset + a static address,
+then \texttt{Register\_Default}); the DHCP example configures itself instead.
+
+\subsection{\texttt{esp32s3\_w5500} --- TCP echo server}
+
+The full stack end to end: bring-up, the optional interrupts, and the facade. It
+listens on \texttt{192.168.1.50:5000} and echoes each line back. This is the TCP
+\emph{server} path --- \texttt{Listen\_Socket}, \texttt{Accept\_Socket} (which
+reports the peer), \texttt{Receive\_Socket}, \texttt{Send\_Socket} --- with tasks
+sleeping on \texttt{INTn} rather than polling.
+
+\begin{lstlisting}
+Create_Socket (Server, Family_Inet, Socket_Stream);
+Bind_Socket   (Server, (Family_Inet, Any_Inet_Addr, 5000));
+loop
+   Listen_Socket (Server);
+   Accept_Socket (Server, Conn, Peer);          --  blocks until a client connects
+   loop
+      Receive_Socket (Conn, Buf, Last);
+      exit when Last < Buf'First;               --  peer closed
+      Send_Socket (Conn, Buf (Buf'First .. Last), Sent);
+   end loop;
+   Close_Socket (Conn);
+end loop;
+\end{lstlisting}
+
+\subsection{\texttt{esp32s3\_w5500\_http} --- HTTP GET (TCP client)}
+
+The TCP \emph{client} path. It connects out to a web server, sends
+\texttt{GET / HTTP/1.0}, and prints the response until the server closes ---
+\texttt{Connect\_Socket} then a \texttt{Receive\_Socket} loop ending at
+end-of-stream (\texttt{Last < Item'First}).
+
+\subsection{\texttt{esp32s3\_w5500\_ntp} --- network time (UDP)}
+
+A UDP datagram exchange: it sends a 48-byte NTP request to a time server with
+\texttt{Send\_Socket (\dots, To => Server'Access)}, reads the reply with
+\texttt{Receive\_Socket (\dots, From => \dots)}, takes the transmit timestamp, and
+converts the NTP seconds to a civil date/time. Demonstrates \texttt{Socket\_%
+Datagram} and the \texttt{To} / \texttt{From} addresses.
+
+\subsection{\texttt{esp32s3\_w5500\_dns} --- name resolution}
+
+A thin demonstration of \texttt{DNS\_Client.Resolve}: it resolves a hostname through
+a resolver and prints the address. The protocol --- building the query, parsing the
+answer with name-compression --- lives in the reusable module, so the example is a
+few lines:
+
+\begin{lstlisting}
+if DNS_Client.Resolve (Inet_Addr ("8.8.8.8"), "example.com", Addr, Timeout => 3.0) then
+   Put_Line ("example.com = " & Image (Addr));
+end if;
+\end{lstlisting}
+
+\subsection{\texttt{esp32s3\_w5500\_dhcp} --- a self-configuring address}
+
+No static IP: the board leases one. It calls \texttt{DHCP.Maintain} with a
+library-level \texttt{On\_Bound} callback that prints each (re)bind, then the
+background task acquires and keeps the lease for the life of the program. After the
+first bind the chip is configured, so the socket engine and the facade are ready.
+
+\section{Tying it together: the current weather}
+\label{ch:net:weather}
+
+\texttt{esp32s3\_w5500\_weather} uses the whole stack to answer a real question:
+\emph{what is the weather at a latitude and longitude?} It fetches the current
+conditions from Open-Meteo (\texttt{open-meteo.com}). The flow touches every layer
+we have built --- UDP and TCP, name resolution, a receive timeout --- and is worth
+reading start to finish.
+
+Open-Meteo's forecast API answers over plain HTTP on port 80. That matters: the
+W5500 has no TLS, so an HTTPS-only service would be unreachable without a software
+crypto stack. Plain HTTP makes this a straight socket program.
+
+\textbf{1. Bring up the interface.} \texttt{W5500\_Dev.Bring\_Up} does SPI + reset,
+sets a static address, waits briefly for the PHY link, and registers the chip:
+\texttt{ESP32S3.W5500.Net\_Device.Register\_Default (Dev'Access)}. From here it is
+all \texttt{GNAT.Sockets}.
+
+\textbf{2. Resolve the host (UDP).} The server's address is not hard-coded; it is
+resolved at run time with the portable resolver, which sends a DNS query over a UDP
+socket and parses the reply:
+
+\begin{lstlisting}
+if not DNS_Client.Resolve (DNS_Server, "api.open-meteo.com", Server_IP, Timeout => 5.0) then
+   Put_Line ("[wx] DNS resolution failed");  return;
+end if;
+\end{lstlisting}
+
+\textbf{3. Fetch the forecast (TCP).} Open a stream socket, connect to the resolved
+address on port 80, and send a one-line HTTP request built from the latitude and
+longitude; then read the whole response until the server closes:
+
+\begin{lstlisting}
+Create_Socket  (Sock, Family_Inet, Socket_Stream);
+Connect_Socket (Sock, (Family_Inet, Server_IP, 80));
+Send_Socket    (Sock, To_SEA (Request), Last);
+loop
+   Receive_Socket (Sock, Buf, Last);
+   exit when Last < Buf'First;                  --  server closed the connection
+   --  ... append Buf (Buf'First .. Last) to the response text ...
+end loop;
+Close_Socket (Sock);
+\end{lstlisting}
+
+where the request is
+
+\begin{lstlisting}
+"GET /v1/forecast?latitude=" & Latitude & "&longitude=" & Longitude
+  & "&current_weather=true HTTP/1.0" & CRLF & "Host: api.open-meteo.com" & CRLF
+  & "Connection: close" & CRLF & CRLF;
+\end{lstlisting}
+
+\textbf{4. Read the answer.} The reply is JSON. A small self-contained scrape (no
+heap, no JSON library) pulls the fields out of the \texttt{current\_weather}
+object --- anchoring past the \texttt{current\_weather\_units} object first, whose
+same-named keys are unit \emph{strings} --- and a table turns the WMO weather code
+into a word. The result, for Atlanta:
+
+\begin{lstlisting}[style=sh]
+[wx] resolving api.open-meteo.com ...
+[wx] api.open-meteo.com = 188.40.99.226
+[wx] forecast for 33.749, -84.388  (2026-06-25T20:45 UTC)
+[wx]   temperature : 28.5 C
+[wx]   wind        : 5.4 km/h from 184 deg
+[wx]   conditions  : mainly clear
+\end{lstlisting}
+
+That single run exercises the entire chapter: a UDP exchange (DNS) and a TCP
+client conversation (HTTP), each dispatched through \texttt{Net\_Devices.%
+Device'Class} into the W5500 backend, down through the socket engine and the VDM
+transport to the SPI master --- with a receive timeout guarding the wait, and the
+W5500's silicon doing the TCP/IP. The application code, though, is just sockets:
+the same program, pointed at a desktop \texttt{GNAT.Sockets}, would fetch the same
+forecast.
