@@ -90,7 +90,10 @@ project ESP32S3_HAL is
             "esp32s3-lcd.ads",         "esp32s3-lcd.adb",
             "esp32s3-lcd-engine.ads",  "esp32s3-lcd-engine.adb",
             "esp32s3-adc.ads",         "esp32s3-adc.adb",
-            "esp32s3-sd_spi.ads",      "esp32s3-sd_spi.adb");
+            "esp32s3-sd_spi.ads",      "esp32s3-sd_spi.adb",
+            "esp32s3-es8311.ads",      "esp32s3-es8311.adb",
+            "esp32s3-tx1812.ads",      "esp32s3-tx1812.adb",
+            "esp32s3-w5500.ads",       "esp32s3-w5500.adb");
       when "embedded" | "full" =>
          for Source_Dirs use ("src", "svd", "src/ext4");
    end case;
