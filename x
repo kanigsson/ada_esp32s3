@@ -10,7 +10,7 @@
 #
 #  Usage:
 #    ./x list [--json]                 list examples (name, dir, profile)
-#    ./x new     <name>                scaffold a new bare project (examples/<name>)
+#    ./x new|init <name>               scaffold a new bare project (examples/<name>)
 #    ./x build   <example> [-P PROF]   build -> app.bin   (PROF: light-tasking|
 #                                      embedded|full; default = the example's own)
 #    ./x flash   <example> [-p PORT]   build (if needed) + flash over USB ROM
@@ -546,7 +546,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   cmd="${1:-}"; shift || true
   case "$cmd" in
     list)            cmd_list "$@" ;;
-    new)             cmd_new "$@" ;;
+    new|init)        cmd_new "$@" ;;   # init is an alias of new (matches esp32-ada)
     build)           cmd_build "$@" ;;
     flash)           cmd_flash "$@" ;;
     run)             cmd_run "$@" ;;

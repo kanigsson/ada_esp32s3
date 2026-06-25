@@ -6,7 +6,7 @@
 #  Setup once per shell:   . /path/to/sdk/export.sh   (sets ESP32S3_ADA_SDK + PATH)
 #
 #  Usage (run from inside a project folder):
-#    esp32-ada init [DIR]            scaffold a new project (DIR or the cwd)
+#    esp32-ada init|new [DIR]        scaffold a new project (DIR or the cwd)
 #    esp32-ada build  [-P PROFILE]   build -> app.bin (PROFILE: light-tasking|
 #                                    embedded|full; default = light-tasking)
 #    esp32-ada flash  [-p PORT]      build (if needed) + flash over USB ROM
@@ -293,7 +293,7 @@ if [ "${1:-}" = "-C" ]; then cd "${2:?usage: esp32-ada -C DIR ...}"; shift 2; fi
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
-    init)            do_init "$@" ;;
+    init|new)        do_init "$@" ;;   # new is an alias of init (matches ./x)
     build)           do_build "$@" ;;
     flash)           do_flash "$@" ;;
     run)             do_run "$@" ;;
