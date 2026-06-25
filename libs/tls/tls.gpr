@@ -1,0 +1,22 @@
+--  TLS layer: code that bridges the portable parsers (X509) with the crypto --
+--  the HAL's RSA/AES and the vendored SPARKNaCl primitives.  Kept separate from
+--  the HAL because the HAL does not depend on SPARKNaCl; this project does.
+--  Embedded / full profile (SPARKNaCl + the controlled-handle crypto).
+with "../../crates/esp32s3_rts/esp32s3_rts.gpr";
+with "../esp32s3_hal/esp32s3_hal.gpr";
+with "../../crates/sparknacl/sparknacl.gpr";
+
+project TLS is
+   type Profile_Kind is ("light-tasking", "embedded", "full");
+   Profile : Profile_Kind := external ("ESP32S3_RTS_PROFILE", "embedded");
+
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj-" & Profile;
+
+   package Compiler is
+      --  Keep run-time checks on (this is security code parsing untrusted input).
+      for Default_Switches ("Ada") use ("-O2", "-g");
+   end Compiler;
+end TLS;
