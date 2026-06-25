@@ -100,7 +100,7 @@ Alire toolchains and builds the runtime crate. Full setup, prerequisites, and a
 guided first run are in **[QUICKSTART.md](QUICKSTART.md)**.
 
 To scaffold a project **outside** the repo, `source export.sh` and run
-`esp32-ada new <dir>` — see [TOOLING.md](TOOLING.md).
+`esp32-ada init [<dir>]` (defaults to the current folder) — see [TOOLING.md](TOOLING.md).
 
 ## Runtime profiles
 

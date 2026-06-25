@@ -64,6 +64,42 @@ project must live under `examples/`. Use the default **light-tasking** (Jorvik)
 profile, pick another per build with `./x build <ex> --profile embedded|full`, or
 hardcode `ESP32S3_RTS_PROFILE` in the example's `build.sh`.
 
+### Your own project, *outside* the repo (`esp32-ada`)
+
+`./x new` keeps your project under `examples/`. To work **anywhere on disk**,
+treat this repo as an SDK: `source export.sh` once per shell and use `esp32-ada`,
+the out-of-tree counterpart of `./x` with the same verbs. `export.sh` puts
+`esp32-ada` on `PATH`, exports `$ESP32S3_ADA_SDK`, and adds the runtime + HAL to
+`GPR_PROJECT_PATH` (so `gprbuild` **and** the Ada Language Server resolve
+`with "esp32s3_rts.gpr"` with no baked-in path).
+
+```sh
+. /path/to/ada_esp32s3/export.sh   # once per shell (add to ~/.bashrc to persist)
+mkdir ~/myblink && cd ~/myblink
+esp32-ada init                     # scaffold app.gpr, board.ads, src/main.adb, glue, .vscode
+esp32-ada run -p /dev/ttyACM0      # build + flash + monitor
+```
+
+Verbs: `init [DIR] / build [-P PROFILE] / flash [-p PORT] / run [-p PORT] [-P PROFILE] /
+monitor / clean / config / debug / kill-openocd / install-ide / install-vim`. Default
+profile is **light-tasking**; `-C DIR` runs as if from `DIR`.
+
+**Lifting an example out of tree.** Don't copy a whole example directory (its Alire
+path-pin, `<name>.gpr`, and relative build shims are tied to `examples/`). Scaffold a
+fresh project and bring the sources across — the scaffold already supplies `app.gpr`,
+`board.ads` and the build shims:
+
+```sh
+esp32-ada init ~/myblink && cd ~/myblink
+cp "$ESP32S3_ADA_SDK"/examples/esp32s3_gpio0_blink/src/*.ad? src/   # incl. main.adb
+esp32-ada build -P embedded        # match the example's profile (./x list shows it)
+esp32-ada run -p /dev/ttyACM0
+```
+
+Copy the example's `board.ads` too if it sets a non-default flash/PSRAM size, and its
+`main/glue.c` if it has C natives; add `with "<name>.gpr";` to `app.gpr` for any extra
+SDK library it uses.
+
 ### Machine-readable discovery (for plugin authors)
 
 `./x list --json` and `./x config --json` emit structured output so a plugin can
