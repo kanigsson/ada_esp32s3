@@ -10,13 +10,14 @@
 --  you want (decimal degrees, as written; negative = south / west).  We print the
 --  current temperature, wind, and a word for the WMO weather code.
 --
---  Server_IP is api.open-meteo.com.  A bare-metal program has no resolver wired in
---  here, so the address is a constant; the esp32s3_w5500_dns example shows how to
---  resolve a name if you would rather not hard-code it.
-with Ada.Real_Time; use Ada.Real_Time;
-with Ada.Streams;   use Ada.Streams;
-with GNAT.Sockets;  use GNAT.Sockets;
-with ESP32S3.Log;   use ESP32S3.Log;
+--  The server's address is resolved by name with the portable DNS_Client module
+--  (a DNS A-record query over GNAT.Sockets): api.open-meteo.com becomes an IP at
+--  run time -- nothing is hard-coded.
+with Ada.Real_Time;       use Ada.Real_Time;
+with Ada.Streams;         use Ada.Streams;
+with GNAT.Sockets;        use GNAT.Sockets;
+with ESP32S3.Log;         use ESP32S3.Log;
+with DNS_Client;
 with W5500_Dev;
 
 with System.BB.CPU_Primitives.Multiprocessors;
@@ -24,22 +25,23 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
    --  ---- the location to forecast (edit these) --------------------------------
-   Latitude  : constant String := "52.52";    --  Berlin
-   Longitude : constant String := "13.41";
+   Latitude  : constant String := "33.749";    --  Atlanta, GA, USA
+   Longitude : constant String := "-84.388";
    --  ---------------------------------------------------------------------------
 
-   Host_Name   : constant String    := "api.open-meteo.com";
-   Server_IP   : constant String    := "188.40.99.226";   --  api.open-meteo.com
-   Server_Port : constant Port_Type := 80;
+   Host_Name   : constant String         := "api.open-meteo.com";
+   DNS_Server  : constant Inet_Addr_Type  := Inet_Addr ("8.8.8.8");   --  resolver
+   Server_Port : constant Port_Type       := 80;
 
    DQ : constant String := (1 => '"');                     --  one double-quote
 
-   Sock     : Socket_Type;
-   Buf      : Stream_Element_Array (1 .. 512);
-   Last     : Stream_Element_Offset;
-   SLast    : Stream_Element_Offset;
-   Resp     : String (1 .. 4096);
-   Resp_Len : Natural := 0;
+   Sock      : Socket_Type;
+   Server_IP : Inet_Addr_Type;
+   Buf       : Stream_Element_Array (1 .. 512);
+   Last      : Stream_Element_Offset;
+   SLast     : Stream_Element_Offset;
+   Resp      : String (1 .. 4096);
+   Resp_Len  : Natural := 0;
 
    function To_SEA (S : String) return Stream_Element_Array is
       R : Stream_Element_Array (1 .. S'Length);
@@ -131,10 +133,18 @@ begin
       loop delay until Clock + Seconds (3600); end loop;
    end if;
 
+   --  Resolve the API host by name (portable DNS_Client over GNAT.Sockets).
+   Put_Line ("[wx] resolving " & Host_Name & " ...");
+   if not DNS_Client.Resolve (DNS_Server, Host_Name, Server_IP) then
+      Put_Line ("[wx] DNS resolution failed");
+      loop delay until Clock + Seconds (3600); end loop;
+   end if;
+   Put_Line ("[wx] " & Host_Name & " = " & Image (Server_IP));
+
    --  Fetch the forecast.
    Create_Socket  (Sock, Family_Inet, Socket_Stream);
    Put_Line ("[wx] GET " & Host_Name & " for " & Latitude & ", " & Longitude & " ...");
-   Connect_Socket (Sock, (Family_Inet, Inet_Addr (Server_IP), Server_Port));
+   Connect_Socket (Sock, (Family_Inet, Server_IP, Server_Port));
    Send_Socket    (Sock, To_SEA (Request), SLast);
 
    loop
