@@ -4,9 +4,11 @@
 --  correct results on this target -- the foundation for a pure-Ada TLS stack.
 --  Each check compares a primitive's output against a published test vector.
 with Ada.Real_Time; use Ada.Real_Time;
+with Interfaces;
 with SPARKNaCl;
 with SPARKNaCl.Hashing.SHA256;
 with SPARKNaCl.Scalar;
+with ESP32S3.RNG;
 with ESP32S3.Log; use ESP32S3.Log;
 
 with System.BB.CPU_Primitives.Multiprocessors;
@@ -48,9 +50,23 @@ procedure Main is
       16#54#, 16#b4#, 16#07#, 16#55#, 16#77#, 16#a2#, 16#85#, 16#52#);
 begin
    delay until Clock + Milliseconds (200);
+
+   --  Enable a real hardware entropy source (internal 8 MHz clock + SAR ADC
+   --  sampling) before using the RNG for anything cryptographic -- required on
+   --  this RF-free bare-metal target so the RNG is a CSPRNG, not just jitter.
+   ESP32S3.RNG.Enable_Entropy_Source;
+
    Put_Line ("[kat] SPARKNaCl known-answer tests (pure Ada/SPARK on the S3)");
    Check ("SHA-256(abc)  ", SPARKNaCl.Hashing.SHA256.Hash (Abc) = SHA_Want);
    Check ("X25519 RFC7748", SPARKNaCl.Scalar.Mult (X_Scalar, X_U) = X_Want);
+
+   --  Show the entropy source is live: three RNG words (should all differ).
+   Put ("[kat] RNG (entropy on):");
+   for K in 1 .. 3 loop
+      Put (" ");
+      Put_Hex (Interfaces.Unsigned_32 (ESP32S3.RNG.Read), 8);
+   end loop;
+   New_Line;
    Put_Line ("[kat] done");
 
    loop delay until Clock + Seconds (3600); end loop;

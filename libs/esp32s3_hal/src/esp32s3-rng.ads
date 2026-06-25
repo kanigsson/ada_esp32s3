@@ -38,4 +38,16 @@ is
    --  Fill Buffer with random bytes (a word at a time; the last, possibly
    --  partial, word supplies any tail bytes).  Length need not be a multiple of 4.
    procedure Fill (Buffer : out Byte_Array);
+
+   --  Turn on a hardware entropy source so Read / Fill are fit for cryptographic
+   --  use (keys, nonces).  Without an RF subsystem the RNG would otherwise see only
+   --  clock jitter (see the ENTROPY CAVEAT above); this enables the internal 8 MHz
+   --  RC clock -- the RNG's primary noise source -- and starts the SAR ADC
+   --  continuously sampling a disconnected input for additional entropy.  This is
+   --  the supported, RF-free path (it mirrors esp-idf's bootloader_random_enable
+   --  for the S3).  Call once at start-up, before relying on the RNG for secrets.
+   procedure Enable_Entropy_Source;
+
+   --  Stop the SAR ADC entropy source (the 8 MHz clock is left running).
+   procedure Disable_Entropy_Source;
 end ESP32S3.RNG;
