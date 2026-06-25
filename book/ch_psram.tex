@@ -1,13 +1,23 @@
 \chapter{Bringing Up the Octal PSRAM}
 \label{ch:psram}
 
-The ESP32-S3 module on this board carries 8\,MB of external pseudo-static RAM
-(PSRAM). Internal SRAM is about 292\,KB --- generous for a microcontroller, but
+Many ESP32-S3 modules package \emph{external} pseudo-static RAM (PSRAM) alongside
+the SoC --- but whether there is any, how much, and of what kind depends on the
+module. Espressif's S3 family ships in several variants: no PSRAM at all, 2\,MB of
+\emph{quad} (4-line) PSRAM, or up to 8\,MB of \emph{octal} (8-line) PSRAM, and from
+more than one memory vendor. This chapter is about the octal variant --- the
+high-bandwidth option --- which the boards used here happen to populate with an
+8\,MB AP~Memory die. The bring-up does not hard-code that, though: it reads the
+device's own mode registers and adapts to whichever octal part is fitted (vendor,
+density, voltage, latency), so the 8\,MB and the exact constants below are what
+\emph{these} parts reported, not universal facts.
+
+Why bother? Internal SRAM is about 292\,KB --- generous for a microcontroller, but
 nowhere near enough for the megabyte-scale buffers, heaps, and elaboration stacks
-that a full Ada program wants. The PSRAM closes that gap, but only if you can turn
-it on, and turning it on is one of the most delicate sequences in the whole
-bring-up: a high-speed double-data-rate (DDR) octal link that has to be configured
-register by register, and then \emph{timed}, before a single byte will round-trip.
+that a full Ada program wants. PSRAM closes that gap, but only if you can turn it
+on, and turning it on is one of the most delicate sequences in the whole bring-up:
+a high-speed double-data-rate (DDR) octal link that has to be configured register
+by register, and then \emph{timed}, before a single byte will round-trip.
 
 This chapter is the deep version of the PSRAM paragraph in the bootloader chapter
 (\S\ref{ch:bootloader}). There we noted that the second-stage loader brings PSRAM
