@@ -15,6 +15,8 @@ package body GNAT.Sockets is
    Engine_Sockets : array (W5500.Socket_Id) of WS.Socket;
    In_Use         : array (W5500.Socket_Id) of Boolean := (others => False);
    Local_Ports    : array (W5500.Socket_Id) of WS.Port_Number := (others => 0);
+   Modes          : array (W5500.Socket_Id) of Mode_Type := (others => Socket_Stream);
+   Opened         : array (W5500.Socket_Id) of Boolean := (others => False);
 
    procedure Initialize (Device : ESP32S3.W5500.Sockets.Device_Access) is
    begin
@@ -28,6 +30,23 @@ package body GNAT.Sockets is
       end if;
       return W5500.Socket_Id (S.Index);
    end Idx;
+
+   --  Open the chip socket (TCP or UDP, per its mode) on its bound local port if
+   --  not already open.  Called by Bind/Listen/Connect/Send/Receive as needed.
+   procedure Ensure_Open (I : W5500.Socket_Id) is
+      St : WS.Status;
+   begin
+      if not Opened (I) then
+         case Modes (I) is
+            when Socket_Datagram =>
+               WS.Open_UDP (Default_Dev, Engine_Sockets (I), I, Local_Ports (I), St);
+            when Socket_Stream =>
+               WS.Open_TCP (Default_Dev, Engine_Sockets (I), I, Local_Ports (I), St);
+         end case;
+         if St /= WS.OK then raise Socket_Error; end if;
+         Opened (I) := True;
+      end if;
+   end Ensure_Open;
 
    ---------------------------------------------------------------------------
    --  Addresses
@@ -75,7 +94,7 @@ package body GNAT.Sockets is
    procedure Create_Socket (Socket : out Socket_Type;
                             Family  : Family_Type := Family_Inet;
                             Mode    : Mode_Type   := Socket_Stream) is
-      pragma Unreferenced (Family, Mode);
+      pragma Unreferenced (Family);
    begin
       if Default_Dev = null then
          raise Socket_Error;                    --  Initialize (Device) not called
@@ -84,6 +103,8 @@ package body GNAT.Sockets is
          if not In_Use (I) then
             In_Use (I)      := True;
             Local_Ports (I) := 0;
+            Modes (I)       := Mode;
+            Opened (I)      := False;
             Socket := (Index => Integer (I));
             return;
          end if;
@@ -92,8 +113,12 @@ package body GNAT.Sockets is
    end Create_Socket;
 
    procedure Bind_Socket (Socket : in out Socket_Type; Address : Sock_Addr_Type) is
+      I : constant W5500.Socket_Id := Idx (Socket);
    begin
-      Local_Ports (Idx (Socket)) := WS.Port_Number (Address.Port);
+      Local_Ports (I) := WS.Port_Number (Address.Port);
+      if Modes (I) = Socket_Datagram then
+         Ensure_Open (I);                        --  UDP is ready to send/recv now
+      end if;
    end Bind_Socket;
 
    procedure Listen_Socket (Socket : in out Socket_Type; Length : Natural := 15) is
@@ -101,8 +126,7 @@ package body GNAT.Sockets is
       I  : constant W5500.Socket_Id := Idx (Socket);
       St : WS.Status;
    begin
-      WS.Open_TCP (Default_Dev, Engine_Sockets (I), I, Local_Ports (I), St);
-      if St /= WS.OK then raise Socket_Error; end if;
+      Ensure_Open (I);                           --  open TCP on the bound port
       WS.Listen (Engine_Sockets (I), St);
       if St /= WS.OK then raise Socket_Error; end if;
    end Listen_Socket;
@@ -128,12 +152,11 @@ package body GNAT.Sockets is
    procedure Connect_Socket (Socket : in out Socket_Type; Server : Sock_Addr_Type) is
       I  : constant W5500.Socket_Id := Idx (Socket);
       St : WS.Status;
-      LP : constant WS.Port_Number :=
-        (if Local_Ports (I) /= 0 then Local_Ports (I)
-         else WS.Port_Number (50000) + WS.Port_Number (I));    --  ephemeral
    begin
-      WS.Open_TCP (Default_Dev, Engine_Sockets (I), I, LP, St);
-      if St /= WS.OK then raise Socket_Error; end if;
+      if Local_Ports (I) = 0 then                --  pick an ephemeral local port
+         Local_Ports (I) := WS.Port_Number (50000) + WS.Port_Number (I);
+      end if;
+      Ensure_Open (I);                           --  open TCP on the local port
       WS.Connect (Engine_Sockets (I), Server.Addr.B, WS.Port_Number (Server.Port), St);
       if St /= WS.OK then raise Socket_Error; end if;
    end Connect_Socket;
@@ -148,6 +171,7 @@ package body GNAT.Sockets is
       Src  : W5500.Byte_Array (0 .. Natural (Item'Length) - 1)
                with Import, Address => Item'Address;
    begin
+      Ensure_Open (I);
       if To /= null then
          WS.Send_To (Engine_Sockets (I), To.Addr.B, WS.Port_Number (To.Port), Src, St);
          if St /= WS.OK then raise Socket_Error; end if;
@@ -169,6 +193,7 @@ package body GNAT.Sockets is
       Dst   : W5500.Byte_Array (0 .. Natural (Item'Length) - 1)
                 with Import, Address => Item'Address;
    begin
+      Ensure_Open (I);
       WS.Wait_Data (Engine_Sockets (I), St);
       if From = null and then St = WS.Closed_By_Peer then
          Last := Item'First - 1;                  --  end of stream
@@ -194,6 +219,7 @@ package body GNAT.Sockets is
       if Socket.Index in 0 .. 7 then
          WS.Close (Engine_Sockets (W5500.Socket_Id (Socket.Index)));
          In_Use (W5500.Socket_Id (Socket.Index)) := False;
+         Opened (W5500.Socket_Id (Socket.Index)) := False;
       end if;
       Socket := No_Socket;
    end Close_Socket;
