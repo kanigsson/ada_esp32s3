@@ -24,7 +24,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Full TeX Live in a container; latexmk runs pdflatex + makeindex and
       # reruns until the index and cross-references converge.  book/Ada.pdf is
@@ -41,7 +41,7 @@ jobs:
         run: cp book/main.pdf "Bare-Metal-Ada-on-the-ESP32-S3.pdf"
 
       - name: Upload PDF as a build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: book-pdf
           path: Bare-Metal-Ada-on-the-ESP32-S3.pdf
@@ -50,7 +50,7 @@ jobs:
       # Only when the ref is a tag: cut a Release with the PDF attached.
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: "Book ${{ github.ref_name }} — Bare-Metal Ada on the ESP32-S3"
           files: Bare-Metal-Ada-on-the-ESP32-S3.pdf
