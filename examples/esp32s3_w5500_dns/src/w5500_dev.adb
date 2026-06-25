@@ -1,7 +1,7 @@
 with Ada.Real_Time; use Ada.Real_Time;
 with ESP32S3.SPI;
 with ESP32S3.W5500;
-with GNAT.Sockets;
+with ESP32S3.W5500.Net_Device;
 with ESP32S3.Log;   use ESP32S3.Log;
 
 package body W5500_Dev is
@@ -33,7 +33,7 @@ package body W5500_Dev is
       Put_Line (if Net.Link (Dev) = Net.Up
                 then "[w5500] link up, IP 192.168.1.50"
                 else "[w5500] link DOWN -- check the cable");
-      GNAT.Sockets.Initialize (Dev'Access);
+      ESP32S3.W5500.Net_Device.Register_Default (Dev'Access);
       return True;
    end Bring_Up;
 end W5500_Dev;

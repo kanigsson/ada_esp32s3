@@ -16,6 +16,7 @@ with Ada.Streams;   use Ada.Streams;
 with ESP32S3.SPI;
 with ESP32S3.W5500;
 with ESP32S3.W5500.Interrupts;
+with ESP32S3.W5500.Net_Device;
 with GNAT.Sockets;  use GNAT.Sockets;
 with ESP32S3.Log;   use ESP32S3.Log;
 with W5500_Dev;
@@ -79,9 +80,9 @@ begin
    Put_Line (if Ints.Armed then "[w5500] interrupts armed (INTn=IO3)"
                            else "[w5500] polling");
 
-   --  Hand the chip to the GNAT.Sockets facade; from here it is ordinary
+   --  Register the chip as a network interface; from here it is ordinary
    --  GNAT.Sockets code.
-   GNAT.Sockets.Initialize (Dev'Access);
+   ESP32S3.W5500.Net_Device.Register_Default (Dev'Access);
    Put_Line ("[w5500] GNAT.Sockets TCP echo on 192.168.1.50:5000"
              & "  (try:  nc 192.168.1.50 5000)");
 

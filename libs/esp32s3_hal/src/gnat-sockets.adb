@@ -1,51 +1,95 @@
 with Interfaces;
 with Ada.Real_Time;
 with Ada.Streams;  use Ada.Streams;
+with Net_Devices;
 
 package body GNAT.Sockets is
 
-   package W5500 renames ESP32S3.W5500;
-   package WS    renames ESP32S3.W5500.Sockets;
-   use type WS.Status;
-   use type WS.Device_Access;
+   use type Net_Devices.Status;
+   use type Net_Devices.Device_Access;
    use type Interfaces.Unsigned_16;
 
-   --  The bound W5500 and the per-hardware-socket state.
-   Default_Dev    : WS.Device_Access := null;
-   Engine_Sockets : array (W5500.Socket_Id) of WS.Socket;
-   In_Use         : array (W5500.Socket_Id) of Boolean := (others => False);
-   Local_Ports    : array (W5500.Socket_Id) of WS.Port_Number := (others => 0);
-   Modes          : array (W5500.Socket_Id) of Mode_Type := (others => Socket_Stream);
-   Opened         : array (W5500.Socket_Id) of Boolean := (others => False);
-   Recv_Timeout   : array (W5500.Socket_Id) of Duration := (others => 0.0);
+   Max_Sockets : constant := 8;                 --  most any one interface provides
+   subtype Sock_Index is Natural range 0 .. Max_Sockets - 1;
 
-   procedure Initialize (Device : ESP32S3.W5500.Sockets.Device_Access) is
-   begin
-      Default_Dev := Device;
-   end Initialize;
+   --  Registered interfaces and the per-(interface, socket) state.
+   Registry : array (Interface_Id) of Net_Devices.Device_Access := (others => null);
+   N_Ifaces : Natural := 0;
 
-   function Idx (S : Socket_Type) return W5500.Socket_Id is
+   In_Use       : array (Interface_Id, Sock_Index) of Boolean := (others => (others => False));
+   Local_Ports  : array (Interface_Id, Sock_Index) of Net_Devices.Port_Number :=
+                    (others => (others => 0));
+   Modes        : array (Interface_Id, Sock_Index) of Mode_Type :=
+                    (others => (others => Socket_Stream));
+   Opened       : array (Interface_Id, Sock_Index) of Boolean := (others => (others => False));
+   Recv_Timeout : array (Interface_Id, Sock_Index) of Duration := (others => (others => 0.0));
+
+   ---------------------------------------------------------------------------
+   --  Interface registry
+   ---------------------------------------------------------------------------
+
+   function Add_Interface (Device : Net_Devices.Device_Access) return Interface_Id is
    begin
-      if S.Index not in 0 .. 7 then
+      if Device = null or else N_Ifaces > Natural (Interface_Id'Last) then
          raise Socket_Error;
       end if;
-      return W5500.Socket_Id (S.Index);
-   end Idx;
+      declare
+         Id : constant Interface_Id := Interface_Id (N_Ifaces);
+      begin
+         Registry (Id) := Device;
+         N_Ifaces := N_Ifaces + 1;
+         return Id;
+      end;
+   end Add_Interface;
+
+   procedure Initialize (Device : Net_Devices.Device_Access) is
+      Id : constant Interface_Id := Add_Interface (Device);
+      pragma Unreferenced (Id);
+   begin
+      null;
+   end Initialize;
+
+   --  Which interface a socket lives on / its socket index / its device.
+   function If_Of (S : Socket_Type) return Interface_Id is
+   begin
+      if S.Iface not in 0 .. Integer (Interface_Id'Last)
+        or else Registry (Interface_Id (S.Iface)) = null
+      then
+         raise Socket_Error;
+      end if;
+      return Interface_Id (S.Iface);
+   end If_Of;
+
+   function Ix_Of (S : Socket_Type) return Sock_Index is
+   begin
+      if S.Index not in Sock_Index then
+         raise Socket_Error;
+      end if;
+      return S.Index;
+   end Ix_Of;
+
+   --  Pick the interface a new socket binds to.  Routing per destination is not
+   --  wired yet, so for now this is always the first (default) interface.
+   function Default_Iface return Interface_Id is
+   begin
+      if N_Ifaces = 0 then
+         raise Socket_Error;                     --  no interface registered
+      end if;
+      return 0;
+   end Default_Iface;
 
    --  Open the chip socket (TCP or UDP, per its mode) on its bound local port if
    --  not already open.  Called by Bind/Listen/Connect/Send/Receive as needed.
-   procedure Ensure_Open (I : W5500.Socket_Id) is
-      St : WS.Status;
+   procedure Ensure_Open (Id : Interface_Id; J : Sock_Index) is
+      St : Net_Devices.Status;
+      M  : constant Net_Devices.Transport :=
+             (if Modes (Id, J) = Socket_Datagram
+              then Net_Devices.UDP else Net_Devices.TCP);
    begin
-      if not Opened (I) then
-         case Modes (I) is
-            when Socket_Datagram =>
-               WS.Open_UDP (Default_Dev, Engine_Sockets (I), I, Local_Ports (I), St);
-            when Socket_Stream =>
-               WS.Open_TCP (Default_Dev, Engine_Sockets (I), I, Local_Ports (I), St);
-         end case;
-         if St /= WS.OK then raise Socket_Error; end if;
-         Opened (I) := True;
+      if not Opened (Id, J) then
+         Registry (Id).Open (J, M, Local_Ports (Id, J), St);
+         if St /= Net_Devices.OK then raise Socket_Error; end if;
+         Opened (Id, J) := True;
       end if;
    end Ensure_Open;
 
@@ -62,7 +106,7 @@ package body GNAT.Sockets is
       for C of Image loop
          if C = '.' then
             if Part >= 3 or not Seen then raise Socket_Error; end if;
-            Result.B (Part) := W5500.Byte (Octet);
+            Result.B (Part) := Net_Devices.Octet (Octet);
             Part := Part + 1;  Octet := 0;  Seen := False;
          elsif C in '0' .. '9' then
             Octet := Octet * 10 + (Character'Pos (C) - Character'Pos ('0'));
@@ -73,12 +117,12 @@ package body GNAT.Sockets is
          end if;
       end loop;
       if Part /= 3 or not Seen then raise Socket_Error; end if;
-      Result.B (3) := W5500.Byte (Octet);
+      Result.B (3) := Net_Devices.Octet (Octet);
       return Result;
    end Inet_Addr;
 
    function Image (Value : Inet_Addr_Type) return String is
-      function Img (B : W5500.Byte) return String is
+      function Img (B : Net_Devices.Octet) return String is
          S : constant String := Integer'Image (Integer (B));
       begin
          return S (S'First + 1 .. S'Last);     --  drop the leading space
@@ -96,91 +140,94 @@ package body GNAT.Sockets is
                             Family  : Family_Type := Family_Inet;
                             Mode    : Mode_Type   := Socket_Stream) is
       pragma Unreferenced (Family);
+      Id    : constant Interface_Id := Default_Iface;
+      Count : constant Natural      := Registry (Id).Socket_Count;
    begin
-      if Default_Dev = null then
-         raise Socket_Error;                    --  Initialize (Device) not called
-      end if;
-      for I in W5500.Socket_Id loop
-         if not In_Use (I) then
-            In_Use (I)        := True;
-            Local_Ports (I)   := 0;
-            Modes (I)         := Mode;
-            Opened (I)        := False;
-            Recv_Timeout (I)  := 0.0;
-            Socket := (Index => Integer (I));
+      for J in 0 .. Count - 1 loop
+         if not In_Use (Id, J) then
+            In_Use       (Id, J) := True;
+            Local_Ports  (Id, J) := 0;
+            Modes        (Id, J) := Mode;
+            Opened       (Id, J) := False;
+            Recv_Timeout (Id, J) := 0.0;
+            Socket := (Iface => Integer (Id), Index => J);
             return;
          end if;
       end loop;
-      raise Socket_Error;                        --  all eight sockets in use
+      raise Socket_Error;                        --  all of this interface's sockets in use
    end Create_Socket;
 
    procedure Bind_Socket (Socket : in out Socket_Type; Address : Sock_Addr_Type) is
-      I : constant W5500.Socket_Id := Idx (Socket);
+      Id : constant Interface_Id := If_Of (Socket);
+      J  : constant Sock_Index   := Ix_Of (Socket);
    begin
-      Local_Ports (I) := WS.Port_Number (Address.Port);
-      if Modes (I) = Socket_Datagram then
-         Ensure_Open (I);                        --  UDP is ready to send/recv now
+      Local_Ports (Id, J) := Net_Devices.Port_Number (Address.Port);
+      if Modes (Id, J) = Socket_Datagram then
+         Ensure_Open (Id, J);                    --  UDP is ready to send/recv now
       end if;
    end Bind_Socket;
 
    procedure Listen_Socket (Socket : in out Socket_Type; Length : Natural := 15) is
       pragma Unreferenced (Length);
-      I  : constant W5500.Socket_Id := Idx (Socket);
-      St : WS.Status;
+      Id : constant Interface_Id := If_Of (Socket);
+      J  : constant Sock_Index   := Ix_Of (Socket);
+      St : Net_Devices.Status;
    begin
-      Ensure_Open (I);                           --  open TCP on the bound port
-      WS.Listen (Engine_Sockets (I), St);
-      if St /= WS.OK then raise Socket_Error; end if;
+      Ensure_Open (Id, J);                       --  open TCP on the bound port
+      Registry (Id).Listen (J, St);
+      if St /= Net_Devices.OK then raise Socket_Error; end if;
    end Listen_Socket;
 
    procedure Accept_Socket (Server  : Socket_Type;
                             Socket  : out Socket_Type;
                             Address : out Sock_Addr_Type) is
-      I    : constant W5500.Socket_Id := Idx (Server);
-      St   : WS.Status;
-      Peer : W5500.IPv4_Address;
+      Id   : constant Interface_Id := If_Of (Server);
+      J    : constant Sock_Index   := Ix_Of (Server);
+      St   : Net_Devices.Status;
+      Peer : Net_Devices.IPv4_Address;
+      Port : Net_Devices.Port_Number;
    begin
-      WS.Wait_Connected (Engine_Sockets (I), St);
-      if St /= WS.OK then raise Socket_Error; end if;
+      Registry (Id).Wait_Connected (J, St);
+      if St /= Net_Devices.OK then raise Socket_Error; end if;
       Socket := Server;                          --  the listener IS the connection
-      W5500.Read (Default_Dev.all, W5500.Socket_Regs (I), 16#0C#, Peer);   --  Sn_DIPR
+      Registry (Id).Peer (J, Peer, Port);
       Address := (Family => Family_Inet,
                   Addr   => (B => Peer),
-                  Port   => Port_Type
-                              (W5500.Read_U16 (Default_Dev.all,
-                                               W5500.Socket_Regs (I), 16#10#)));  --  Sn_DPORT
+                  Port   => Port_Type (Port));
    end Accept_Socket;
 
    procedure Connect_Socket (Socket : in out Socket_Type; Server : Sock_Addr_Type) is
-      I  : constant W5500.Socket_Id := Idx (Socket);
-      St : WS.Status;
+      Id : constant Interface_Id := If_Of (Socket);
+      J  : constant Sock_Index   := Ix_Of (Socket);
+      St : Net_Devices.Status;
    begin
-      if Local_Ports (I) = 0 then                --  pick an ephemeral local port
-         Local_Ports (I) := WS.Port_Number (50000) + WS.Port_Number (I);
+      if Local_Ports (Id, J) = 0 then            --  pick an ephemeral local port
+         Local_Ports (Id, J) := Net_Devices.Port_Number (50_000 + J);
       end if;
-      Ensure_Open (I);                           --  open TCP on the local port
-      WS.Connect (Engine_Sockets (I), Server.Addr.B, WS.Port_Number (Server.Port), St);
-      if St /= WS.OK then raise Socket_Error; end if;
+      Ensure_Open (Id, J);                        --  open TCP on the local port
+      Registry (Id).Connect (J, Server.Addr.B, Net_Devices.Port_Number (Server.Port), St);
+      if St /= Net_Devices.OK then raise Socket_Error; end if;
    end Connect_Socket;
 
    procedure Send_Socket (Socket : Socket_Type;
                          Item   : Ada.Streams.Stream_Element_Array;
                          Last   : out Ada.Streams.Stream_Element_Offset;
                          To     : access Sock_Addr_Type := null) is
-      I    : constant W5500.Socket_Id := Idx (Socket);
-      St   : WS.Status;
+      Id   : constant Interface_Id := If_Of (Socket);
+      J    : constant Sock_Index   := Ix_Of (Socket);
+      St   : Net_Devices.Status;
       Sent : Natural;
-      Src  : W5500.Byte_Array (0 .. Natural (Item'Length) - 1)
-               with Import, Address => Item'Address;
    begin
-      Ensure_Open (I);
+      Ensure_Open (Id, J);
       if To /= null then
-         WS.Send_To (Engine_Sockets (I), To.Addr.B, WS.Port_Number (To.Port), Src, St);
-         if St /= WS.OK then raise Socket_Error; end if;
+         Registry (Id).Send_To (J, To.Addr.B, Net_Devices.Port_Number (To.Port), Item, St);
+         if St /= Net_Devices.OK then raise Socket_Error; end if;
          Last := Item'Last;                       --  a datagram is all-or-nothing
       else
-         WS.Send (Engine_Sockets (I), Src, Sent, St);
-         if St /= WS.OK and then St /= WS.No_Space then raise Socket_Error; end if;
+         Registry (Id).Send (J, Item, Sent, St);
+         if St /= Net_Devices.OK and then St /= Net_Devices.No_Space then
+            raise Socket_Error;
+         end if;
          Last := Item'First + Stream_Element_Offset (Sent) - 1;
       end if;
    end Send_Socket;
@@ -189,44 +236,52 @@ package body GNAT.Sockets is
                             Item   : out Ada.Streams.Stream_Element_Array;
                             Last   : out Ada.Streams.Stream_Element_Offset;
                             From   : access Sock_Addr_Type := null) is
-      I     : constant W5500.Socket_Id := Idx (Socket);
-      St    : WS.Status;
+      Id    : constant Interface_Id := If_Of (Socket);
+      J     : constant Sock_Index   := Ix_Of (Socket);
+      St    : Net_Devices.Status;
       Count : Natural;
-      Dst   : W5500.Byte_Array (0 .. Natural (Item'Length) - 1)
-                with Import, Address => Item'Address;
    begin
-      Ensure_Open (I);
+      Ensure_Open (Id, J);
       --  Re-apply the option (Ensure_Open may have just opened the chip socket).
-      WS.Set_Receive_Timeout (Engine_Sockets (I), Recv_Timeout (I));
-      WS.Wait_Data (Engine_Sockets (I), St);
-      if St = WS.Timed_Out then
+      Registry (Id).Set_Receive_Timeout (J, Recv_Timeout (Id, J));
+      Registry (Id).Wait_Data (J, St);
+      if St = Net_Devices.Timed_Out then
          raise Socket_Error;                      --  receive timeout elapsed
       end if;
-      if From = null and then St = WS.Closed_By_Peer then
+      if From = null and then St = Net_Devices.Closed_By_Peer then
          Last := Item'First - 1;                  --  end of stream
          return;
       end if;
       if From /= null then
          declare
-            FA : W5500.IPv4_Address;
-            FP : WS.Port_Number;
+            FA : Net_Devices.IPv4_Address;
+            FP : Net_Devices.Port_Number;
          begin
-            WS.Receive_From (Engine_Sockets (I), FA, FP, Dst, Count, St);
+            Registry (Id).Receive_From (J, FA, FP, Item, Count, St);
             From.all := (Family => Family_Inet, Addr => (B => FA),
                          Port => Port_Type (FP));
          end;
       else
-         WS.Receive (Engine_Sockets (I), Dst, Count, St);
+         Registry (Id).Receive (J, Item, Count, St);
       end if;
       Last := Item'First + Stream_Element_Offset (Count) - 1;
    end Receive_Socket;
 
    procedure Close_Socket (Socket : in out Socket_Type) is
    begin
-      if Socket.Index in 0 .. 7 then
-         WS.Close (Engine_Sockets (W5500.Socket_Id (Socket.Index)));
-         In_Use (W5500.Socket_Id (Socket.Index)) := False;
-         Opened (W5500.Socket_Id (Socket.Index)) := False;
+      if Socket.Iface in 0 .. Integer (Interface_Id'Last)
+        and then Socket.Index in Sock_Index
+      then
+         declare
+            Id : constant Interface_Id := Interface_Id (Socket.Iface);
+            J  : constant Sock_Index   := Socket.Index;
+         begin
+            if Registry (Id) /= null then
+               Registry (Id).Close (J);
+            end if;
+            In_Use (Id, J) := False;
+            Opened (Id, J) := False;
+         end;
       end if;
       Socket := No_Socket;
    end Close_Socket;
@@ -235,12 +290,13 @@ package body GNAT.Sockets is
                                Level   : Level_Type := Socket_Level;
                                Option  : Option_Type) is
       pragma Unreferenced (Level);
-      I : constant W5500.Socket_Id := Idx (Socket);
+      Id : constant Interface_Id := If_Of (Socket);
+      J  : constant Sock_Index   := Ix_Of (Socket);
    begin
       case Option.Name is
          when Receive_Timeout =>
-            Recv_Timeout (I) := Option.Timeout;
-            WS.Set_Receive_Timeout (Engine_Sockets (I), Option.Timeout);
+            Recv_Timeout (Id, J) := Option.Timeout;
+            Registry (Id).Set_Receive_Timeout (J, Option.Timeout);
       end case;
    end Set_Socket_Option;
 
@@ -259,7 +315,7 @@ package body GNAT.Sockets is
    overriding procedure Write (Stream : in out Socket_Stream_Type;
                                Item   : Ada.Streams.Stream_Element_Array);
 
-   Stream_Pool : array (W5500.Socket_Id) of aliased Socket_Stream_Type;
+   Stream_Pool : array (Interface_Id, Sock_Index) of aliased Socket_Stream_Type;
 
    overriding procedure Read (Stream : in out Socket_Stream_Type;
                               Item   : out Ada.Streams.Stream_Element_Array;
@@ -288,10 +344,11 @@ package body GNAT.Sockets is
    end Write;
 
    function Stream (Socket : Socket_Type) return Stream_Access is
-      I : constant W5500.Socket_Id := Idx (Socket);
+      Id : constant Interface_Id := If_Of (Socket);
+      J  : constant Sock_Index   := Ix_Of (Socket);
    begin
-      Stream_Pool (I).Sock := Socket;
-      return Stream_Pool (I)'Access;
+      Stream_Pool (Id, J).Sock := Socket;
+      return Stream_Pool (Id, J)'Access;
    end Stream;
 
 end GNAT.Sockets;

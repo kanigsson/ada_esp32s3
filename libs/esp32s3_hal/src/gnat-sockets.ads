@@ -1,31 +1,40 @@
 with Ada.Streams;
-with ESP32S3.W5500;
-with ESP32S3.W5500.Sockets;
+with Net_Devices;
 
---  A bare-metal subset of GNAT.Sockets, backed by the WIZnet W5500's hardwired
---  TCP/IP stack (eight hardware sockets, IPv4).  Networking code written against
---  the standard GNAT.Sockets API -- Create_Socket / Bind / Listen / Accept /
---  Connect / Send / Receive / Close, the Stream over a socket -- compiles and runs
---  here unchanged, within the subset below.
+--  A bare-metal subset of GNAT.Sockets, backed by one or more registered network
+--  interfaces (Net_Devices.Device) -- the WIZnet W5500 being the first such chip.
+--  Networking code written against the standard GNAT.Sockets API -- Create_Socket /
+--  Bind / Listen / Accept / Connect / Send / Receive / Close, the Stream over a
+--  socket -- compiles and runs here unchanged, within the subset below.
 --
 --  Differences from desktop GNAT.Sockets, by necessity:
---    * IPv4 only (Family_Inet); the W5500 has no IPv6.
---    * One bare-metal init: Initialize (Device) binds the facade to a W5500
---      (desktop GNAT.Sockets' Initialize takes no argument -- here we must say
---      which chip).  Call it once before any socket op.
---    * Eight sockets total (the chip's hardware sockets); Create_Socket past that
---      raises Socket_Error.
+--    * IPv4 only (Family_Inet); the backends here have no IPv6 yet.
+--    * Bare-metal init: register at least one interface (Initialize, or
+--      Add_Interface for more than one) before any socket op -- desktop
+--      GNAT.Sockets' Initialize takes no argument; here we must say which chip(s).
+--    * A finite number of sockets (the sum the interfaces provide); Create_Socket
+--      past that raises Socket_Error.
 --    * Accept_Socket returns the listening socket itself as the connected socket
 --      (the W5500 listener *becomes* the connection); to accept again, re-Listen.
+--
+--  Multiple interfaces: register each with Add_Interface (the first registered is
+--  the default).  Per-destination routing across interfaces is not wired yet --
+--  for now every socket uses the default interface.
 --
 --  Requires the embedded or full profile (the socket engine uses controlled
 --  handles + Ada.Real_Time).
 package GNAT.Sockets is
 
-   --  Bare-metal entry point: bind this facade to a W5500 (declared as a
-   --  library-level "Dev : aliased ESP32S3.W5500.Device" and already Setup +
-   --  Reset + Configured).  Call once, before any socket operation.
-   procedure Initialize (Device : ESP32S3.W5500.Sockets.Device_Access);
+   --  Identifies a registered interface (0 = the first / default).
+   type Interface_Id is range 0 .. 3;
+
+   --  Register a network interface; the first one registered is the default.
+   --  Returns its id.  (A Net_Devices.Device is provided by a chip driver, e.g.
+   --  ESP32S3.W5500.Net_Device.)
+   function Add_Interface (Device : Net_Devices.Device_Access) return Interface_Id;
+
+   --  Convenience for a single-interface board: register Device as the default.
+   procedure Initialize (Device : Net_Devices.Device_Access);
 
    type Port_Type is range 0 .. 65535;
 
@@ -104,13 +113,14 @@ package GNAT.Sockets is
 
 private
    type Inet_Addr_Type is record
-      B : ESP32S3.W5500.IPv4_Address := (0, 0, 0, 0);
+      B : Net_Devices.IPv4_Address := (0, 0, 0, 0);
    end record;
    Any_Inet_Addr : constant Inet_Addr_Type := (B => (0, 0, 0, 0));
 
-   --  A socket is just an index into the chip's eight hardware sockets (-1 = none).
+   --  A socket names a registered interface and one of its sockets (-1 = none).
    type Socket_Type is record
+      Iface : Integer := -1;
       Index : Integer := -1;
    end record;
-   No_Socket : constant Socket_Type := (Index => -1);
+   No_Socket : constant Socket_Type := (Iface => -1, Index => -1);
 end GNAT.Sockets;
