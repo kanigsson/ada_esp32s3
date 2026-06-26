@@ -14,8 +14,7 @@ is the client: it calls each entry and gets the result back through an `out`
 parameter. The accept body runs while the caller is suspended in the rendezvous.
 
 ```
-idf.py set-target esp32s3
-idf.py build flash monitor
+./x run rendezvous
 ```
 
 Expected output:
@@ -40,14 +39,28 @@ What this exercises (all impossible under Jorvik): a task **entry** with `in`/
 
 ## Build / runtime notes
 
-Same bare-metal setup as `esp32s3_full_tasking`: ESP-IDF's app start is
-wrapped so core 0 is handed to the GNARL runtime (FreeRTOS never starts), core 1
-is taken too, and `main/glue.c` provides the environment-task stack, the Ada
-heap, and a `__gnat_task_stack_alloc` hook that places task stacks in external
-**PSRAM** (delete the hook + the `CONFIG_SPIRAM*` lines in
-`sdkconfig.defaults` to keep them in internal RAM). The Ada side is built into a
-relocatable `app_main.o` by `main/build_ada.sh` against the pinned runtime crate
-with `ESP32S3_RTS_PROFILE=full`.
+Same bare-metal setup as `esp32s3_full_tasking`: there is **no ESP-IDF** in the
+loop. Our own 2nd-stage bootloader sets up cache/MMU and jumps to `_start`
+(`start.S`) → 240 MHz PLL → `start_c()` (`bare_boot.adb`) → `app_main()`
+(`examples/common/bare/bare_glue.c`), which takes over **both** cores; FreeRTOS
+never runs (it never starts). Core 0 becomes the Ada environment task; core 1 is
+cold-started straight into the GNARL slave scheduler. `bare_glue.c` provides the
+env-task stack (`ada_env_stack`, sized by `ENV_STACK_SIZE`) and, for the
+exception-capable profiles, the Ada heap (`HEAP_SIZE`); every Ada task's own
+stack is carved from that heap, not placed by a per-example hook. This example
+has no `glue.c` of its own (it logs through `ESP32S3.Log`).
+
+PSRAM placement is **not** an `sdkconfig` / `CONFIG_SPIRAM*` edit: the PSRAM size
+that the bootloader maps at `0x3D000000` lives in `board.ads` (`PSRAM_Size`), and
+where the heap / env stack actually land is chosen by `build.sh` env knobs
+(`HEAP_PSRAM=1` puts the heap arena in PSRAM, `ENV_STACK_PSRAM=1` the env stack) —
+both consumed by the shared `examples/common/bare/bare_build.sh`. This demo sets
+neither, so its heap is the leftover internal DRAM. The build itself is driven by
+`./x run rendezvous`: the per-example `build.sh` sets `HEAP_SIZE` /
+`ENV_STACK_SIZE` and execs `bare_build.sh`; the Ada is compiled to a relocatable
+`obj/app_main.o` by the shared `examples/common/bare/build_ada.sh` against the
+pinned runtime crate, on the **`full`** runtime profile
+(`ESP32S3_RTS_PROFILE=full`, consumed by `gen_runtime.sh`).
 
 ## Two former "limitations" — both fixed by disabling W^X
 
@@ -64,8 +77,10 @@ Both were the **ESP32‑S3 W^X memory-protection feature** refusing to execute t
 GCC nested-function **trampoline** a frame-capturing client-task body needs: the
 trampoline is written as data (on the DRAM stack, re-pointed to its SRAM1 IRAM
 alias `+0x6F_0000` by `gen_runtime.sh`) and then executed, which W^X forbids —
-faulting with "Cache disabled but cached memory region accessed." This project
-sets **`CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n`** in `sdkconfig.defaults`; with that,
-a dedicated client task **and** concurrent multi-task console output both run
-cleanly (A/B-verified on HW). Root cause: `memory/full-profile-acats.md` and
+faulting with "Cache disabled but cached memory region accessed." On the
+bare-boot there is no `sdkconfig` and the **memory-protection (PMS) feature is
+simply never turned on** — neither the 2nd-stage bootloader nor `bare_boot`
+arms it — so the IRAM-alias trampoline executes freely; with that, a dedicated
+client task **and** concurrent multi-task console output both run cleanly
+(A/B-verified on HW). Root cause: `memory/full-profile-acats.md` and
 `crates/esp32s3_rts/full_overlay/README.md`.

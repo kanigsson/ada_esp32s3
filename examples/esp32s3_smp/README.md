@@ -14,23 +14,32 @@ value  2:  producer core 1  -->  consumer core 0
 ```
 
 It consumes the runtime via an Alire **pin** (see `alire.toml`); build, flash
-and monitor the whole firmware with `./x run smp` (no ESP-IDF).
+and monitor the whole firmware with `./x run smp` (no ESP-IDF -- there is no
+`idf.py`, `CMakeLists.txt` or `menuconfig`).
 
-## Boot / takeover (main/glue.c)
+## Boot / takeover (glue.c)
 
-ESP-IDF brings up the SoC, then `app_main`:
-1. pins a carrier task to core 1, which suspends FreeRTOS there and parks;
+This is a fully IDF-free **bare-boot** image: there is no FreeRTOS at any point
+(it never starts -- it is not "suspended").  Our own 2nd-stage bootloader
+(`../common/bare/bootloader/`) sets up the flash-XIP cache/MMU and jumps to
+`_start` (`../common/bare/start.S`), which selects the 240 MHz PLL and calls
+`start_c()` (`bare_boot.adb`).  `start_c()` calls `app_main()` directly (the
+shared bare-boot glue, `../common/bare/bare_glue.c`), which then takes over so
+the GNARL Ada runtime owns BOTH cores:
+1. cold-starts core 1: points the APP_CPU at our bare entry, un-gates its clock
+   and pulses its reset (the bare bootloader never started it), bringing it up
+   in `core1_bare_main` (no FreeRTOS task, no scheduler);
 2. syncs the two cores' CCOUNT (both run at 240 MHz; without this the slave's
    software clock is wrong);
-3. suspends FreeRTOS on core 0, **stops the FreeRTOS systimer tick** (the GNARL
-   CCOMPARE2 level-5 tick drives `delay until`; leaving the FreeRTOS tick on
-   corrupts the slave clock, and `CONFIG_ESP_INT_WDT` is disabled to match);
-4. elaborates, calls `__gnat_start_slave_cpus` (releases core 1 into the GNARL
-   slave scheduler), and runs the environment task.
+3. elaborates, calls `__gnat_start_slave_cpus` (releases core 1 into the GNARL
+   slave scheduler), then runs the environment task.  The GNARL CCOMPARE2
+   level-5 tick drives `delay until`; with no FreeRTOS there is no competing
+   systimer tick to corrupt the slave clock.
 
 The cross-core poke (CPU_INT 31, a FROM_CPU matrix source) and the CCOMPARE2
-tick (CPU_INT 16) both reach our `xt_highint5` level-5 vector -- no VECBASE
-takeover needed.  This glue is the template a real dual-core app copies.
+tick (CPU_INT 16) both reach our `xt_highint5` level-5 vector.  `bare_glue.c`
+is the shared bare-boot template every dual-core example copies; this example's
+own `glue.c` provides only its example-specific C natives.
 
 ## Cross-core protected entry
 

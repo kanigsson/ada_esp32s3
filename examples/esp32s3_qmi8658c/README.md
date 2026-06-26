@@ -78,7 +78,7 @@ the SDA/SCL wiring.
 
 ## Notes
 
-- The ROM `printf` to the USB-serial-JTAG has quirks the glue (`main/glue.c`)
+- The ROM `printf` to the USB-serial-JTAG has quirks the glue (`glue.c`)
   works around: no `+` flag, a ~6-conversion cap, and it drops output past the
   64-byte FIFO in one call. The per-sample line is therefore built into a buffer
   and emitted with a single `%s`, kept under 64 bytes (hence the compact labels

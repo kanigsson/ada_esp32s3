@@ -8,7 +8,9 @@ Jorvik restrictions. Everything is scheduled over the BB kernel
 This example **dynamically allocates** two task objects (`new Worker` — a *task
 allocator*, forbidden by Jorvik); the enclosing block is their **master** and
 **waits for them to terminate** (task hierarchy + termination) before freeing
-their ATCBs. Their stacks are placed in **external PSRAM** (see below).
+their ATCBs. Each task's primary stack comes from the **Ada heap** — which lives
+in **internal DRAM** by default in this example, but can be moved to external
+PSRAM with one build knob (see below).
 
 Other full-tasking constructs verified on this hardware (also forbidden under
 Jorvik): **rendezvous** (task entries / `accept` / entry calls with `out`
@@ -18,10 +20,11 @@ subprogram blocking on return until it terminates), **protected-object entries**
 **`Ada.Task_Attributes`** and **`Ada.Dynamic_Priorities`**.
 
 ```
-./x run full_tasking      # build + flash + monitor (no ESP-IDF)
+./x run full_tasking      # build + flash + monitor (IDF-free bare boot)
 ```
 
-Expected:
+Expected (heap in DRAM, the default — so no `stack is in PSRAM` line; build
+with `HEAP_PSRAM=1` and the workers will print it, see below):
 
 ```
 [C] Ada runtime up on both cores
@@ -39,48 +42,65 @@ Expected:
 
 ## Where task stacks and the heap live (internal RAM vs PSRAM)
 
-The full runtime allocates each **task's primary stack** through a weak hook,
-`__gnat_task_stack_alloc(size)` (`s-taprop.adb`). Ada `new` allocations use the
-**Ada heap** — the `ada_heap` array in `main/glue.c`, bounded by the
-`__heap_start`/`__heap_end` defsyms in `main/CMakeLists.txt`. You can place
-either, both, or neither in the 8 MB external PSRAM:
+The full runtime allocates each **task's primary stack** through
+`Alloc_Task_Stack` (`s-taprop.adb`). That routine first checks a weak BSP hook,
+`__gnat_task_stack_alloc(size)`; if the application does **not** define it (the
+symbol resolves to null), stacks fall back to the **Ada heap** via
+`System.Memory.Alloc` (roughly C `malloc` → the bare-boot TLSF allocator,
+`examples/common/bare/boot/bare_heap.adb`). Ada `new` allocations use that same
+Ada heap.
 
-| Mode | Task stacks | `new` / heap | How |
-|---|---|---|---|
-| **Stacks → PSRAM** (default here) | PSRAM | internal | define the hook + enable SPIRAM |
-| **Nothing in PSRAM** | internal | internal | delete the hook + SPIRAM lines |
-| **Everything in PSRAM** | PSRAM | PSRAM | above + move `ada_heap` to PSRAM |
+**This example does not define `__gnat_task_stack_alloc`** — there is no
+`glue.c` in this directory at all. So both `new` objects **and** every task
+stack come from the one Ada heap. Where that heap lives is therefore the single
+knob that decides whether task stacks are in internal RAM or PSRAM.
 
-**1. Task stacks in PSRAM, heap internal (default here).**
-`main/glue.c` defines `__gnat_task_stack_alloc` as
-`heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)`, and
-`sdkconfig.defaults` enables PSRAM (`CONFIG_SPIRAM=y` + `..._MODE_OCT` +
-`..._SPEED_80M`). Only task stacks use the 8 MB PSRAM; `new` stays in fast
-internal RAM. (The demo prints `stack is in PSRAM`.)
+The heap's bounds are **not** defsyms in a `CMakeLists.txt`; they are
+`--defsym`'d by the shared bare-boot build (`examples/common/bare/bare_build.sh`)
+as `__bare_heap_base`/`__bare_heap_end`, driven by env vars this example's
+`build.sh` sets (and which any caller can override):
 
-**2. Nothing in PSRAM (all internal).**
-Delete the `__gnat_task_stack_alloc` function from `main/glue.c` and remove the
-`CONFIG_SPIRAM*` lines from `sdkconfig.defaults`. Task stacks then fall back to
-the internal Ada heap; enlarge `ada_heap` (and the `__heap_end` defsym in
-`main/CMakeLists.txt`) if you have many or large tasks.
+- `HEAP_SIZE=196608` — request a heap (the exception-capable full profile needs
+  one; each `new Worker` task also takes a `-D16k` 16 KB stack out of it).
+- `ENV_STACK_SIZE=65536` — the environment-task primary stack (a DRAM
+  `ada_env_stack` array; the env and idle/kernel stacks always stay in internal
+  RAM).
+- `HEAP_PSRAM` is **unset**, so the heap arena is the leftover internal **DRAM**
+  (`__bare_heap_base = _heap_low_start`, `__bare_heap_end = _bare_heap_top`;
+  ~0x3FCC_5000..0x3FCF_0000 in `app.map`). Task stacks land here, in internal
+  RAM.
 
-**3. Everything in PSRAM (heap *and* stacks).**
-Keep mode 1, and additionally move the Ada heap into PSRAM: mark `ada_heap` in
-`main/glue.c` with `EXT_RAM_BSS_ATTR` (enlarge it), and add
-`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y` to `sdkconfig.defaults`. Now all
-`new` *and* task stacks live in PSRAM. (You may then delete the hook — task
-stacks fall back to the now-PSRAM `ada_heap` — or keep it; either works.)
+To move the heap — and with it every `new` allocation **and** every task
+stack — into the bootloader-mapped external PSRAM, set one env var in
+`build.sh` (this requires `PSRAM_Size > 0` in `board.ads`; here it is 2 MB):
 
-### The trade-off (any PSRAM mode)
+```
+export HEAP_SIZE=196608 ENV_STACK_SIZE=65536 HEAP_PSRAM=1
+```
+
+`bare_build.sh` then points `__bare_heap_base`/`__bare_heap_end` at the PSRAM
+window (base `0x3D00_0000`, `BOARD_PSRAM_SIZE` bytes). The whole Ada heap, and
+thus the worker task stacks, then live in PSRAM — and the demo's `In_PSRAM`
+check goes true, printing `stack is in PSRAM`. There is no separate
+"stacks-only-in-PSRAM" mode in this example: with no `__gnat_task_stack_alloc`
+hook, stacks follow the heap. (A BSP that wanted stacks in PSRAM while keeping
+`new` in DRAM could define `__gnat_task_stack_alloc` in a `glue.c` to allocate
+from a PSRAM region directly; this example does not.)
+
+| Heap (and therefore stacks) | `build.sh` knob | Where it lands |
+|---|---|---|
+| Internal DRAM (**default here**) | `HEAP_PSRAM` unset | `_heap_low_start.._bare_heap_top` (DRAM) |
+| External PSRAM | `HEAP_PSRAM=1` | `0x3D00_0000`, `BOARD_PSRAM_SIZE` bytes |
+
+### The trade-off (PSRAM heap)
 
 A flash erase/program **disables the SPI cache**, during which PSRAM (and
 flash-XIP) is inaccessible — a task running on a PSRAM stack at that moment
 would fault (`Cache disabled but cached memory region accessed`). This runtime
 **never writes flash at run time**, so it is safe. If you later add flash
 writes (NVS/OTA), perform them from an internal-RAM-stacked task with the
-PSRAM-stacked tasks suspended (the standard ESP-IDF pattern). The
-interrupt/kernel path and the **environment and idle task stacks always stay in
-internal RAM** regardless of this setting.
+PSRAM-using tasks suspended. The interrupt/kernel path and the **environment and
+idle task stacks always stay in internal RAM** regardless of this setting.
 
 > Abort: **`abort` works** for a task that reaches an abort-completion point
 > (the `Heartbeat` `delay` loop above — `'Terminated` goes `False → True`). It

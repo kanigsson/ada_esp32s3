@@ -38,11 +38,17 @@ mapping the corresponding bits/registers.
 ## Build & flash
 
 ```sh
-. "$IDF_PATH/export.sh"
-idf.py -p /dev/ttyACM0 flash monitor
+./x run esp32s3_gpio0_blink      # build + flash + monitor
 ```
 
-The Ada is built against the pinned `esp32s3_rts` crate by
-`main/build_ada.sh`. The boot glue (`main/glue.c`) is the standard FreeRTOS-free
-takeover (core 0 via `--wrap`, core 1 reset into the runtime); `native_gpio_log`
-just echoes the level to the console — the actual register access is in Ada.
+`./x build|flash|monitor|clean` run the individual steps. There is no ESP-IDF,
+`idf.py`, or FreeRTOS — our own bare-metal 2nd-stage bootloader sets up the
+flash-XIP cache/MMU and jumps to `_start`, which selects the 240 MHz PLL and
+hands off to the GNARL Ada runtime, which owns **both** cores (FreeRTOS never
+runs). Core 0 runs the env task; core 1 is cold-started into the GNARL slave
+scheduler.
+
+The Ada is built against the pinned `esp32s3_rts` crate by the shared
+`examples/common/bare/build_ada.sh`. There is no C glue in this example — the
+register access *and* the console logging are both in Ada (`src/gpio.adb` uses
+`ESP32S3.Log` to echo each level).

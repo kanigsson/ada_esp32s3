@@ -77,4 +77,4 @@ task contends for the controller.
 ```
 
 Built as the **embedded** profile here. The report prints over the USB-Serial-JTAG
-console via the ROM `esp_rom_printf` glue in `main/glue.c`.
+console via the ROM `esp_rom_printf` glue in `glue.c`.
