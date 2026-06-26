@@ -61,7 +61,7 @@ directly'' is not merely discouraged --- it is \emph{unwritable}: a
 \texttt{with ESP32S3.SPI.Engine;} in an application fails to compile, so the unsafe
 core is reachable only through the safe fa\c{c}ade.
 
-\section{\texttt{limited} types: values that cannot be copied}\index{limited types}
+\section{\texttt{limited} types: values that cannot be copied}\index{limited type}
 
 A limited type has no assignment (\texttt{:=}) and no predefined equality
 (\texttt{=}). You can declare one, pass it (by reference) and operate on it, but
@@ -82,7 +82,7 @@ impossible to write. It is the real shape of the SPI \texttt{Session}, the GDMA
 \texttt{Channel}, the ADC \texttt{Reader}, the LEDC/PCNT \texttt{Channel} and the
 rest of the HAL's ownership handles.
 
-\section{\texttt{controlled} types and RAII: deterministic teardown}\index{controlled types}\index{RAII}
+\section{\texttt{controlled} types and RAII: deterministic teardown}\index{controlled type}\index{RAII}
 
 \texttt{Ada.Finalization.Controlled} --- and its non-copyable sibling
 \texttt{Limited\_Controlled} --- give a type three hooks the runtime calls
@@ -122,7 +122,7 @@ ones). A controlled \texttt{Session} releases itself when it leaves scope --- ev
 when an exception unwinds past it --- so the leak and the missed-cleanup bug
 cannot happen.}
 
-\section{\texttt{protected} types and objects: race-free sharing}\index{protected objects}
+\section{\texttt{protected} types and objects: race-free sharing}\index{protected object}
 
 A protected object is data plus operations with mutual exclusion built in --- a
 monitor. Only one task at a time runs a protected \emph{procedure} or

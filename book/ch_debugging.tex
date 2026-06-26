@@ -6,7 +6,7 @@ interactive debugger over JTAG, the post-mortem backtrace, and the runtime's own
 fault diagnostics. Each works against the bare application image directly, using
 only the pinned cross-toolchain.
 
-\section{Interactive debugging: OpenOCD + GDB}
+\section{Interactive debugging: OpenOCD + GDB}\index{debugging}\index{OpenOCD}\index{GDB}\index{JTAG}\index{USB-JTAG}\index{breakpoint}\index{backtrace}
 
 The ESP32-S3's built-in USB-Serial-JTAG port is both the console \emph{and} a JTAG
 debug interface, so a single USB cable is enough. The project pins its own copies
@@ -35,7 +35,7 @@ on it. \texttt{./x debug} selects the right one. From there it is ordinary GDB o
 The command line and both editors (next section) drive this same OpenOCD + GDB
 path; when finished, \texttt{./x kill-openocd} releases the USB-JTAG port.
 
-\section{Editor integration: VS Code and Vim}
+\section{Editor integration: VS Code and Vim}\index{editor integration}\index{Ada Language Server}
 
 The same build, flash and debug actions are wired into both VS Code and Vim, so
 you need never leave the editor. Both drive the top-level \texttt{./x} dispatcher
@@ -53,7 +53,7 @@ And \emph{code intelligence} --- completion, go-to-definition, diagnostics, hove
 toolchain (nothing to install separately). It only needs to be pointed at the
 example's \texttt{.gpr} project file, shown for each editor below.
 
-\subsection{VS Code}
+\subsection{VS Code}\index{VS Code}
 
 There are two complementary pieces. The first is the committed workspace
 configuration in \texttt{.vscode/} (\texttt{tasks.json}, \texttt{launch.json},
@@ -112,7 +112,7 @@ Reload the window afterwards; re-run it to update after a \texttt{git pull} (a
 repo-hosted \texttt{.vsix} does not auto-update). Its debug icon uses the same
 OpenOCD + GDB launch described above.
 
-\subsection{Vim and Neovim}
+\subsection{Vim and Neovim}\index{Vim}\index{termdebug}
 
 The \texttt{ide/vim-ada-esp32} plugin gives the same actions as Vim commands. It
 is pure Vimscript --- nothing to compile --- and needs \textbf{Vim 8.1+ with
@@ -185,7 +185,7 @@ client, pointed at the example's \texttt{.gpr}. For example, with
 or register \texttt{ada\_language\_server} for the \texttt{ada} filetype with
 native LSP / vim-lsp and set the same \texttt{ada.projectFile} setting.
 
-\section{Post-mortem: decoding a Guru Meditation}
+\section{Post-mortem: decoding a Guru Meditation}\index{Guru Meditation}\index{panic}\index{addr2line}\index{post-mortem}
 
 An unhandled fault prints a register dump and a backtrace of program-counter
 values over the console (a ``Guru Meditation''). You do not need a live debugger
@@ -202,7 +202,7 @@ the reason --- a \texttt{LoadStoreError} (a bad data access), or an
 pointer). Flash, reproduce, decode: that loop localises most faults without ever
 attaching a debugger.
 
-\section{The runtime's own diagnostics}
+\section{The runtime's own diagnostics}\index{stack overflow}\index{last-chance handler}\index{safe state}
 
 The runtime helps before you reach for a tool at all:
 

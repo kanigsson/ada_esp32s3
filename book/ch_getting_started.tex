@@ -5,7 +5,7 @@ This chapter takes you from a fresh clone to an LED blinking under your own Ada,
 in a few commands. The later chapters explain the runtime, the HAL and the
 language techniques; this one just gets you running.
 
-\section{What you need}
+\section{What you need}\index{Alire}
 
 \begin{description}[style=nextline]
 \item[An ESP32-S3 board.] Any devkit with the built-in USB-Serial-JTAG port (most
@@ -35,7 +35,7 @@ cd ada_esp32s3
 git submodule update --init --recursive
 \end{lstlisting}
 
-\section{The \texttt{./x} dispatcher}
+\section{The \texttt{./x} dispatcher}\index{x helper script}
 
 The repository ships with over sixty ready-to-run examples, and one script at
 its root --- \texttt{./x} --- drives all of them \emph{from inside the clone}. (For
@@ -74,7 +74,7 @@ and \texttt{esp32s3\_gdma\_copy} as the models to copy; \texttt{./x new} (and
 that shape. So once a chapter here points you at an example, the example itself
 carries the rest of the explanation.
 
-\section{Choosing a profile}
+\section{Choosing a profile}\index{runtime profile}\index{light-tasking profile}\index{embedded profile}\index{full profile}
 
 Most examples build under more than one runtime profile (Chapter~\ref{ch:profiles}).
 Pass \texttt{--profile} to pick one; \texttt{auto} (the default) uses the
@@ -88,7 +88,7 @@ example's own:
 handles, a heap and the full HAL (the usual choice), and \texttt{full} adds the
 complete Ada tasking model.
 
-\section{Board configuration}
+\section{Board configuration}\index{board.ads}
 
 Each project owns a \texttt{config/board.ads} (flash and PSRAM sizes) that sizes
 the image and the second-stage bootloader. Edit it directly, or:
@@ -111,7 +111,7 @@ On-chip debugging needs the pinned OpenOCD + S3 GDB, fetched once; then
 The Debugging chapter (Chapter~\ref{ch:debug}) covers GDB, decoding a Guru
 Meditation, and the editor integration in full.
 
-\section{Your own project, out of tree: \texttt{esp32-ada}}
+\section{Your own project, out of tree: \texttt{esp32-ada}}\index{esp32-ada launcher}\index{scaffolding}
 \label{sec:esp32-ada}
 
 \texttt{./x} is for the examples that ship \emph{inside} the clone. For your own
@@ -178,7 +178,7 @@ SDK's \texttt{libs/}. The default profile is \texttt{light-tasking}; pass
 \texttt{-P embedded} (or \texttt{full}) to build under another
 (Chapter~\ref{ch:profiles}).
 
-\subsection{Taking an example out of tree to edit}
+\subsection{Taking an example out of tree to edit}\index{examples}
 
 The in-repo examples are wired to their location --- an Alire path-pin in
 \texttt{alire.toml}, a \texttt{\textit{name}.gpr}, and build shims relative to

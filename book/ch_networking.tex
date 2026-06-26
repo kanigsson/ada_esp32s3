@@ -33,7 +33,7 @@ sockets API over a driver --- but the W5500 carries its \emph{own} TCP/IP stack 
 silicon, so there is no lwIP to link: the ``stack'' is eight hardware sockets on
 the chip, and our job is only to drive them and present the sockets API.}
 
-\section{The W5500 and its driver}
+\section{The W5500 and its driver}\index{W5500}\index{Ethernet}\index{SPI}
 \label{ch:net:w5500}
 
 The WIZnet W5500 is an Ethernet controller with a \emph{hardwired} TCP/IP stack:
@@ -74,7 +74,7 @@ The engine and everything above it use controlled SPI handles and
 \texttt{Ada.Real\_Time}, so the networking stack requires the \texttt{embedded} or
 \texttt{full} profile.
 
-\section{What GNAT.Sockets provides}
+\section{What GNAT.Sockets provides}\index{GNAT.Sockets}\index{socket}
 \label{ch:net:gnatsockets}
 
 \texttt{GNAT.Sockets} on a desktop is GNAT's binding to the operating system's
@@ -140,7 +140,7 @@ so \texttt{Accept\_Socket} returns the listener itself as the connected socket; 
 accept another client, \texttt{Listen\_Socket} again.
 \end{itemize}
 
-\section{Wiring a driver in: the Net\_Device interface}
+\section{Wiring a driver in: the Net\_Device interface}\index{Net\_Devices}
 \label{ch:net:netdevice}
 
 The facade does not talk to the W5500 directly. Between them sits one small
@@ -224,7 +224,7 @@ of operations a chip implements so the protocol layer above stays generic. Here 
 ``protocol layer'' is the W5500's silicon; the interface is just how the facade
 reaches it.}
 
-\section{DNS the portable way, DHCP the chip way}
+\section{DNS the portable way, DHCP the chip way}\index{DNS}\index{DHCP}
 \label{ch:net:dns-dhcp}
 
 Two protocols sit just above sockets, and where they live tells you something about
@@ -266,7 +266,7 @@ Six examples in \texttt{examples/} exercise the stack from the bottom up. Each
 shares a tiny \texttt{W5500\_Dev} bring-up package (SPI + reset + a static address,
 then \texttt{Register\_Default}); the DHCP example configures itself instead.
 
-\subsection{\texttt{esp32s3\_w5500} --- TCP echo server}
+\subsection{\texttt{esp32s3\_w5500} --- TCP echo server}\index{TCP}
 
 The full stack end to end: bring-up, the optional interrupts, and the facade. It
 listens on \texttt{192.168.1.50:5000} and echoes each line back. This is the TCP
@@ -296,7 +296,7 @@ The TCP \emph{client} path. It connects out to a web server, sends
 \texttt{Connect\_Socket} then a \texttt{Receive\_Socket} loop ending at
 end-of-stream (\texttt{Last < Item'First}).
 
-\subsection{\texttt{esp32s3\_w5500\_ntp} --- network time (UDP)}
+\subsection{\texttt{esp32s3\_w5500\_ntp} --- network time (UDP)}\index{NTP}\index{UDP}
 
 A UDP datagram exchange: it sends a 48-byte NTP request to a time server with
 \texttt{Send\_Socket (\dots, To => Server'Access)}, reads the reply with

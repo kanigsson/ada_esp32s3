@@ -16,7 +16,7 @@ commands below are shown to document \emph{how} the sweep was run, not as steps 
 reproduce from this repository.}}
 \medskip
 
-\section{Two ways to run the suite}
+\section{Two ways to run the suite}\index{ACATS}\index{conformance testing}\index{test harness}
 
 The earlier sweep (\texttt{parallel\_sweep.py}) is \emph{bundled}: dozens of tests
 share one flashed image and advance through it with a panic-resume cursor, so a
@@ -33,7 +33,7 @@ no shared cursor, no shared heap, no neighbour. The cost --- roughly 1{,}500 sep
 cross-compiles and flashes --- is absorbed by running the work across many boards and
 many build trees at once.
 
-\section{Getting the grade off the chip}
+\section{Getting the grade off the chip}\index{USB-Serial-JTAG}\index{esp\_rom\_printf}
 
 A subtlety decides whether the standalone approach is even possible. The bare runtime
 sends its console --- including the ACATS \texttt{Report} \texttt{PASSED}/\texttt{FAILED}
@@ -60,7 +60,7 @@ end Line;
 The ROM console reaches UART0, so the grades land on the external bridge regardless
 of how the board is wired.
 
-\section{The grader must not trust the test id}
+\section{The grader must not trust the test id}\index{grading}
 
 The first version of the harness mis-scored most tests as hung. The cause was the
 grading regex: it looked for the list name followed by \texttt{PASSED}, but the list
@@ -82,7 +82,7 @@ and the crash heuristic keyed on ``two or more boot banners.'' Flashing with
 \texttt{-{}-no-reset} leaves the chip halted so the capture's own reset is the single
 deterministic boot; a second banner then genuinely means a crash-reboot.
 
-\section{Phase 1 --- parallel build}
+\section{Phase 1 --- parallel build}\index{parallel build}\index{mini-repo}
 
 \texttt{acats\_build.py} compiles each test as a one-test image. The build is the
 bottleneck (a single board sits idle for tens of seconds per cross-compile), so it is
@@ -110,7 +110,7 @@ omits) produces \texttt{tests in image: 0} and becomes a \texttt{.nobuild}. The
 sees a partial image, and the phase is resumable --- a test that already has a
 \texttt{.bin} or \texttt{.nobuild} is skipped.
 
-\section{Phase 2 --- parallel run and grade}
+\section{Phase 2 --- parallel run and grade}\index{board pool}
 
 \texttt{acats\_run.py} starts one worker per board. Each worker claims the next
 un-run \texttt{.bin}, flashes its board with \texttt{-{}-no-reset}, pulses a reset,
@@ -200,7 +200,7 @@ which does not apply to a genuine two-core SMP target, so each prints
 \texttt{+ Multi-Processor Configuration} and grades NOT-APPLICABLE. \texttt{C45322},
 \texttt{C45523}, and \texttt{C4A012} rule themselves out for their own reasons.
 
-\subsection{A wider net: the maximal list across seven boards}
+\subsection{A wider net: the maximal list across seven boards}\index{Ada.Interrupts}\index{Ada.Calendar}
 
 A later run pushed the net wider on purpose. Rather than the curated
 \texttt{full\_applicable.txt}, it swept the \emph{maximal union} --- the applicable
@@ -236,7 +236,7 @@ fix set \texttt{System.Tick} to the true \texttt{1/240\,MHz} clock period --- it
 shipped as \texttt{0.0}, telling clock-resolution tests the clock was infinitely
 precise --- which is what \texttt{C96001}/\texttt{C96004} read.)
 
-\section{The embedded profile}
+\section{The embedded profile}\index{embedded profile}\index{Jorvik}\index{No\_Task\_Hierarchy}
 
 The same harness runs the \texttt{embedded} (ZCX) profile against the
 \texttt{jorvik\_hw\_runnable.txt} list (846 tests). It needed one runner fix first. For a
@@ -275,7 +275,7 @@ Normalize\_Scalars''}). \texttt{CA5006} (a \texttt{pragma Elaborate} separate-co
 test) binds to an \emph{elaboration circularity} under the embedded runtime's static
 elaboration model. Both are correctly counted as won't-build rather than failures.
 
-\section{Closing a won't-build category: the Ada.Calendar family}
+\section{Closing a won't-build category: the Ada.Calendar family}\index{calendar overlay}
 
 Some of the ``won't-build'' tail is not a fundamental limitation but a simply-missing library
 unit, and the sweep is what makes that visible. The bare runtime originally shipped only base

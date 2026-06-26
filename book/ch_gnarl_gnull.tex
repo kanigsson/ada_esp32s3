@@ -13,7 +13,7 @@ The user-facing side --- what the language constructs mean and how you use them
 --- is covered in \S\ref{ch:tasking}. Here we look underneath: who is called,
 what each layer is responsible for, and which real source units implement it.
 
-\section{Two names, two layers}
+\section{Two names, two layers}\index{GNARL}\index{GNULL}\index{tasking runtime}
 
 The runtime that implements Ada tasking is split into two libraries with two
 deliberately retro acronyms.
@@ -51,7 +51,7 @@ one we ship. The bb-runtimes \texttt{System.BB} kernel \emph{is} the OS:
 \texttt{System.BB.Time} provides the alarm timer and monotonic clock. GNULL is
 the thin Ada shim that names those as ``the OS.''}
 
-\section{The layer cake}
+\section{The layer cake}\index{bare-board kernel}
 
 From the source line you write down to the silicon, a tasking operation passes
 through five strata. Reading top to bottom:
@@ -107,7 +107,7 @@ COMPONENTS'' and then, in the body of the comment, ``This package contains all
 the GNULL primitives that interface directly with the underlying OS.'' That one
 file \emph{is} the GNULL spec; everything below it in the table is ``the OS.''
 
-\section{GNARL's upper layer: the ATCB}
+\section{GNARL's upper layer: the ATCB}\index{task control block}\index{ATCB}
 
 The central data structure of GNARL is the \emph{Ada Task Control Block}. In
 \texttt{System.Tasking} (\texttt{s-taskin.ads}) it is the type
@@ -129,7 +129,7 @@ with no fields for features the profile forbids. GNARL operates entirely on
 When it needs the machine to actually \emph{do} something --- run this task,
 suspend that one --- it calls down into GNULL.
 
-\section{The GNULL primitive set}
+\section{The GNULL primitive set}\index{task primitives}
 
 \texttt{System.Task\_Primitives.Operations} is a small, fixed menu. Walking the
 real spec of the Ravenscar version (\texttt{s-taprop.ads}), the operations GNARL
@@ -223,7 +223,7 @@ of \texttt{Time} and \texttt{Thread\_Id}; below it, everything is
 principle, all it takes to retarget the runtime to a hosted OS --- which is
 exactly how AdaCore ships GNAT on Linux.
 
-\subsection{Where the context switch lives}
+\subsection{Where the context switch lives}\index{context switch}
 
 The very bottom GNULL primitive --- the moment one task stops running and another
 starts --- is not Ada at all. \texttt{Sleep}, \texttt{Delay\_Until}, and priority
@@ -235,7 +235,7 @@ chapter; see \S\ref{ch:context-switch}. From GNULL's point of view the context
 switch is simply ``the OS does this''; from the silicon's point of view it is the
 single most ESP32-S3-specific line of the whole runtime.
 
-\section{The thread descriptor: GNULL's view of a task}
+\section{The thread descriptor: GNULL's view of a task}\index{thread descriptor}\index{scheduler}
 
 GNARL has the ATCB; the kernel has its own, leaner record, the
 \texttt{Thread\_Descriptor} in \texttt{System.BB.Threads} (\texttt{s-bbthre.ads}).
@@ -272,7 +272,7 @@ the restricted profile: a thread is either eligible to run, blocked on an entry,
 or waiting out a delay. There is no ``zombie,'' no ``joining,'' no dynamic
 priority band, because the profile forbids the features that would need them.
 
-\section{Three profiles, one boundary}
+\section{Three profiles, one boundary}\index{runtime profile}\index{Ravenscar}\index{protected object}
 
 This repository builds three runtime profiles, and the GNARL/GNULL split is the
 hinge on which they differ. The selection happens in
@@ -316,7 +316,7 @@ kernel. Going to the full profile means a richer upper layer and a fatter
 adapter, but the ``OS'' underneath --- threads, clock, alarm queue, context
 switch --- is the same bare-board executive in both cases.
 
-\section{Following one operation all the way down}
+\section{Following one operation all the way down}\index{delay until}
 
 To make the layering concrete, trace a single \texttt{delay until Next} for a
 periodic task:

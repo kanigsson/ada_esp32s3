@@ -24,7 +24,7 @@ of the public API, and a worked example from the \texttt{examples/} tree. The
 controlled handles mean these drivers require the \texttt{embedded} or
 \texttt{full} profile, as noted per section.
 
-\section{CH422G --- I2C I/O Expander}
+\section{CH422G --- I2C I/O Expander}\index{CH422G driver}
 \label{app:ext:ch422g}
 
 The WCH CH422G is an I2C I/O expander offering eight bidirectional pins
@@ -96,7 +96,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_ch422g}.
 
-\section{TCA9555 --- I2C 16-bit I/O Expander}
+\section{TCA9555 --- I2C 16-bit I/O Expander}\index{TCA9555 driver}
 \label{app:ext:tca9555}
 
 The Texas Instruments TCA9555 is a 16-bit I2C GPIO expander: two 8-bit ports
@@ -170,7 +170,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_tca9555}.
 
-\section{PCF85063A --- I2C Real-Time Clock}
+\section{PCF85063A --- I2C Real-Time Clock}\index{PCF85063A driver}
 \label{app:ext:pcf85063a}
 
 The NXP PCF85063A is a small fixed-address (\texttt{Bus\_Address} = \texttt{0x51})
@@ -256,7 +256,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_pcf85063a}.
 
-\section{SHT41 --- I2C Temperature / Humidity Sensor}
+\section{SHT41 --- I2C Temperature / Humidity Sensor}\index{SHT41 driver}
 \label{app:ext:sht41}
 
 The Sensirion SHT41 (SHT4x family) is a command-based I2C temperature and humidity
@@ -325,7 +325,7 @@ typical ESP-IDF driver that returns \texttt{float} degrees and pulls in soft-flo
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_sht41}.
 
-\section{QMI8658C --- I2C 6-Axis IMU}
+\section{QMI8658C --- I2C 6-Axis IMU}\index{QMI8658C driver}
 \label{app:ext:qmi8658c}
 
 The QST QMI8658C is a 6-axis IMU (3-axis accelerometer + 3-axis gyroscope) on I2C.
@@ -412,7 +412,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_qmi8658c}.
 
-\section{ES8311 --- Audio Codec}
+\section{ES8311 --- Audio Codec}\index{ES8311 driver}
 \label{app:ext:es8311}
 
 The ES8311 is an Everest low-power \emph{mono} audio codec: a register-configured
@@ -495,7 +495,7 @@ end;
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_es8311}.
 
-\section{ST7789 --- SPI TFT Display Controller}
+\section{ST7789 --- SPI TFT Display Controller}\index{ST7789 driver}
 \label{app:ext:st7789}
 
 The ST7789 (ST77xx family) drives a small colour TFT panel over 4-wire SPI. The
@@ -575,7 +575,7 @@ end;                                            --  Session auto-released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_st7789}.
 
-\section{GPS --- NMEA-0183 Receiver}
+\section{GPS --- NMEA-0183 Receiver}\index{GPS driver}
 \label{app:ext:gps}
 
 The GPS driver targets a UART GNSS module (developed against the Quectel L76K) that
@@ -662,7 +662,7 @@ end loop;
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_gps}.
 
-\section{SD Card (SD\_SPI) --- Removable Storage}
+\section{SD Card (SD\_SPI) --- Removable Storage}\index{SD card driver}
 \label{app:ext:sdspi}
 
 \texttt{ESP32S3.SD\_SPI} talks to an SD/SDHC card in SPI mode, layering the SD
@@ -717,7 +717,7 @@ end if;
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_sd\_spi}.
 
-\section{TX1812 --- Addressable RGB LED String}
+\section{TX1812 --- Addressable RGB LED String}\index{TX1812 driver}
 \label{app:ext:tx1812}
 
 The TX1812 is a single-wire, daisy-chainable RGB LED in the WS2812 (``NeoPixel'')
@@ -779,7 +779,7 @@ end loop;
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_tx1812}.
 
-\section{W5500 --- SPI Ethernet Controller}
+\section{W5500 --- SPI Ethernet Controller}\index{W5500 driver}
 \label{app:ext:w5500}
 
 The WIZnet W5500 is an Ethernet controller with a hardwired TCP/IP stack (ARP,

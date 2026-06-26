@@ -5,7 +5,7 @@ The final layer is mass storage: two block drivers for SD cards, and a complete
 pure-Ada ext2/3/4 filesystem (a reimplementation of lwext4) that sits on top of
 them and mounts real \texttt{mkfs.ext4} cards.
 
-\section{SD\_SPI --- an SD card over the SPI master}
+\section{SD\_SPI --- an SD card over the SPI master}\index{SD card}\index{SD\_SPI}\index{SPI SD mode}
 
 \texttt{ESP32S3.SD\_SPI} talks to an SD/SDHC card in SPI mode, layered on the
 task-safe SPI driver. The chip-select is an ordinary GPIO so it can be held across
@@ -60,7 +60,7 @@ begin
 end SD_Roundtrip;
 \end{lstlisting}
 
-\section{SDMMC --- the native SD/MMC host}
+\section{SDMMC --- the native SD/MMC host}\index{SDMMC}\index{SDHOST controller}
 
 \texttt{ESP32S3.SDMMC} drives the dedicated SDHOST controller (clock + command +
 1- or 4-bit data) in PIO mode --- faster than SPI mode, and with no DMA or
@@ -92,7 +92,7 @@ begin
 end SDMMC_Read;
 \end{lstlisting}
 
-\section{The ext4 filesystem}
+\section{The ext4 filesystem}\index{ext4 filesystem}\index{lwext4}\index{JBD2 journal}
 
 \texttt{ESP32S3.Ext4} is a pure-Ada ext2/3/4 implementation with a JBD2 journal
 (Chapter overview in \texttt{libs/esp32s3\_hal/src/ext4/README.md}). It reads
@@ -101,7 +101,7 @@ default \texttt{mkfs.ext4} cards (extents, 64-bit, HTree directories,
 recovers a dirty journal on mount. It needs the \texttt{embedded} or \texttt{full}
 profile.
 
-\subsection{Connecting a block device}
+\subsection{Connecting a block device}\index{block device}
 
 The filesystem talks to a small block-device abstraction (\texttt{ESP32S3.%
 Block\_Dev.Device}). An adapter turns an initialised SD card into one with a
@@ -116,7 +116,7 @@ with ESP32S3.Block_Dev.SD_SPI_Source;
            ESP32S3.Block_Dev.SD_SPI_Source.Make (Card'Access);
 \end{lstlisting}
 
-\subsection{Mounting and reading}
+\subsection{Mounting and reading}\index{mount}\index{inode}\index{journal replay}
 
 A \texttt{Mount} is a controlled handle: it flushes and closes on scope exit, and
 \texttt{Open} automatically replays a dirty journal on a writable mount. The
@@ -203,7 +203,7 @@ The full POSIX-like set is available: \texttt{Create\_File}, \texttt{Write\_File
    end;
 \end{lstlisting}
 
-\subsection{Crash-safe transactions}
+\subsection{Crash-safe transactions}\index{crash-safe transactions}\index{journaling}\index{commit barrier}
 
 For atomicity, group an operation behind \texttt{Commit}: the dirty metadata and
 the superblock are written to the journal (durably), the RECOVER flag is set ---
@@ -219,7 +219,7 @@ kernel); a loss before it has no effect.
    M.Commit;         --  one atomic, journaled, crash-safe transaction
 \end{lstlisting}
 
-\subsection{Concurrency: one owner per mount}
+\subsection{Concurrency: one owner per mount}\index{block cache}\index{single-owner mount}
 
 A \texttt{Mount} is a \emph{single-owner} handle, not a shared service. Every
 operation takes it \texttt{in out} and mutates shared state, and the filesystem
@@ -280,7 +280,7 @@ exception
 end;
 \end{lstlisting}
 
-\subsection{Free-count integrity: the phantom-free tripwire}
+\subsection{Free-count integrity: the phantom-free tripwire}\index{phantom-free tripwire}\index{free-count drift}
 
 A subtle class of corruption is the \emph{free-count drift}: the superblock and
 block-group descriptors cache how many blocks and inodes are free, and if a
