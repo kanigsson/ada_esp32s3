@@ -204,15 +204,23 @@ verifier can dispatch without walking the DER again.
 
 Two signature families cover essentially all of the public web. \textbf{RSA}
 certificates are verified by recovering $m = s^e \bmod n$ on the hardware MPI
-accelerator and comparing the recovered padding block --- PKCS\#1~v1.5 for chain
-links, PSS for the TLS \texttt{CertificateVerify}. \textbf{ECDSA/P-256}
-certificates are verified entirely in software with \texttt{P256.Verify}. The
-\texttt{CertificateVerify} step, where the server signs the handshake transcript
-to prove key possession, accepts either \texttt{rsa\_pss\_rsae\_sha256} or
-\texttt{ecdsa\_secp256r1\_sha256}; the chain verifier dispatches each link on how
-that certificate was signed. The result is a client that authenticates both an
-RSA server (Let's Encrypt issues these) and an ECDSA server (Cloudflare, Google,
-many CDNs) --- both confirmed against the real sites.
+accelerator and comparing the recovered padding block --- PKCS\#1~v1.5 with
+SHA-256, SHA-384 or SHA-512 (an ECC root commonly signs its intermediates with
+SHA-384) for chain links, PSS for the TLS \texttt{CertificateVerify}.
+\textbf{ECDSA/P-256} and \textbf{Ed25519} certificates are verified in software
+(\texttt{P256.Verify}, and SPARKNaCl's Ed25519). The \texttt{CertificateVerify}
+step, where the server signs the handshake transcript to prove key possession,
+accepts either \texttt{rsa\_pss\_rsae\_sha256} or \texttt{ecdsa\_secp256r1\_sha256};
+the chain verifier dispatches each link on how that certificate was signed. The
+result is a client that authenticates both an RSA server (Let's Encrypt issues
+these) and an ECDSA server (Cloudflare, Google, many CDNs) --- both confirmed
+against the real sites.
+
+The P-256 module also \emph{signs}: \texttt{P256.Sign} produces an ECDSA signature
+with a deterministic nonce (RFC~6979, HMAC-SHA-256), so it needs no per-signature
+randomness --- and the catastrophic nonce-reuse failure mode is gone --- while
+reproducing the RFC's published vector bit-for-bit. That is the primitive a client
+certificate or a TLS \emph{server} side would build on.
 
 \subsection{Anchoring the chain --- and knowing the time}
 
@@ -222,6 +230,18 @@ next certificate's key, the top must be signed by a \emph{pinned} root the devic
 trusts, and the leaf's SAN must cover the host. The roots are baked into the
 firmware (the HTTPS-weather example pins ISRG~Root~X1, the Let's Encrypt root) ---
 there is no system trust store on a microcontroller.
+
+Anchoring is not the whole of trust. \texttt{Validate} also enforces the
+X.509~v3 \emph{usage} extensions a browser checks: every issuing certificate ---
+each intermediate, and the pinned root when it signs the top --- must be a CA
+(\texttt{basicConstraints}~\texttt{cA=TRUE}, plus \texttt{keyCertSign} if it
+carries a \texttt{keyUsage}) or the chain is rejected as \texttt{Not\_A\_CA}; and
+the leaf, if it restricts \texttt{extKeyUsage}, must permit \texttt{serverAuth}
+(else \texttt{Bad\_Key\_Usage}). Without the first check a leaf certificate could
+pose as an intermediate and sign for any name --- a classic validation hole. The
+\texttt{esp32s3\_x509\_chain} self-test drives both rejections with a deliberately
+rogue chain (a \texttt{CA:FALSE} certificate that nonetheless signs a leaf), and
+the same test exercises the Ed25519 and RSA-SHA-384/512 chains as well.
 
 Validity dates raise a subtlety: ``is this certificate in date?'' needs to know
 \emph{today}, and a bare-metal board has no real-time clock. The answer is NTP.
@@ -236,9 +256,18 @@ failure as fatal rather than skipping the check.
 After the client's \texttt{Finished} is sent, the handshake is complete: fresh
 application keys are derived, and \texttt{TLS\_Client.Send} / \texttt{Recv} carry
 plaintext in and out, encrypting each record on the way down and decrypting and
-authenticating it on the way up (skipping the post-handshake session tickets a
-server may send). To the application it is just a reliable byte channel --- a GET
-goes in, a JSON reply comes out.
+authenticating it on the way up. To the application it is just a reliable byte
+channel --- a GET goes in, a JSON reply comes out.
+
+A server's post-handshake \texttt{NewSessionTicket} is \emph{captured} rather than
+skipped, and its resumption key derived, so a later connection can \emph{resume}.
+\texttt{TLS\_Client.Resume} runs a second handshake whose ClientHello offers that
+ticket as a pre-shared key --- still with a fresh key share, so forward secrecy
+holds --- carrying the PSK binder over the truncated ClientHello. If the server
+accepts, the handshake is shorter and sends no certificate flight at all: there is
+nothing to re-validate, only a \texttt{Finished} to check. The
+\texttt{esp32s3\_tls\_resume} example shows the two connections back to back, and
+is verified against \texttt{openssl s\_server}.
 
 The \texttt{esp32s3\_tls\_weather} example is the whole chapter in one program. It
 fetches a live forecast from \texttt{api.open-meteo.com} \emph{over HTTPS}:
@@ -269,17 +298,21 @@ TLS library linked, on a board whose Ethernet chip has never heard of TLS.
 
 Honesty about scope matters in a security chapter. The client implements TLS~1.3
 with the \texttt{TLS\_AES\_128\_GCM\_SHA256} suite, X25519 and P-256 key exchange,
-and RSA (PKCS\#1 and PSS, SHA-256) and ECDSA-P256 (SHA-256/384) certificate
-verification, with chain validation to pinned roots and NTP-based validity. That
-is enough to fetch from the large majority of real public HTTPS servers, as the
-open-meteo and Cloudflare runs show.
+and certificate authentication across the algorithms real chains use --- RSA
+(PKCS\#1 and PSS) with SHA-256/384/512, ECDSA-P256 with SHA-256/384, and Ed25519.
+Chain validation is full: signatures, validity at an NTP-supplied time, the leaf
+hostname, the basic-constraints / key-usage / extended-key-usage policy checks,
+and anchoring to pinned roots. The stack also \emph{signs} (deterministic
+ECDSA-P256) and \emph{resumes} a session from a PSK ticket. That is enough to
+fetch from the large majority of real public HTTPS servers, as the open-meteo and
+Cloudflare runs show.
 
 It deliberately stops short of a few things a production stack would add: the
-\texttt{TLS\_AES\_256\_GCM\_SHA384} and ChaCha20-Poly1305 suites (the first needs
-SHA-384 wired through the schedule, the second a ChaCha20 SPARKNaCl lacks);
-certificate \emph{policy} checks beyond the signature chain (basic-constraints
-CA flags, key-usage, path-length); certificate revocation (OCSP/CRL); session
-resumption; and client certificates. None of these are hard in principle --- each
-is a bounded slice on top of the same primitives --- but each is a place where
-``it compiled'' is not the same as ``it is safe,'' which is exactly why they are
-called out here rather than quietly assumed.
+\texttt{TLS\_AES\_256\_GCM\_SHA384} and ChaCha20-Poly1305 cipher suites (the first
+needs SHA-384 wired through the key schedule, the second a ChaCha20-Poly1305 that
+SPARKNaCl does not provide); certificate revocation (OCSP/CRL); a TLS \emph{server}
+side; and client certificates (the ECDSA signing primitive is in place, but the
+handshake wiring is not). None of these are hard in principle --- each is a bounded
+slice on top of the same primitives --- but each is a place where ``it compiled''
+is not the same as ``it is safe,'' which is exactly why they are called out here
+rather than quietly assumed.
