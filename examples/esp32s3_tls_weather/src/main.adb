@@ -18,6 +18,7 @@ with Chain_Verify;
 with Chain_Buffers;
 with Trust_Anchors;
 with DNS_Client;
+with NTP_Client;
 with W5500_Dev;
 with ESP32S3.RNG;
 with ESP32S3.Log;    use ESP32S3.Log;
@@ -28,9 +29,12 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    Host        : constant String         := "api.open-meteo.com";
    DNS_Server  : constant Inet_Addr_Type := Inet_Addr ("8.8.8.8");
+   NTP_Server  : constant Inet_Addr_Type := Inet_Addr ("216.239.35.0"); --  time.google.com
    Server_Port : constant Port_Type      := 443;
    Latitude    : constant String         := "52.52";    --  Berlin, DE
    Longitude   : constant String         := "13.41";
+
+   Now : X509.Time_64;       --  current UTC (from NTP), for cert-validity checks
 
    CRLF : constant String := (1 => ASCII.CR, 2 => ASCII.LF);
    Req  : constant String :=
@@ -99,6 +103,29 @@ begin
    end if;
    Put_Line ("[wx] " & Host & " = " & Image (Server_IP));
 
+   --  Current UTC time from NTP -- the board has no RTC, and certificate validity
+   --  cannot be checked without trusted time, so abort if NTP does not answer.
+   declare
+      Unix                   : Interfaces.Integer_64;
+      Y, Mo, D, H, Mi, Se    : Integer;
+      procedure Put2 (N : Integer) is
+      begin
+         if N < 10 then Put ("0"); end if;
+         Put (N);
+      end Put2;
+   begin
+      Put_Line ("[wx] getting time from NTP ...");
+      if not NTP_Client.Query (NTP_Server, Unix, Timeout => 5.0) then
+         Put_Line ("[wx] NTP failed -- cannot verify certificate validity, aborting");
+         loop delay until Clock + Seconds (3600); end loop;
+      end if;
+      NTP_Client.To_UTC (Unix, Y, Mo, D, H, Mi, Se);
+      Now := X509.Pack_Time (Y, Mo, D, H, Mi, Se);
+      Put ("[wx] NTP UTC = ");
+      Put (Y); Put ("-"); Put2 (Mo); Put ("-"); Put2 (D); Put (" ");
+      Put2 (H); Put (":"); Put2 (Mi); Put (":"); Put2 (Se); New_Line;
+   end;
+
    --  TLS 1.3 handshake, retried (the path to this host is intermittently flaky).
    for Attempt in 1 .. 8 loop
       begin
@@ -131,7 +158,6 @@ begin
    --  pinned ISRG Root X1, checking each link's signature and the leaf hostname.
    declare
       use Chain_Verify;
-      Now     : constant X509.Time_64 := X509.Pack_Time (2026, 6, 26, 12, 0, 0);
       Anchors : constant Cert_List :=
         (1 => (Data => Trust_Anchors.Root_DER'Access));
       R       : Result;
