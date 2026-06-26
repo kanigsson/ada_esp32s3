@@ -1,5 +1,6 @@
 with Interfaces;
 with GNAT.Sockets;
+with X509;
 
 --  A TLS 1.3 client handshake over GNAT.Sockets (work in progress).  This first
 --  slice does the unencrypted opening: it builds and sends a ClientHello offering
@@ -44,6 +45,12 @@ package TLS_Client is
    function Have_Server_Cert   (S : Session) return Boolean;
    function Server_Cert        (S : Session) return Byte_Array; --  leaf cert DER
 
+   --  The full certificate chain the server sent (leaf first, then its issuers),
+   --  so the caller can anchor it to a pinned root via Chain_Verify.  The DER is
+   --  returned as X509.Byte_Array (ready to reference by access for Chain_Verify).
+   function Server_Cert_Count (S : Session) return Natural;
+   function Server_Chain_Cert (S : Session; Index : Positive) return X509.Byte_Array;
+
    --  The server's Finished verified: its HMAC over the handshake transcript
    --  matches, proving the transcript, keys and decryption are all consistent.
    function Server_Finished_OK (S : Session) return Boolean;
@@ -69,6 +76,10 @@ package TLS_Client is
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
+   Max_Chain : constant := 6;                    --  leaf + a few issuers
+   type Cert_Bounds is record First, Last : Natural; end record;
+   type Cert_Bounds_Array is array (1 .. Max_Chain) of Cert_Bounds;
+
    type Session is limited record
       Priv, Pub     : Key32 := (others => 0);   --  our X25519 key pair
       Client_Random : Key32 := (others => 0);   --  our ClientHello random
@@ -86,6 +97,10 @@ private
       Cert_First    : Natural := 1;
       Cert_Last     : Natural := 0;
       Have_Cert     : Boolean := False;
+      --  All certs in the server's Certificate message (offsets into the same
+      --  reassembled handshake buffer); Chain (1) is the leaf.
+      Chain         : Cert_Bounds_Array := (others => (1, 0));
+      Chain_Count   : Natural := 0;
       Cert_End      : Natural := 0;       --  end of Certificate message
       CV_End        : Natural := 0;       --  end of CertificateVerify message
       CV_Alg        : U16     := 0;       --  CertificateVerify signature scheme

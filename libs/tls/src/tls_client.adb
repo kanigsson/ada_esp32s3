@@ -486,22 +486,43 @@ package body TLS_Client is
             exit when P + 4 + MLen > HSB_Len;        --  message not fully present yet
             if MType = 11 then                       --  Certificate
                declare
-                  CP : Natural := P + 4;
+                  CP       : Natural := P + 4;
+                  List_End : Natural := P + 4;
                begin
                   CP := CP + 1 + Natural (HSB (CP));  --  certificate_request_context
-                  CP := CP + 3;                       --  certificate_list length
                   declare
-                     CLn : constant Natural :=
+                     ListLen : constant Natural :=
                        Natural (HSB (CP)) * 65536 + Natural (HSB (CP + 1)) * 256
                        + Natural (HSB (CP + 2));
                   begin
-                     CP := CP + 3;                    --  first entry cert length
-                     if CP + CLn - 1 <= HSB'Last and then CLn > 0 then
-                        S.Cert_First := CP;
-                        S.Cert_Last  := CP + CLn - 1;
-                        S.Have_Cert  := True;
-                     end if;
+                     CP       := CP + 3;              --  start of certificate_list
+                     List_End := Natural'Min (CP + ListLen, HSB_Len);
                   end;
+                  --  Walk every entry: [cert len(3)][cert DER][ext len(2)][exts].
+                  S.Chain_Count := 0;
+                  while CP + 3 <= List_End loop
+                     declare
+                        CLn : constant Natural :=
+                          Natural (HSB (CP)) * 65536 + Natural (HSB (CP + 1)) * 256
+                          + Natural (HSB (CP + 2));
+                     begin
+                        CP := CP + 3;
+                        exit when CLn = 0 or else CP + CLn > List_End;
+                        if S.Chain_Count < Max_Chain then
+                           S.Chain_Count := S.Chain_Count + 1;
+                           S.Chain (S.Chain_Count) := (First => CP, Last => CP + CLn - 1);
+                        end if;
+                        if S.Chain_Count = 1 then     --  leaf: kept for CertificateVerify
+                           S.Cert_First := CP;
+                           S.Cert_Last  := CP + CLn - 1;
+                           S.Have_Cert  := True;
+                        end if;
+                        CP := CP + CLn;
+                        exit when CP + 2 > List_End;   --  skip this entry's extensions
+                        CP := CP + 2
+                              + Natural (HSB (CP)) * 256 + Natural (HSB (CP + 1));
+                     end;
+                  end loop;
                   S.Cert_End := P + 4 + MLen;         --  transcript point for CertVerify
                end;
             elsif MType = 15 then                     --  CertificateVerify
@@ -795,6 +816,19 @@ package body TLS_Client is
    function Have_Server_Cert (S : Session) return Boolean    is (S.Have_Cert);
    function Server_Cert      (S : Session) return Byte_Array is
      (HSB (S.Cert_First .. S.Cert_Last));
+
+   function Server_Cert_Count (S : Session) return Natural is (S.Chain_Count);
+
+   function Server_Chain_Cert (S : Session; Index : Positive) return X509.Byte_Array is
+      B : constant Cert_Bounds := S.Chain (Index);
+      R : X509.Byte_Array (0 .. B.Last - B.First);
+   begin
+      for I in R'Range loop
+         R (I) := X509.U8 (HSB (B.First + I));
+      end loop;
+      return R;
+   end Server_Chain_Cert;
+
    function Server_Finished_OK (S : Session) return Boolean is (S.Fin_OK);
    function Server_Cert_Verify_OK (S : Session) return Boolean is (S.CV_OK);
    function Ready (S : Session) return Boolean is (S.Open);

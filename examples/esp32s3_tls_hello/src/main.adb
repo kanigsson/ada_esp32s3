@@ -9,6 +9,9 @@ with Interfaces;
 with GNAT.Sockets;  use GNAT.Sockets;
 with TLS_Client;
 with X509;
+with Chain_Verify;
+with Chain_Buffers;
+with Trust_Anchors;
 with W5500_Dev;
 with ESP32S3.RNG;
 with ESP32S3.Log;   use ESP32S3.Log;
@@ -118,6 +121,29 @@ begin
                else
                   Put_Line ("PARSE FAIL");
                end if;
+            end;
+         end if;
+
+         --  Anchor the server's chain to our pinned root (Chain_Verify): every
+         --  link's signature, each cert's validity at Now, and the leaf hostname.
+         --  Now would come from NTP in production; here it is a fixed reference.
+         if TLS_Client.Server_Cert_Count (S) >= 1 then
+            declare
+               use Chain_Verify;
+               Now     : constant X509.Time_64 :=
+                 X509.Pack_Time (2026, 6, 25, 12, 0, 0);
+               Anchors : constant Cert_List :=
+                 (1 => (Data => Trust_Anchors.Root_DER'Access));
+               R       : Result;
+            begin
+               Chain_Buffers.Reset;
+               for I in 1 .. TLS_Client.Server_Cert_Count (S) loop
+                  Chain_Buffers.Add (TLS_Client.Server_Chain_Cert (S, I));
+               end loop;
+               R := Validate (Chain_Buffers.Chain, Anchors, Host, Now);
+               Put_Line ("[tls] chain validation (pinned root):" & Natural'Image
+                         (TLS_Client.Server_Cert_Count (S)) & " certs -> "
+                         & Result'Image (R));
             end;
          end if;
       else
