@@ -336,6 +336,8 @@ package body TLS_Client is
                   end loop;
                   S.Group := 16#0017#;  S.Have_Share := True;
                end if;
+            elsif Ext_Type = 41 then            --  pre_shared_key: server accepted
+               S.Resumed_PSK := True;           --  selected_identity is our only offer
             end if;
             P := EBody + Ext_Len;
          end;
@@ -428,7 +430,16 @@ package body TLS_Client is
       end loop;
       TH := SHA.Hash (TH_Seq);
 
-      HKDF.Extract (Early,     IKM => Z32,    Salt => Z32);       --  Early Secret
+      if S.Resumed_PSK then                                       --  Early from the PSK
+         declare
+            PSKb : Byte_Seq (0 .. 31);
+         begin
+            for I in 0 .. 31 loop PSKb (N32 (I)) := Byte (S.Offered_PSK (I)); end loop;
+            HKDF.Extract (Early, IKM => PSKb, Salt => Z32);
+         end;
+      else
+         HKDF.Extract (Early,  IKM => Z32,    Salt => Z32);       --  Early Secret (no PSK)
+      end if;
       Derived := Derive_Secret (Early, "derived", SHA_Empty);
       HKDF.Extract (HS_Secret, IKM => Shared, Salt => Derived);   --  Handshake Secret
       S_HS := Derive_Secret (HS_Secret, "s hs traffic", TH);
@@ -659,7 +670,12 @@ package body TLS_Client is
       FK     : constant Byte_Seq :=
         Expand_Label (To_Digest (S.S_HS_Secret), "finished", No_Ctx, 32);
       FK_BA  : Byte_Array (0 .. 31);
-      TLen   : constant Natural := TR_Len + S.CV_End;     --  CH..CertificateVerify
+      --  Transcript through the message just before the server Finished.  The
+      --  Finished message starts 4 bytes (its handshake header) before its
+      --  verify_data at Fin_First; this is CertificateVerify's end in a full
+      --  handshake and EncryptedExtensions' end in a resumed (no-cert) one.
+      Pre    : constant Natural := (if S.Fin_First >= 4 then S.Fin_First - 4 else 0);
+      TLen   : constant Natural := TR_Len + Pre;
       M      : Byte_Seq (0 .. N32 (TLen) - 1);
       TH     : SHA.Digest;
       TH_BA  : Byte_Array (0 .. 31);
@@ -667,12 +683,12 @@ package body TLS_Client is
       Match  : Boolean := True;
    begin
       S.Fin_OK := False;
-      if S.CV_End = 0 or else S.Fin_Last - S.Fin_First /= 31 then
+      if S.Fin_First < 4 or else S.Fin_Last - S.Fin_First /= 31 then
          return;
       end if;
       for I in 0 .. 31 loop FK_BA (I) := U8 (FK (N32 (I))); end loop;
       for I in 0 .. TR_Len - 1 loop M (N32 (I)) := Byte (TR (I)); end loop;
-      for I in 0 .. S.CV_End - 1 loop M (N32 (TR_Len + I)) := Byte (HSB (I)); end loop;
+      for I in 0 .. Pre - 1 loop M (N32 (TR_Len + I)) := Byte (HSB (I)); end loop;
       TH := SHA.Hash (M);
       for I in 0 .. 31 loop TH_BA (I) := U8 (TH (Index_32 (I))); end loop;
       Exp := HMAC (FK_BA, TH_BA);
@@ -828,6 +844,23 @@ package body TLS_Client is
       end;
       S.C_App_Seq := 0;  S.S_App_Seq := 0;
 
+      --  resumption_master_secret = Derive-Secret(Master, "res master",
+      --  Transcript-Hash(ClientHello .. client Finished)).
+      declare
+         RM   : Byte_Seq (0 .. N32 (TLen + Fin'Length) - 1);
+         RTH  : SHA.Digest;
+         Res  : SHA.Digest;
+      begin
+         for I in 0 .. TLen - 1 loop RM (N32 (I)) := M (N32 (I)); end loop;
+         for I in Fin'Range loop
+            RM (N32 (TLen + (I - Fin'First))) := Byte (Fin (I));
+         end loop;
+         RTH := SHA.Hash (RM);
+         Res := Derive_Secret (Master, "res master", RTH);
+         for I in 0 .. 31 loop S.Res_Master (I) := U8 (Res (Index_32 (I))); end loop;
+         S.Have_Res := True;
+      end;
+
       Send_Bytes (Sock, CCS);                                    --  middlebox-compat
       Send_Encrypted (Sock, S.Client_Key, S.Client_IV, 0, Fin, 22);  --  our Finished
       S.Open := True;
@@ -878,6 +911,152 @@ package body TLS_Client is
       end loop;
    end Hello;
 
+   --  ClientHello for resumption: as Send_Client_Hello, but with the pre_shared_key
+   --  extension last (RFC 8446 4.2.11) offering S.Ticket as a PSK-with-(EC)DHE
+   --  identity, then the binder over the truncated ClientHello.
+   procedure Send_Resume_Client_Hello (S : in out Session; Sock : Socket_Type;
+                                       Host : String) is
+      B   : Builder renames CH;
+      Rnd : ESP32S3.RNG.Byte_Array (0 .. 31);
+      Rec, HS, Body_Mark, Ext_Mark, M, PSK_Mark, Bind_At : Natural;
+   begin
+      B.Len := 0;
+      P8 (B, CT_Handshake);  P16 (B, 16#0303#);  Rec := B.Len;  P16 (B, 0);
+      P8 (B, HS_Client_Hello);  HS := B.Len;  P8 (B, 0); P16 (B, 0);
+      Body_Mark := B.Len;
+      P16 (B, 16#0303#);
+      ESP32S3.RNG.Fill (Rnd);
+      for I in 0 .. 31 loop
+         S.Client_Random (I) := U8 (Rnd (I));  P8 (B, U8 (Rnd (I)));
+      end loop;
+      ESP32S3.RNG.Fill (Rnd);
+      P8 (B, 32);
+      for I in 0 .. 31 loop P8 (B, U8 (Rnd (I))); end loop;
+      P16 (B, 2);  P16 (B, TLS_AES_128_GCM_SHA256);
+      P8 (B, 1);  P8 (B, 0);
+      Ext_Mark := B.Len;  P16 (B, 0);
+      P16 (B, 0);  M := B.Len;  P16 (B, 0);                 --  server_name (SNI)
+      P16 (B, Host'Length + 3);  P8 (B, 0);
+      P16 (B, Host'Length);  PString (B, Host);
+      Patch16 (B, M);
+      P16 (B, 10);  P16 (B, 6);  P16 (B, 4);                --  supported_groups
+      P16 (B, 16#001D#);  P16 (B, 16#0017#);
+      P16 (B, 13);  P16 (B, 8);  P16 (B, 6);                --  signature_algorithms
+      P16 (B, 16#0401#);  P16 (B, 16#0804#);  P16 (B, 16#0403#);
+      P16 (B, 43);  P16 (B, 3);  P8 (B, 2);  P16 (B, 16#0304#);  --  supported_versions
+      P16 (B, 45);  P16 (B, 2);  P8 (B, 1);  P8 (B, 1);     --  psk_key_exchange_modes
+      P16 (B, 51);  P16 (B, 107);  P16 (B, 105);            --  key_share
+      P16 (B, 16#001D#);  P16 (B, 32);  PBytes (B, S.Pub);
+      P16 (B, 16#0017#);  P16 (B, 65);  P8 (B, 16#04#);
+      PBytes (B, S.P256_Pub_X);  PBytes (B, S.P256_Pub_Y);
+
+      --  pre_shared_key (MUST be the last extension).
+      P16 (B, 41);  PSK_Mark := B.Len;  P16 (B, 0);
+      P16 (B, U16 (S.Ticket_Len + 6));                      --  PskIdentity list length
+      P16 (B, U16 (S.Ticket_Len));                          --  identity length
+      for I in 0 .. S.Ticket_Len - 1 loop P8 (B, S.Ticket (I)); end loop;
+      P8 (B, U8 (Shift_Right (S.Offered_Age, 24) and 16#FF#));   --  obfuscated_ticket_age
+      P8 (B, U8 (Shift_Right (S.Offered_Age, 16) and 16#FF#));
+      P8 (B, U8 (Shift_Right (S.Offered_Age,  8) and 16#FF#));
+      P8 (B, U8 (S.Offered_Age and 16#FF#));
+      P16 (B, 33);  P8 (B, 32);  Bind_At := B.Len;          --  binders: len + entry len
+      for I in 0 .. 31 loop P8 (B, 0); end loop;            --  binder placeholder
+      Patch16 (B, PSK_Mark);
+      Patch16 (B, Ext_Mark);
+
+      declare
+         HL : constant Natural := B.Len - Body_Mark;
+      begin
+         B.Data (HS)     := U8 (HL / 65536);
+         B.Data (HS + 1) := U8 ((HL / 256) mod 256);
+         B.Data (HS + 2) := U8 (HL mod 256);
+      end;
+      Patch16 (B, Rec);
+
+      --  binder = HMAC(finished_key, Transcript-Hash(truncated CH)); the truncated
+      --  CH is the handshake message (from byte 5) minus the 35-byte binders portion
+      --  (2 list-len + 1 entry-len + 32 binder).
+      declare
+         No_Ctx   : constant Byte_Seq (1 .. 0) := (others => 0);
+         Z32      : constant Byte_Seq (0 .. 31) := (others => 0);
+         PSKb     : Byte_Seq (0 .. 31);
+         Early, Binder_Key : SHA.Digest;
+         FK       : Byte_Seq (0 .. 31);
+         TruncLen : constant Natural := (B.Len - 5) - 35;
+         TS       : Byte_Seq (0 .. N32 (TruncLen) - 1);
+         TH, VD   : SHA.Digest;
+         TH_BA, FK_BA : Byte_Array (0 .. 31);
+      begin
+         for I in 0 .. 31 loop PSKb (N32 (I)) := Byte (S.Offered_PSK (I)); end loop;
+         HKDF.Extract (Early, IKM => PSKb, Salt => Z32);
+         Binder_Key := Derive_Secret (Early, "res binder", SHA_Empty);
+         FK := Expand_Label (Binder_Key, "finished", No_Ctx, 32);
+         for I in 0 .. TruncLen - 1 loop TS (N32 (I)) := Byte (B.Data (5 + I)); end loop;
+         TH := SHA.Hash (TS);
+         for I in 0 .. 31 loop
+            TH_BA (I) := U8 (TH (Index_32 (I)));
+            FK_BA (I) := U8 (FK (N32 (I)));
+         end loop;
+         VD := HMAC (FK_BA, TH_BA);
+         for I in 0 .. 31 loop B.Data (Bind_At + I) := U8 (VD (Index_32 (I))); end loop;
+      end;
+
+      Send_Bytes (Sock, B.Data (0 .. B.Len - 1));
+      Transcript (B.Data (5 .. B.Len - 1));         --  full CH including the real binder
+   end Send_Resume_Client_Hello;
+
+   procedure Resume (S : in out Session; Sock : Socket_Type; Host : String;
+                     Prior : Session; Ok : out Boolean; Resumed : out Boolean) is
+      Frag  : Byte_Array renames RB;
+      CType : U8;
+      Len   : Natural;
+      RK    : Boolean;
+   begin
+      Ok := False;  Resumed := False;
+      if not Prior.Has_Tick then
+         return;
+      end if;
+      --  Carry the prior session's ticket + resumption PSK into this attempt.
+      S.Offered_PSK := Prior.Ticket_PSK;
+      S.Offered_Age := Prior.Ticket_Age_Add;
+      S.Ticket      := Prior.Ticket;
+      S.Ticket_Len  := Prior.Ticket_Len;
+      S.Resumed_PSK := False;
+
+      TR_Len := 0;
+      Make_Key_Pair (S);
+      Send_Resume_Client_Hello (S, Sock, Host);
+      for Attempt in 1 .. 4 loop
+         Recv_Record (Sock, CType, Frag, Len, RK);
+         if not RK then
+            return;
+         end if;
+         if CType = CT_Alert then
+            return;
+         elsif CType = CT_Change_Cipher_Spec then
+            null;
+         elsif CType = CT_Handshake then
+            Parse_Server_Hello (S, Frag, Len, Ok);
+            if Ok then
+               Transcript (Frag (Frag'First .. Frag'First + Len - 1));
+               Derive_Keys (S);
+               Read_Server_Flight (S, Sock, S.Flight);
+               if S.Flight then
+                  if not S.Resumed_PSK then       --  full fallback: a cert was sent
+                     Verify_Cert_Verify (S);
+                  end if;
+                  Verify_Finished (S);
+                  if S.Fin_OK then
+                     Complete_Handshake (S, Sock);
+                     Resumed := S.Resumed_PSK;
+                  end if;
+               end if;
+            end if;
+            return;
+         end if;
+      end loop;
+   end Resume;
+
    function Cipher_Suite (S : Session) return U16 is (S.Suite);
    function Server_Key_Share (S : Session) return Byte_Array is (S.Server_Pub);
    function Client_Random    (S : Session) return Byte_Array is (S.Client_Random);
@@ -910,6 +1089,66 @@ package body TLS_Client is
       Send_Encrypted (Sock, S.C_App_Key, S.C_App_IV, S.C_App_Seq, Data, 23);
       S.C_App_Seq := S.C_App_Seq + 1;
    end Send;
+
+   --  Parse the first NewSessionTicket in the just-decrypted handshake plaintext
+   --  GC_P (0 .. Len-1) and derive its resumption PSK (RFC 8446 4.6.1).  Only the
+   --  first ticket of the session is kept.
+   procedure Capture_Ticket (S : in out Session; Len : Natural) is
+      P, Body_End, Msg_Len, Nonce_Len, Tick_Len : Natural;
+      Empty : constant Byte_Seq (1 .. 0) := (others => 0);
+      Nonce : Byte_Array (0 .. 255) := (others => 0);
+   begin
+      if S.Has_Tick or else not S.Have_Res then
+         return;                                  --  keep the first ticket only
+      end if;
+      if Len < 4 or else GC_P (0) /= 4 then        --  handshake type 4 = NewSessionTicket
+         return;
+      end if;
+      Msg_Len  := Natural (GC_P (1)) * 65536 + Natural (GC_P (2)) * 256
+                  + Natural (GC_P (3));
+      Body_End := 4 + Msg_Len;
+      P := 4;
+      if Body_End > Len or else P + 8 > Body_End then
+         return;                                   --  lifetime(4) + age_add(4)
+      end if;
+      S.Ticket_Age_Add :=
+        Unsigned_32 (GC_P (P + 4)) * 16#0100_0000# + Unsigned_32 (GC_P (P + 5)) * 16#1_0000#
+        + Unsigned_32 (GC_P (P + 6)) * 16#100# + Unsigned_32 (GC_P (P + 7));
+      P := P + 8;
+      if P >= Body_End then return; end if;
+      Nonce_Len := Natural (GC_P (P));  P := P + 1;
+      if Nonce_Len > 255 or else P + Nonce_Len > Body_End then return; end if;
+      for I in 0 .. Nonce_Len - 1 loop Nonce (I) := U8 (GC_P (P + I)); end loop;
+      P := P + Nonce_Len;
+      if P + 2 > Body_End then return; end if;
+      Tick_Len := Natural (GC_P (P)) * 256 + Natural (GC_P (P + 1));  P := P + 2;
+      if Tick_Len = 0 or else Tick_Len > Max_Ticket or else P + Tick_Len > Body_End then
+         return;
+      end if;
+      for I in 0 .. Tick_Len - 1 loop S.Ticket (I) := U8 (GC_P (P + I)); end loop;
+      S.Ticket_Len := Tick_Len;
+
+      --  PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", nonce, 32).
+      declare
+         PSK : Byte_Seq (0 .. 31);
+      begin
+         if Nonce_Len = 0 then
+            PSK := Expand_Label (To_Digest (S.Res_Master), "resumption", Empty, 32);
+         else
+            declare
+               NS : Byte_Seq (0 .. N32 (Nonce_Len) - 1);
+            begin
+               for I in 0 .. Nonce_Len - 1 loop NS (N32 (I)) := Byte (Nonce (I)); end loop;
+               PSK := Expand_Label (To_Digest (S.Res_Master), "resumption", NS, 32);
+            end;
+         end if;
+         for I in 0 .. 31 loop S.Ticket_PSK (I) := U8 (PSK (N32 (I))); end loop;
+      end;
+      S.Has_Tick := True;
+   end Capture_Ticket;
+
+   function Has_Ticket (S : Session) return Boolean is (S.Has_Tick);
+   function Server_Accepted_PSK (S : Session) return Boolean is (S.Resumed_PSK);
 
    procedure Recv (S : in out Session; Sock : Socket_Type; Buf : out Byte_Array;
                    Last : out Natural; Ok : out Boolean) is
@@ -948,7 +1187,9 @@ package body TLS_Client is
                end;
             elsif ITyp = 21 then                           --  alert
                return;
-            end if;                                        --  else (e.g. tickets): loop
+            elsif ITyp = 22 then                           --  NewSessionTicket
+               Capture_Ticket (S, OLen);                   --  capture, then loop
+            end if;
          else
             return;
          end if;
