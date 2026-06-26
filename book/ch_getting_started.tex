@@ -120,7 +120,7 @@ adds the runtime and HAL projects to \texttt{GPR\_PROJECT\_PATH} --- so both
 \begin{lstlisting}[style=sh]
 . /path/to/ada_esp32s3/export.sh    # once per shell (add to ~/.bashrc to persist)
 mkdir ~/myblink && cd ~/myblink
-esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb, glue
+esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb
 #  ... edit src/main.adb ...
 esp32-ada run -p /dev/ttyACM0       # build + flash + monitor
 \end{lstlisting}
@@ -155,9 +155,8 @@ myblink/
   app.gpr            # withs esp32s3_rts.gpr + esp32s3_hal.gpr (resolved by name)
   board.ads          # this project's flash / PSRAM sizes
   src/main.adb       # your code (procedure Main; boots both cores, then idles)
-  main/glue.c        # your C natives (starts empty)
   build.sh flash.sh  # thin shims into the SDK's shared bare-boot
-  main/build_ada.sh
+  glue.c             # optional: C natives, only if your Ada imports any
   .vscode/           # ALS project + build/flash/run tasks driving esp32-ada
 \end{lstlisting}
 
@@ -200,7 +199,7 @@ A few things make the copy build cleanly:
   it with \texttt{-P}.
 \item \textbf{Bring board config and C natives if customized.} If the example sets
   a non-default flash/PSRAM size, copy its \texttt{board.ads} (or run
-  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{main/glue.c}.
+  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{glue.c}.
 \item \textbf{Extra libraries.} If the example \texttt{with}s more of the SDK's
   \texttt{libs/} (beyond the HAL), add the matching \texttt{with "<name>.gpr";} to
   \texttt{app.gpr}.
