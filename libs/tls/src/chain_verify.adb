@@ -5,6 +5,20 @@ package body Chain_Verify is
    use type X509.Sig_Algorithm;
    use type X509.Key_Algorithm;
 
+   --  An issuing certificate must be a CA: basicConstraints cA = TRUE, and if it
+   --  carries a keyUsage extension it must assert keyCertSign (RFC 5280 4.2.1.3 /
+   --  4.2.1.9).  Applied to every certificate that signs another, including the
+   --  pinned anchor when it issues the top of the chain.
+   function Is_Valid_CA (C : X509.Certificate) return Boolean is
+     (C.Is_CA and then (not C.KU_Present or else C.KU_Cert_Sign));
+
+   --  A TLS server leaf: if it restricts extKeyUsage it must allow id-kp-serverAuth,
+   --  and if it restricts keyUsage it must allow digitalSignature (in TLS 1.3 the
+   --  server signs CertificateVerify with this key).
+   function Leaf_Usage_OK (C : X509.Certificate) return Boolean is
+     ((not C.EKU_Present or else C.EKU_Server)
+      and then (not C.KU_Present or else C.KU_Digital_Sig));
+
    --  Does Child's signature verify under Issuer's public key?  Dispatches on how
    --  the child was signed (RSA-PKCS1-SHA256, or ECDSA/P-256 with SHA-256/384) and
    --  requires the issuer to hold a matching key type.
@@ -59,6 +73,9 @@ package body Chain_Verify is
          if not X509.Host_Matches (LB, Leaf, Host) then
             return Name_Mismatch;
          end if;
+         if not Leaf_Usage_OK (Leaf) then
+            return Bad_Key_Usage;
+         end if;
       end;
 
       --  Each certificate must be in date, and each link must be signed by the
@@ -87,6 +104,9 @@ package body Chain_Verify is
                   if not Sig_OK (CB, C, IB, Iss) then
                      return Bad_Signature;
                   end if;
+                  if not Is_Valid_CA (Iss) then     --  intermediate must be a CA
+                     return Not_A_CA;
+                  end if;
                end;
             end if;
          end;
@@ -104,7 +124,9 @@ package body Chain_Verify is
                Ac : X509.Certificate;
             begin
                X509.Parse (AB, Ac);
-               if Ac.Valid and then Sig_OK (TB, Top, AB, Ac) then
+               if Ac.Valid and then Is_Valid_CA (Ac)
+                 and then Sig_OK (TB, Top, AB, Ac)
+               then
                   return Valid;
                end if;
             end;

@@ -19,12 +19,15 @@ package body X509 is
       end if;
    end Expect;
 
-   --  subjectAltName extension OID is 2.5.29.17  (DER content 55 1D 11).
-   function Is_SAN_OID (Cert : Byte_Array; S : Slice) return Boolean is
+   --  All the v3 extensions we read live under arc 2.5.29 ("55 1D .."), so a
+   --  3-byte OID whose last byte selects the extension: subjectAltName .17 (0x11),
+   --  keyUsage .15 (0x0F), basicConstraints .19 (0x13), extKeyUsage .37 (0x25).
+   function Is_Ext_OID (Cert : Byte_Array; S : Slice; Last_Byte : U8)
+                        return Boolean is
      (Length (S) = 3
       and then Cert (S.First) = 16#55#
       and then Cert (S.First + 1) = 16#1D#
-      and then Cert (S.First + 2) = 16#11#);
+      and then Cert (S.First + 2) = Last_Byte);
 
    --  Known OBJECT IDENTIFIER values (DER content bytes, after tag+length).
    OID_RSA_Enc      : constant Byte_Array :=          --  1.2.840.113549.1.1.1
@@ -39,6 +42,12 @@ package body X509 is
      (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#02#);
    OID_ECDSA_SHA384 : constant Byte_Array :=          --  1.2.840.10045.4.3.3
      (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#03#);
+   OID_Server_Auth  : constant Byte_Array :=          --  1.3.6.1.5.5.7.3.1 id-kp-serverAuth
+     (16#2B#, 16#06#, 16#01#, 16#05#, 16#05#, 16#07#, 16#03#, 16#01#);
+   OID_Client_Auth  : constant Byte_Array :=          --  1.3.6.1.5.5.7.3.2 id-kp-clientAuth
+     (16#2B#, 16#06#, 16#01#, 16#05#, 16#05#, 16#07#, 16#03#, 16#02#);
+   OID_Any_EKU      : constant Byte_Array :=          --  2.5.29.37.0 anyExtendedKeyUsage
+     (16#55#, 16#1D#, 16#25#, 16#00#);
 
    --  Do the OID content bytes at Slice S equal OID?
    function OID_Match (Cert : Byte_Array; S : Slice; OID : Byte_Array) return Boolean
@@ -77,6 +86,84 @@ package body X509 is
       end loop;
    end Parse_SAN;
 
+   --  BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPT }
+   procedure Parse_Basic_Constraints (Cert : Byte_Array; First, Last : Natural;
+                                      Result : in out Certificate) is
+      Seq, T : DER.TLV;
+      P : Natural;
+   begin
+      Result.BC_Present := True;
+      DER.Read (Cert, First, Last, Seq);
+      if not Seq.Valid or else Seq.Tag /= 16#30# then
+         return;                       --  empty/odd: cA stays FALSE (not a CA)
+      end if;
+      P := Seq.Content.First;
+      DER.Read (Cert, P, Seq.Content.Last, T);
+      if T.Valid and then T.Tag = 16#01# and then Length (T.Content) = 1 then
+         Result.Is_CA := Cert (T.Content.First) /= 0;       --  cA BOOLEAN
+         P := T.Elem_Last + 1;
+         DER.Read (Cert, P, Seq.Content.Last, T);
+      end if;
+      if T.Valid and then T.Tag = 16#02#                    --  pathLenConstraint INTEGER
+        and then Length (T.Content) in 1 .. 2
+      then
+         declare
+            V : Integer := 0;
+         begin
+            for I in T.Content.First .. T.Content.Last loop
+               V := V * 256 + Integer (Cert (I));
+            end loop;
+            Result.Path_Len := V;
+         end;
+      end if;
+   end Parse_Basic_Constraints;
+
+   --  KeyUsage ::= BIT STRING.  Content is [unused-bits][data..]; KeyUsage bit N
+   --  is bit (7-N) of data byte N/8 -- digitalSignature = 0, keyCertSign = 5.
+   procedure Parse_Key_Usage (Cert : Byte_Array; First, Last : Natural;
+                              Result : in out Certificate) is
+      BS : DER.TLV;
+      Bits0 : U8;
+   begin
+      Result.KU_Present := True;
+      DER.Read (Cert, First, Last, BS);
+      if not BS.Valid or else BS.Tag /= 16#03# or else Length (BS.Content) < 2 then
+         return;
+      end if;
+      Bits0 := Cert (BS.Content.First + 1);                 --  first data byte
+      Result.KU_Digital_Sig := (Bits0 and 16#80#) /= 0;     --  bit 0
+      Result.KU_Cert_Sign   := (Bits0 and 16#04#) /= 0;     --  bit 5
+   end Parse_Key_Usage;
+
+   --  ExtKeyUsage ::= SEQUENCE OF KeyPurposeId (OID).
+   procedure Parse_EKU (Cert : Byte_Array; First, Last : Natural;
+                        Result : in out Certificate) is
+      Seq, Purpose : DER.TLV;
+      P : Natural;
+   begin
+      Result.EKU_Present := True;
+      DER.Read (Cert, First, Last, Seq);
+      if not Seq.Valid or else Seq.Tag /= 16#30# then
+         return;
+      end if;
+      P := Seq.Content.First;
+      while P <= Seq.Content.Last loop
+         DER.Read (Cert, P, Seq.Content.Last, Purpose);
+         exit when not Purpose.Valid;
+         if Purpose.Tag = 16#06# then
+            if OID_Match (Cert, Purpose.Content, OID_Server_Auth) then
+               Result.EKU_Server := True;
+            elsif OID_Match (Cert, Purpose.Content, OID_Client_Auth) then
+               Result.EKU_Client := True;
+            elsif OID_Match (Cert, Purpose.Content, OID_Any_EKU) then
+               Result.EKU_Server := True;
+               Result.EKU_Client := True;
+            end if;
+         end if;
+         P := Purpose.Elem_Last + 1;
+      end loop;
+   end Parse_EKU;
+
    --  Extensions ::= SEQUENCE OF Extension { extnID OID, [critical], extnValue }.
    procedure Parse_Extensions (Cert : Byte_Array; First, Last : Natural;
                                Result : in out Certificate) is
@@ -93,9 +180,8 @@ package body X509 is
          exit when not Ext.Valid or else Ext.Tag /= 16#30#;
          EP := Ext.Content.First;
          DER.Read (Cert, EP, Ext.Content.Last, OID);
-         if OID.Valid and then OID.Tag = 16#06#
-           and then Is_SAN_OID (Cert, OID.Content)
-         then
+         if OID.Valid and then OID.Tag = 16#06# then
+            --  Skip the optional critical BOOLEAN, then take extnValue OCTET STRING.
             EP := OID.Elem_Last + 1;
             DER.Read (Cert, EP, Ext.Content.Last, Val);
             if Val.Valid and then Val.Tag = 16#01# then    --  optional critical BOOLEAN
@@ -103,7 +189,16 @@ package body X509 is
                DER.Read (Cert, EP, Ext.Content.Last, Val);
             end if;
             if Val.Valid and then Val.Tag = 16#04# then    --  extnValue OCTET STRING
-               Parse_SAN (Cert, Val.Content.First, Val.Content.Last, Result);
+               if Is_Ext_OID (Cert, OID.Content, 16#11#) then        --  subjectAltName
+                  Parse_SAN (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#13#) then     --  basicConstraints
+                  Parse_Basic_Constraints
+                    (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#0F#) then     --  keyUsage
+                  Parse_Key_Usage (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#25#) then     --  extKeyUsage
+                  Parse_EKU (Cert, Val.Content.First, Val.Content.Last, Result);
+               end if;
             end if;
          end if;
          P := Ext.Elem_Last + 1;

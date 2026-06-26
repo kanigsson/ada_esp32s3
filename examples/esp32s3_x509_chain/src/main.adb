@@ -6,11 +6,13 @@
 --    certificate signed by a CA, anchored to a pinned CA root.  Each case feeds
 --    Chain_Verify.Validate an ordered chain (leaf first), a set of pinned trust
 --    anchors, a host name and a wall-clock time, and asserts the verdict.
---    Between them the six cases exercise every distinct Result the validator can
+--    Between them the cases exercise every distinct Result the validator can
 --    return: a good chain (Valid), the leaf alone re-anchored to its issuer
 --    (Valid), a host-name miss (Name_Mismatch), evaluation past the validity
---    window (Expired), a forged link (Bad_Signature) and an unpinned root
---    (Untrusted_Root).
+--    window (Expired), a forged link (Bad_Signature), an unpinned root
+--    (Untrusted_Root), an issuer that is not a CA -- basicConstraints cA=FALSE --
+--    even though its signature verifies (Not_A_CA), and a leaf whose extKeyUsage
+--    permits only clientAuth (Bad_Key_Usage).
 --
 --  Build & run:  ./x run esp32s3_x509_chain
 --    Runs under the embedded profile (build.sh sets ESP32S3_RTS_PROFILE=embedded).
@@ -25,6 +27,7 @@ with Ada.Real_Time; use Ada.Real_Time;
 with X509;
 with Chain_Verify;  use Chain_Verify;
 with Chain_Certs;    use Chain_Certs;
+with Neg_Certs;      use Neg_Certs;
 with ESP32S3.RNG;
 with ESP32S3.Log;    use ESP32S3.Log;
 
@@ -37,6 +40,13 @@ procedure Main is
    Leaf  : constant Cert_Ref := (Data => Leaf_DER'Access);   --  CN=test.example.com
    CA    : constant Cert_Ref := (Data => CA_DER'Access);     --  CN=Test Root CA (issues Leaf)
    Other : constant Cert_Ref := (Data => Other_DER'Access);  --  CN=Unrelated CA (a different, unpinned root)
+
+   --  Negative-test PKI (see Neg_Certs): a rogue intermediate marked CA:FALSE that
+   --  nonetheless signs a leaf, and a leaf whose only extKeyUsage is clientAuth.
+   N_Root  : constant Cert_Ref := (Data => Neg_Root_DER'Access);      --  CA:TRUE anchor
+   N_Rogue : constant Cert_Ref := (Data => Neg_Rogue_DER'Access);     --  CA:FALSE issuer
+   N_Leaf  : constant Cert_Ref := (Data => Neg_Leaf_DER'Access);      --  signed by the rogue
+   N_EKU   : constant Cert_Ref := (Data => Neg_EKU_Leaf_DER'Access);  --  EKU clientAuth only
 
    --  Evaluation times (UTC, packed as YYYYMMDDhhmmss).  All three certificates
    --  are valid 2020..2049, so Within_Window evaluates inside the window, while
@@ -79,6 +89,10 @@ begin
    Check ("broken link",          Validate ((Leaf, Leaf), (1 => CA),    Host, Within_Window), Bad_Signature);
    --  Negative: the chain's root is not among the pinned anchors.
    Check ("untrusted root",       Validate ((Leaf, CA),   (1 => Other), Host, Within_Window), Untrusted_Root);
+   --  Negative: the rogue issuer's signature verifies, but it is marked CA:FALSE.
+   Check ("non-CA issuer",        Validate ((N_Leaf, N_Rogue), (1 => N_Root), Host, Within_Window), Not_A_CA);
+   --  Negative: the leaf chains and dates fine, but its EKU forbids serverAuth.
+   Check ("leaf EKU clientAuth",  Validate ((1 => N_EKU),      (1 => N_Root), Host, Within_Window), Bad_Key_Usage);
    Put_Line ("[chain] done");
 
    loop

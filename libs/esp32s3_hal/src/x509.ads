@@ -57,6 +57,18 @@ package X509 is
       EC_Y         : Slice;            --  P-256 public-key affine Y (32 bytes)
       SAN          : Slice_Array;      --  subjectAltName dNSName entries
       SAN_Count    : Natural := 0;
+
+      --  X.509 v3 extension flags the chain validator enforces (RFC 5280
+      --  4.2.1.9 basicConstraints, 4.2.1.3 keyUsage, 4.2.1.12 extKeyUsage).
+      BC_Present     : Boolean := False;  --  basicConstraints extension present
+      Is_CA          : Boolean := False;  --  basicConstraints cA = TRUE
+      Path_Len       : Integer := -1;     --  pathLenConstraint (-1 = absent)
+      KU_Present     : Boolean := False;  --  keyUsage extension present
+      KU_Cert_Sign   : Boolean := False;  --  keyUsage keyCertSign bit (5)
+      KU_Digital_Sig : Boolean := False;  --  keyUsage digitalSignature bit (0)
+      EKU_Present    : Boolean := False;  --  extendedKeyUsage present
+      EKU_Server     : Boolean := False;  --  id-kp-serverAuth (or anyExtendedKeyUsage)
+      EKU_Client     : Boolean := False;  --  id-kp-clientAuth (or anyExtendedKeyUsage)
    end record;
 
    --  Parse a DER-encoded certificate.  On success Result.Valid is True and the
