@@ -1,6 +1,11 @@
 --  Multi-sensor dashboard on a 240x240 ST7789 panel (bare-metal ESP32-S3, no
---  FreeRTOS, no IDF).  Four reusable HAL drivers feed four views that cycle on
---  screen, five seconds each:
+--  FreeRTOS, no IDF)
+--  ====================================================================
+--
+--  What it demonstrates
+--  --------------------
+--  Four reusable HAL drivers feeding four views that cycle on screen, five
+--  seconds each:
 --
 --    GPS  ESP32S3.GPS        UART0 (GPS TXD->U0RXD=IO44, U0TXD->GPS RXD=IO43,
 --                            9600) -- live UTC / latitude / longitude / fix.
@@ -15,8 +20,28 @@
 --  for the whole run -- so no task can corrupt the controller -- while each text
 --  update locks the SPI host only for its own transfers.
 --
---  The console mirrors every row pushed to the panel, so a live run can be
---  checked over serial too (the panel itself is write-only).
+--  Build & run
+--  -----------
+--  `./x run esp32s3_gps_display` -- needs the embedded runtime profile, which
+--  the example's build.sh selects (ESP32S3_RTS_PROFILE=embedded), because all
+--  four drivers use controlled Sessions / a background task.
+--
+--  Output
+--  ------
+--  The panel is the real output; the console mirrors every row pushed to it, so
+--  a live run can be checked over serial too (the panel itself is write-only).
+--  After a ~2.5 s Ada-mascot splash the views cycle forever.  Each view prints a
+--  "== <title> : <subtitle> ==" header on entry, then a value row per line once a
+--  second; e.g. the GPS view shows "UTC ..", "Lat ..", "Lon ..", "Fix .. Sat .."
+--  once locked, or "* searching" with "--" placeholders until it gets sky view.
+--
+--  Hardware / wiring
+--  -----------------
+--    LCD  ST7789 240x240 panel on SPI2: SCLK=IO12 MOSI=IO13 DC=IO16 CS=IO10;
+--         backlight IO6 (driven here, not by the driver); RST not wired (uses
+--         the controller's software reset).  Panel is write-only.
+--    GPS  NMEA receiver on UART0: GPS TXD->U0RXD=IO44, U0TXD->GPS RXD=IO43, 9600.
+--    I2C  SHT41 / PCF85063A / QMI8658C share I2C0: SDA=IO8 SCL=IO7.
 with Interfaces;    use type Interfaces.Integer_32;
 with Ada.Real_Time; use Ada.Real_Time;
 
@@ -54,9 +79,28 @@ procedure Main is
       Put_Line ("[dash]   cycling GPS / ENV / RTC / IMU, 5 s each");
    end Banner;
 
-   Backlight : constant ESP32S3.GPIO.Pin_Id := 6;
-   Sda       : constant ESP32S3.GPIO.Pin_Id := 8;
-   Scl       : constant ESP32S3.GPIO.Pin_Id := 7;
+   --  Pin assignments (see the wiring table in the header).
+   Backlight : constant ESP32S3.GPIO.Pin_Id := 6;    --  LCD backlight enable.
+   Sda       : constant ESP32S3.GPIO.Pin_Id := 8;    --  shared I2C0 data.
+   Scl       : constant ESP32S3.GPIO.Pin_Id := 7;    --  shared I2C0 clock.
+
+   --  Display geometry (ST7789, portrait).
+   Panel_W : constant := 240;    --  panel width  in pixels.
+   Panel_H : constant := 240;    --  panel height in pixels.
+
+   --  SPI2 pins for the panel.
+   LCD_Sclk : constant := 12;
+   LCD_Mosi : constant := 13;
+   LCD_DC   : constant := 16;    --  data/command select.
+   LCD_CS   : constant := 10;    --  chip select.
+
+   --  UART0 pins / baud for the NMEA GPS receiver.
+   GPS_Rx_Pin  : constant := 44;      --  U0RXD <- GPS TXD.
+   GPS_Tx_Pin  : constant := 43;      --  U0TXD -> GPS RXD (unused here).
+   GPS_Baud    : constant := 9_600;   --  standard NMEA bit rate.
+
+   --  I2C addresses are named by the drivers; the QMI8658C is probed at runtime
+   --  (SA0-low 0x6B, falling back to SA0-high 0x6A).
 
    Disp    : LCD.Device;
    S       : LCD.Session;
@@ -70,17 +114,32 @@ procedure Main is
    --  Display layout (240x240): scale-3 title, scale-1 subtitle, then up to four
    --  value rows in the scale-2 font (cell 12x16), each padded to a fixed width
    --  so the opaque redraw overwrites the previous value.
-   Field_Width : constant := 19;
-   R1 : constant := 64;
-   R2 : constant := 92;
-   R3 : constant := 120;
-   R4 : constant := 148;
+   Title_Scale : constant := 3;    --  view title font scale (base 5x7 cell).
+   Sub_Scale   : constant := 1;    --  subtitle font scale.
+   Value_Scale : constant := 2;    --  value-row font scale -> 12x16 cell.
 
+   --  At scale 2 the 240 px width holds 19 padded characters; padding to this
+   --  fixed width means every opaque redraw fully covers the previous value.
+   Field_Width : constant := 19;
+
+   --  Text origins.  Title/subtitle sit near the top-left; value rows are inset
+   --  and spaced one value-cell height (16 px) apart.
+   Title_X : constant := 8;
+   Title_Y : constant := 8;
+   Sub_X   : constant := 8;
+   Sub_Y   : constant := 40;
+   Row_X   : constant := 6;     --  left inset of every value row.
+   R1      : constant := 64;    --  Y of value row 1.
+   R2      : constant := 92;    --  Y of value row 2 (R1 + 28).
+   R3      : constant := 120;   --  Y of value row 3.
+   R4      : constant := 148;   --  Y of value row 4.
+
+   --  View accent colours (RGB565 via LCD.RGB; R, G, B are 0..255).
    White : constant LCD.Color := LCD.White;
    Green : constant LCD.Color := LCD.RGB (0, 255, 0);
    Cyan  : constant LCD.Color := LCD.RGB (0, 220, 255);
    Amber : constant LCD.Color := LCD.RGB (255, 190, 0);
-   Dim   : constant LCD.Color := LCD.RGB (130, 130, 130);
+   Dim   : constant LCD.Color := LCD.RGB (130, 130, 130);   --  muted/grey.
 
    Digit : constant String := "0123456789";
 
@@ -165,10 +224,18 @@ procedure Main is
    --  Output helpers.
    ----------------------------------------------------------------------------
 
-   --  Mirror one line to the console.
+   --  A reading is "fresh" only if its protected-store snapshot is younger than
+   --  this; older than that and the fix is treated as stale (placeholders shown).
+   Time_Stale_After : constant Duration := 5.0;   --  seconds, for UTC time.
+   Pos_Stale_After  : constant Duration := 3.0;   --  seconds, for lat/lon fix.
+
+   --  Mirror one line to the console.  The UART TX FIFO is 64 bytes; pace console
+   --  writes so a burst of rows does not overrun it (each row is one line).
+   Console_Pace : constant := 25;   --  milliseconds between mirrored lines.
+
    procedure Console (Line : String) is
    begin
-      delay until Clock + Milliseconds (25);   --  space out the 64-byte FIFO
+      delay until Clock + Milliseconds (Console_Pace);
       Put ("[dash] ");
       Put_Line (Line);
    end Console;
@@ -178,8 +245,8 @@ procedure Main is
    procedure Draw_Row (Y : Natural; Text : String; FG : LCD.Color) is
       P : constant String := Pad (Text, Field_Width);
    begin
-      LCD.Text.Draw_Text (S, X => 6, Y => Y, Str => P,
-                          FG => FG, BG => LCD.Black, Scale => 2);
+      LCD.Text.Draw_Text (S, X => Row_X, Y => Y, Str => P,
+                          FG => FG, BG => LCD.Black, Scale => Value_Scale);
       Console (P);
    end Draw_Row;
 
@@ -187,10 +254,10 @@ procedure Main is
    procedure Header (Title, Sub : String; C : LCD.Color) is
    begin
       LCD.Fill (S, LCD.Black);
-      LCD.Text.Draw_Text (S, X => 8, Y => 8,  Str => Title,
-                          FG => C, BG => LCD.Black, Scale => 3);
-      LCD.Text.Draw_Text (S, X => 8, Y => 40, Str => Sub,
-                          FG => Dim, BG => LCD.Black, Scale => 1);
+      LCD.Text.Draw_Text (S, X => Title_X, Y => Title_Y, Str => Title,
+                          FG => C, BG => LCD.Black, Scale => Title_Scale);
+      LCD.Text.Draw_Text (S, X => Sub_X, Y => Sub_Y, Str => Sub,
+                          FG => Dim, BG => LCD.Black, Scale => Sub_Scale);
       Console ("== " & Title & " : " & Sub & " ==");
    end Header;
 
@@ -204,9 +271,9 @@ procedure Main is
       F : constant GPS.Fix_Reading      := GPS.Current_Fix;
       G : constant GPS.Signal_Reading   := GPS.Current_Signal;
       Time_Fresh : constant Boolean :=
-        T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < 5.0;
+        T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < Time_Stale_After;
       Pos_Fresh : constant Boolean :=
-        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < 3.0;
+        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < Pos_Stale_After;
    begin
       if Time_Fresh then
          Draw_Row (R1, Fmt_Time (T.Value), White);
@@ -266,11 +333,17 @@ procedure Main is
       end if;
    end Update_RTC;
 
+   --  QMI8658C die-temperature scale: the raw 16-bit reading is in 1/256 C.
+   IMU_Temp_LSB_Per_C : constant := 256;
+
    procedure Update_IMU is
       A   : IMU.Axes;
       Raw : Interfaces.Integer_16;
       St  : IMU.Status;
       St2 : IMU.Status;
+
+      --  Accelerometer counts per 1 g for the configured range (set in Configure
+      --  below); raw counts * 1000 / LSB gives milli-g for Fmt_Milli.
       LSB : constant Positive := IMU.Accel_LSB_Per_G (Imu_Dev);
    begin
       IMU.Read_Accelerometer (Imu_Dev, A, St);
@@ -286,8 +359,9 @@ procedure Main is
          Draw_Row (R1, "IMU bus error", Amber);
       end if;
       if St2 = IMU.OK then
-         Draw_Row (R4, "Temp " & Fmt_Milli (Integer (Raw) * 1000 / 256) & " C",
-                   Cyan);
+         Draw_Row (R4, "Temp "
+                       & Fmt_Milli (Integer (Raw) * 1000 / IMU_Temp_LSB_Per_C)
+                       & " C", Cyan);
       end if;
    end Update_IMU;
 
@@ -300,7 +374,7 @@ procedure Main is
       Dt : constant GPS.Date_Reading     := GPS.Current_Date;
       Tm : constant GPS.Time_Reading     := GPS.Current_Time;
       Locked : constant Boolean :=
-        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < 3.0;
+        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < Pos_Stale_After;
       T  : RTC.Time;
       St : RTC.Status;
    begin
@@ -334,7 +408,8 @@ begin
    ESP32S3.GPIO.Configure (Backlight, Mode => ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Set (Backlight);
 
-   LCD.Setup (Disp, Sclk => 12, Mosi => 13, DC => 16, CS => 10);   --  240x240
+   LCD.Setup (Disp, Sclk => LCD_Sclk, Mosi => LCD_Mosi,
+              DC => LCD_DC, CS => LCD_CS);                          --  240x240
    LCD.Acquire (S, Disp);
    LCD.Init (S);
 
@@ -343,11 +418,12 @@ begin
                     W => Ada_Logo.Width, H => Ada_Logo.Height,
                     Pixels => Ada_Logo.Pixels);
    Console ("splash: Ada logo");
-   delay until Clock + Milliseconds (2500);
+   delay until Clock + Milliseconds (2500);   --  ~2.5 s splash hold.
    LCD.Fill (S, LCD.Black);
 
    --  Bring up the GPS service (releases its reader task) and the I2C sensors.
-   GPS.Setup (Port => ESP32S3.UART.UART0, Rx => 44, Tx => 43, Baud => 9_600);
+   GPS.Setup (Port => ESP32S3.UART.UART0,
+              Rx => GPS_Rx_Pin, Tx => GPS_Tx_Pin, Baud => GPS_Baud);
    SHT.Setup (Env, Sda => Sda, Scl => Scl);
    RTC.Setup (Clk, Sda => Sda, Scl => Scl);
 

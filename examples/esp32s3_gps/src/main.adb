@@ -1,21 +1,43 @@
---  NMEA GPS receiver driver demo on the bare-metal ESP32-S3 (no FreeRTOS, no
---  IDF).  Exercises the reusable HAL GPS driver (ESP32S3.GPS), a task-driven
---  UART service, in two phases:
+--  What it demonstrates
+--  ---------------------
+--  The reusable HAL GPS driver (ESP32S3.GPS): a task-driven UART NMEA receiver
+--  on the bare-metal ESP32-S3 (no FreeRTOS, no IDF).  The driver is a singleton
+--  background service -- a library-level reader task owns the UART, decodes the
+--  receiver's NMEA stream, and publishes results into a protected store the
+--  application reads.  Runs in two phases:
 --
---    self-test  Inject canned GGA/RMC sentences (and one with a bad checksum)
---               BEFORE Setup -- so the reader task is still suspended and the
---               protected store is quiescent -- and check that decoding,
---               storage, and the paired Position record are correct.  This
---               proves the decoder on silicon with no live receiver.
+--    self-test  Inject canned GGA/RMC/ZDA/GLL/VTG/GSV/GSA sentences (and one
+--               with a bad checksum) BEFORE Setup -- so the reader task is still
+--               suspended and the protected store is quiescent -- and check that
+--               decoding, storage, and the paired Position record are correct.
+--               This proves the decoder on silicon with no live receiver.
 --
---    live       Setup UART0 (GPS TXD -> U0RXD = GPIO44; our U0TXD -> GPS RXD =
---               GPIO43; 9600 baud), releasing the reader task, then once a
---               second print the latest fix + its age.  With no antenna lock the
+--    live       Setup UART0 and release the reader task, then once a second
+--               print the latest fix + its age.  With no antenna lock the
 --               position stays invalid/stale while sentences still arrive (the
---               fix group's rx_age advancing shows reception is live).
+--               fix group's rx-age advancing shows reception is live).
 --
+--  Build & run
+--  -----------
+--    ./x run esp32s3_gps      (build.sh sets ESP32S3_RTS_PROFILE=embedded --
+--                               needs the controlled UART Session + task +
+--                               protected objects, so not light-tasking)
+--
+--  Output
+--  ------
+--  The self-test prints one "[gps] <name> : PASS" line per check (all PASS is a
+--  good run); then "[gps] live (UART0 @ 9600)..." and, once a second, a UTC +
+--  fix line plus the raw sentence echo.  Every 10 s it dumps the satellite list.
 --  Report goes through the ROM printf glue; the Ada driver does all the UART +
 --  NMEA work.
+--
+--  Hardware / wiring
+--  -----------------
+--  A 9600-baud NMEA GPS module (e.g. Quectel L76K) on UART0.  Its pads are free
+--  here because the console runs over USB-Serial-JTAG.
+--    GPS TXD -> U0RXD = GPIO44  (data in from the GPS -- the one line you must wire)
+--    GPS RXD <- U0TXD = GPIO43  (config commands out to the GPS)
+--    VCC/GND -> 3V3/GND
 with System;
 with Interfaces;   use Interfaces;
 use type Interfaces.Integer_32;
@@ -36,6 +58,27 @@ procedure Main is
    package L76K renames ESP32S3.GPS.L76K;
    use type GPS.Fix_Quality;
 
+   --  Live UART wiring: the GPS module's NMEA stream on UART0.  The console is
+   --  USB-Serial-JTAG, so UART0's pads are free for the receiver.
+   GPS_Rx_Pin : constant := 44;       --  U0RXD <- GPS TXD (data in)
+   GPS_Tx_Pin : constant := 43;       --  U0TXD -> GPS RXD (config commands out)
+   GPS_Baud   : constant := 9_600;    --  most NMEA modules default to 9600, 1 Hz
+
+   --  The bare ROM-printf console FIFO is 64 bytes and non-blocking; space
+   --  back-to-back lines by this much so it drains between them.
+   Fifo_Drain : constant Time_Span := Milliseconds (40);
+
+   --  Self-test check label column: pad each name out to this width before " : ".
+   Label_Width : constant := 11;
+
+   --  Raw-echo clip: print at most this many chars of a sentence, then "..".
+   Raw_Clip : constant := 52;
+
+   --  Live-phase pacing (one loop tick = 1 s).
+   Live_Ticks       : constant := 70;   --  how long the live phase runs (s)
+   Sat_Dump_Interval : constant := 10;  --  dump the satellite list every N ticks
+   PCAS_Tick        : constant := 5;    --  tick at which the PCAS04 test fires
+
    --  PCAS04 mode number (1 .. 7) for a constellation selection.
    function Config_Mode (C : L76K.Constellation) return Integer is
      (L76K.Constellation'Pos (C) + 1);
@@ -47,19 +90,22 @@ procedure Main is
       Put (Character'Val (Character'Pos ('0') + V mod 10));
    end Put2;
 
-   --  1e-7 degrees -> "[-]D.DDDDDDD" (7 fractional digits), like the glue's put_deg.
-   procedure Put_Deg (E7 : Integer) is
-      U   : constant Integer := abs E7;
-      Div : Integer := 1_000_000;
+   --  A coordinate in 1e-7 degrees -> "[-]D.DDDDDDD" (7 fractional digits),
+   --  like the glue's put_deg.  GPS lat/lon are stored as integer 1e-7 degrees.
+   Degree_Scale : constant := 10_000_000;   --  1 degree == 1e7 in 1e-7-deg units
+
+   procedure Put_Deg (Degrees_E7 : Integer) is
+      Magnitude : constant Integer := abs Degrees_E7;
+      Place     : Integer := Degree_Scale / 10;   --  start at the first fractional digit
    begin
-      if E7 < 0 then
+      if Degrees_E7 < 0 then
          Put ("-");
       end if;
-      Put (U / 10_000_000);
+      Put (Magnitude / Degree_Scale);   --  whole degrees
       Put (".");
-      while Div >= 1 loop
-         Put (Character'Val (Character'Pos ('0') + (U / Div) mod 10));
-         Div := Div / 10;
+      while Place >= 1 loop
+         Put (Character'Val (Character'Pos ('0') + (Magnitude / Place) mod 10));
+         Place := Place / 10;
       end loop;
    end Put_Deg;
 
@@ -86,7 +132,7 @@ procedure Main is
    begin
       Put ("[gps] ");
       Put (M);
-      for I in M'Length + 1 .. 11 loop
+      for Col in M'Length + 1 .. Label_Width loop
          Put (" ");
       end loop;
       Put (" : ");
@@ -100,16 +146,26 @@ procedure Main is
    begin
       Put ("[gps] UTC=");
       if Time_Valid then
-         Put2 (HH); Put (":"); Put2 (MM); Put (":"); Put2 (SS);
+         Put2 (HH);
+         Put (":");
+         Put2 (MM);
+         Put (":");
+         Put2 (SS);
       else
          Put ("--:--:--");
       end if;
       if Pos_Fresh then
-         Put (" lat="); Put_Deg (Lat_E7);
-         Put (" lon="); Put_Deg (Lon_E7);
+         Put (" lat=");
+         Put_Deg (Lat_E7);
+         Put (" lon=");
+         Put_Deg (Lon_E7);
       else
-         Put (" view="); Put (In_View);
-         Put (" snr="); Put (Max_SNR);
+         --  No position fix yet: report the acquisition view instead.
+         --  Fix_Type 0/1/2 = no-fix / 2D / 3D (GPS.Fix_Type'Pos order).
+         Put (" view=");
+         Put (In_View);
+         Put (" snr=");
+         Put (Max_SNR);
          Put (" ");
          Put (if Fix_Type = 2 then "3D"
               elsif Fix_Type = 1 then "2D" else "no-fix");
@@ -117,39 +173,44 @@ procedure Main is
       New_Line;
    end Live;
 
-   --  Echo a raw NMEA sentence (clipped to 52 chars; ".." marks truncation).
-   procedure Raw (S : System.Address; N : Integer) is
-      Lim  : constant Integer := (if N > 52 then 52 else N);
-      Bytes : array (0 .. Integer'Max (Lim - 1, 0)) of Character
-        with Import, Address => S;
+   --  Echo a raw NMEA sentence (clipped to Raw_Clip chars; ".." marks truncation).
+   procedure Raw (Sentence : System.Address; Length : Integer) is
+      Clipped : constant Integer := (if Length > Raw_Clip then Raw_Clip else Length);
+      Bytes   : array (0 .. Integer'Max (Clipped - 1, 0)) of Character
+        with Import, Address => Sentence;
    begin
       Put ("[gps] raw: ");
-      for I in 0 .. Lim - 1 loop
+      for I in 0 .. Clipped - 1 loop
          Put ((1 => Bytes (I)));
       end loop;
-      if N > Lim then
+      if Length > Clipped then
          Put ("..");
       end if;
       New_Line;
    end Raw;
 
-   --  One satellite line; sys 0..5 = GP/GL/GA/BD/QZ/Other.
-   procedure Sat (Sys, PRN, El, Az, SNR : Integer) is
+   --  One satellite line; System 0..5 = GP/GL/GA/BD/QZ/Other
+   --  (GNSS_System'Pos order: GPS/GLONASS/Galileo/BeiDou/QZSS/Other).
+   procedure Sat (GNSS, PRN, Elevation, Azimuth, SNR : Integer) is
       function Sys_Name return String is
-        (case Sys is
-            when 0      => "GP",
-            when 1      => "GL",
-            when 2      => "GA",
-            when 3      => "BD",
-            when 4      => "QZ",
-            when 5      => "??",
+        (case GNSS is
+            when 0      => "GP",   --  GPS
+            when 1      => "GL",   --  GLONASS
+            when 2      => "GA",   --  Galileo
+            when 3      => "BD",   --  BeiDou
+            when 4      => "QZ",   --  QZSS
+            when 5      => "??",   --  Other
             when others => "??");
    begin
       Put ("[gps]   ");
-      Put (Sys_Name); Put (PRN);
-      Put (" el="); Put (El);
-      Put (" az="); Put (Az);
-      Put (" snr="); Put (SNR);
+      Put (Sys_Name);
+      Put (PRN);
+      Put (" el=");
+      Put (Elevation);
+      Put (" az=");
+      Put (Azimuth);
+      Put (" snr=");
+      Put (SNR);
       New_Line;
    end Sat;
 
@@ -190,10 +251,10 @@ procedure Main is
 
    Ok : Boolean;
 
-   --  Space the back-to-back self-test lines so the 64-byte console FIFO drains.
+   --  Space the back-to-back self-test lines so the console FIFO drains.
    procedure Report (Code : Integer; Pass : Boolean) is
    begin
-      delay until Clock + Milliseconds (40);
+      delay until Clock + Fifo_Drain;
       Check (Code, Pass);
    end Report;
 
@@ -310,11 +371,15 @@ begin
    --------------------------------------------------------------------------
    --  Live: bring up UART0 on the GPS pins and release the reader task.
    --------------------------------------------------------------------------
-   delay until Clock + Milliseconds (40);
+   delay until Clock + Fifo_Drain;
    Put_Line ("[gps] live (UART0 @ 9600) -- waiting for sentences...");
-   GPS.Setup (Port => ESP32S3.UART.UART0, Rx => 44, Tx => 43, Baud => 9_600);
+   GPS.Setup (Port => ESP32S3.UART.UART0,
+              Rx   => GPS_Rx_Pin,
+              Tx   => GPS_Tx_Pin,
+              Baud => GPS_Baud);
 
-   for Tick in 1 .. 70 loop
+   --  Live phase: Live_Ticks one-second ticks of fix/sat reporting, then idle.
+   for Tick in 1 .. Live_Ticks loop
       delay until Clock + Seconds (1);
       declare
          P : constant GPS.Position_Reading := GPS.Current_Position;
@@ -322,10 +387,16 @@ begin
          S : constant GPS.Signal_Reading   := GPS.Current_Signal;
          Sats : GPS.Satellite_List (1 .. GPS.Max_Satellites);
          NSat : Natural;
-         Pos_Fresh : constant Boolean :=    --  a live fix updates ~1 Hz
-           P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < 3.0;
-         Time_Fresh : constant Boolean :=    --  live UTC (ZDA arrives before lock)
-           T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < 5.0;
+         --  A live fix updates ~1 Hz; tolerate a few missed updates before
+         --  calling the position stale (and aging the self-test fix out).
+         Pos_Stale_S  : constant := 3.0;
+         --  UTC arrives via ZDA/RMC even before lock, but less reliably; allow
+         --  a bit more slack before declaring the clock stale.
+         Time_Stale_S : constant := 5.0;
+         Pos_Fresh : constant Boolean :=
+           P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < Pos_Stale_S;
+         Time_Fresh : constant Boolean :=
+           T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < Time_Stale_S;
       begin
          GPS.Satellites_In_View (Sats, NSat);   --  table count (all systems)
          Live (Time_Valid => Time_Fresh,
@@ -341,51 +412,56 @@ begin
 
          --  Echo the actual raw sentence (spaced so the FIFO drains; long
          --  sentences are split into two lines to stay under the console FIFO).
-         delay until Clock + Milliseconds (40);
+         delay until Clock + Fifo_Drain;
          declare
-            Buf  : String (1 .. 90);
-            Len  : Natural;
-            Half : constant := 45;
+            --  A standard NMEA sentence is at most 82 chars; 90 leaves margin.
+            Sentence : String (1 .. 90);
+            Length   : Natural;
+            --  Split point: echo the first Half chars, then the rest, so each
+            --  printed line stays under the 64-byte console FIFO.
+            Half     : constant := 45;
          begin
-            GPS.Last_Sentence (Buf, Len);
-            Raw (Buf'Address, Natural'Min (Len, Half));
-            if Len > Half then
-               delay until Clock + Milliseconds (40);
-               Raw (Buf (Buf'First + Half)'Address, Len - Half);
+            GPS.Last_Sentence (Sentence, Length);
+            Raw (Sentence'Address, Natural'Min (Length, Half));
+            if Length > Half then
+               delay until Clock + Fifo_Drain;
+               Raw (Sentence (Sentence'First + Half)'Address, Length - Half);
             end if;
          end;
 
-         --  Every 10 s, dump the full satellite-in-view list, one per line.
-         if Tick mod 10 = 0 then
-            delay until Clock + Milliseconds (40);
+         --  Every Sat_Dump_Interval ticks (one tick = 1 s), dump the full
+         --  satellite-in-view list, one per line.
+         if Tick mod Sat_Dump_Interval = 0 then
+            delay until Clock + Fifo_Drain;
             Put ("[gps] satellites in view: ");
             Put (Integer (NSat));
             New_Line;
             for I in 1 .. NSat loop
-               delay until Clock + Milliseconds (40);
-               Sat (Sys => GPS.GNSS_System'Pos (Sats (I).System),
-                    PRN => Integer (Sats (I).PRN),
-                    El  => Integer (Sats (I).Elevation),
-                    Az  => Integer (Sats (I).Azimuth),
-                    SNR => Integer (Sats (I).SNR));
+               delay until Clock + Fifo_Drain;
+               Sat (GNSS      => GPS.GNSS_System'Pos (Sats (I).System),
+                    PRN       => Integer (Sats (I).PRN),
+                    Elevation => Integer (Sats (I).Elevation),
+                    Azimuth   => Integer (Sats (I).Azimuth),
+                    SNR       => Integer (Sats (I).SNR));
             end loop;
          end if;
 
-         --  L76K PCAS04 test: at tick 5 (after the default GPS+BeiDou baseline)
-         --  enable ALL constellations.  Disabling a constellation is instant,
-         --  but ENABLING GLONASS means acquiring those satellites from scratch,
-         --  so GLONASS (GL) appears in the dumps a while later.
-         if Tick = 5 then
-            delay until Clock + Milliseconds (40);
+         --  L76K PCAS04 test: at PCAS_Tick (after the default GPS+BeiDou
+         --  baseline) enable ALL constellations.  Disabling a constellation is
+         --  instant, but ENABLING GLONASS means acquiring those satellites from
+         --  scratch, so GLONASS (GL) appears in the dumps a while later.
+         if Tick = PCAS_Tick then
+            delay until Clock + Fifo_Drain;
             Cfg (Config_Mode (L76K.GPS_BeiDou_GLONASS));
             L76K.Set_Constellation (L76K.GPS_BeiDou_GLONASS);
          end if;
       end;
    end loop;
 
-   delay until Clock + Milliseconds (40);
+   delay until Clock + Fifo_Drain;
    Put_Line ("[gps] done.");
 
+   --  Hold the demo here so the final output stays on screen; wake hourly.
    loop
       delay until Clock + Seconds (3600);
    end loop;

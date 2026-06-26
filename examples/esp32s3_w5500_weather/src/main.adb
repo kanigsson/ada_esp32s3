@@ -1,8 +1,13 @@
 --  Weather forecast for a latitude / longitude, from Open-Meteo (open-meteo.com).
+--  ============================================================================
 --
---  Open-Meteo's forecast API answers over plain HTTP on port 80 (no TLS, which the
---  W5500 cannot do), so this is a straight TCP-client GET (GNAT.Sockets) followed
---  by a small scrape of the JSON it returns:
+--  What it demonstrates
+--  --------------------
+--  A full plaintext-HTTP client over the W5500 Ethernet HAL: resolve a host by
+--  name (DNS_Client), open a TCP socket (GNAT.Sockets), send an HTTP/1.0 GET, and
+--  scrape the JSON reply.  Open-Meteo's forecast API answers over plain HTTP on
+--  port 80 (no TLS, which the W5500 cannot do), so this is a straight TCP-client
+--  GET followed by a small scrape of the JSON it returns:
 --
 --     GET /v1/forecast?latitude=..&longitude=..&current_weather=true HTTP/1.0
 --
@@ -13,6 +18,30 @@
 --  The server's address is resolved by name with the portable DNS_Client module
 --  (a DNS A-record query over GNAT.Sockets): api.open-meteo.com becomes an IP at
 --  run time -- nothing is hard-coded.
+--
+--  Build & run
+--  -----------
+--  ./x run esp32s3_w5500_weather
+--  Needs the embedded profile; build.sh sets ESP32S3_RTS_PROFILE=embedded.
+--
+--  How to read the output
+--  ----------------------
+--  Every line is tagged "[wx]" (or "[w5500]" from the bring-up).  A good run
+--  prints the link coming up, the resolved IP, then the parsed forecast:
+--     [wx]   temperature : 28.4 C
+--     [wx]   wind        : 9.7 km/h from 210 deg
+--     [wx]   conditions  : partly cloudy
+--  If the link does not come up, the DNS query gets no reply, or the JSON cannot
+--  be parsed, the corresponding "[wx] ..." failure line is printed instead (the
+--  raw response is dumped when parsing fails).
+--
+--  Hardware / wiring
+--  -----------------
+--  A WIZnet W5500 Ethernet module on SPI2, plus a live LAN with internet access.
+--  SPI pinout (see w5500_dev.adb): SCLK=GPIO1, MOSI=GPIO4, MISO=GPIO45, CS=GPIO39,
+--  RST=GPIO11, INT=GPIO3, at 10 MHz.  The board takes a static IP 192.168.1.50 on
+--  a 192.168.1.0/24 LAN with gateway .254 -- edit those in w5500_dev.adb for your
+--  network.  DNS goes to 8.8.8.8 (Google's public resolver; see below).
 with Ada.Real_Time;       use Ada.Real_Time;
 with Ada.Streams;         use Ada.Streams;
 with GNAT.Sockets;        use GNAT.Sockets;
@@ -29,19 +58,32 @@ procedure Main is
    Longitude : constant String := "-84.388";
    --  ---------------------------------------------------------------------------
 
+   --  Open-Meteo's forecast host.  Resolved by name at run time (see DNS below);
+   --  also sent verbatim in the HTTP "Host:" header.
    Host_Name   : constant String         := "api.open-meteo.com";
-   DNS_Server  : constant Inet_Addr_Type  := Inet_Addr ("8.8.8.8");   --  resolver
+
+   --  DNS resolver to query for Host_Name's A record.  8.8.8.8 is Google's public
+   --  resolver -- reachable from any internet-connected LAN; change it to your own
+   --  resolver if 8.8.8.8 is blocked.
+   DNS_Server  : constant Inet_Addr_Type  := Inet_Addr ("8.8.8.8");
+
+   --  TCP port for plain HTTP (the API has no TLS endpoint the W5500 could use).
    Server_Port : constant Port_Type       := 80;
 
    DQ : constant String := (1 => '"');                     --  one double-quote
 
-   Sock      : Socket_Type;
-   Server_IP : Inet_Addr_Type;
+   Sock      : Socket_Type;             --  the client TCP socket
+   Server_IP : Inet_Addr_Type;          --  Host_Name resolved to an IPv4 address
+
+   --  Receive scratch: one read of the socket lands here, up to 512 bytes at a time.
    Buf       : Stream_Element_Array (1 .. 512);
-   Last      : Stream_Element_Offset;
-   SLast     : Stream_Element_Offset;
+   Last      : Stream_Element_Offset;   --  last byte filled by Receive_Socket
+   SLast     : Stream_Element_Offset;   --  last byte accepted by Send_Socket
+
+   --  Accumulated HTTP response (headers + JSON body).  4 KB is ample for the
+   --  small current_weather reply; bytes past this cap are dropped (see the loop).
    Resp      : String (1 .. 4096);
-   Resp_Len  : Natural := 0;
+   Resp_Len  : Natural := 0;            --  bytes of Resp actually filled
 
    function To_SEA (S : String) return Stream_Element_Array is
       R : Stream_Element_Array (1 .. S'Length);
@@ -119,6 +161,9 @@ procedure Main is
       end if;
    end Weather;
 
+   --  Seconds to wait for the resolver's reply before giving up on DNS.
+   DNS_Timeout : constant Duration := 5.0;
+
    Request : constant String :=
      "GET /v1/forecast?latitude=" & Latitude
        & "&longitude=" & Longitude
@@ -127,17 +172,23 @@ procedure Main is
        & "Connection: close" & ASCII.CR & ASCII.LF
        & ASCII.CR & ASCII.LF;
 begin
+   --  Let the console / USB-serial settle before the first line so it is not lost.
    delay until Clock + Milliseconds (200);
    Put_Line ("[wx] W5500 weather forecast (Open-Meteo, GNAT.Sockets, TCP)");
    if not W5500_Dev.Bring_Up then
-      loop delay until Clock + Seconds (3600); end loop;
+      loop                                 --  fatal: nothing to do, park forever
+         delay until Clock + Seconds (3600);
+      end loop;
    end if;
 
    --  Resolve the API host by name (portable DNS_Client over GNAT.Sockets).
    Put_Line ("[wx] resolving " & Host_Name & " ...");
-   if not DNS_Client.Resolve (DNS_Server, Host_Name, Server_IP, Timeout => 5.0) then
+   if not DNS_Client.Resolve (DNS_Server, Host_Name, Server_IP, Timeout => DNS_Timeout)
+   then
       Put_Line ("[wx] DNS resolution failed (no resolver reply)");
-      loop delay until Clock + Seconds (3600); end loop;
+      loop                                 --  fatal: park forever
+         delay until Clock + Seconds (3600);
+      end loop;
    end if;
    Put_Line ("[wx] " & Host_Name & " = " & Image (Server_IP));
 
@@ -151,7 +202,7 @@ begin
       Receive_Socket (Sock, Buf, Last);
       exit when Last < Buf'First;                --  server closed the connection
       for E of Buf (Buf'First .. Last) loop
-         if Resp_Len < Resp'Last then
+         if Resp_Len < Resp'Last then              --  drop anything past the cap
             Resp_Len := Resp_Len + 1;
             Resp (Resp_Len) := Character'Val (Integer (E));
          end if;
@@ -184,5 +235,7 @@ begin
       end if;
    end;
 
-   loop delay until Clock + Seconds (3600); end loop;
+   loop                                    --  done: park forever
+      delay until Clock + Seconds (3600);
+   end loop;
 end Main;
