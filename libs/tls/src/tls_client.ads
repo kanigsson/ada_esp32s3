@@ -25,17 +25,31 @@ package TLS_Client is
                     Host : String;
                     Ok   : out Boolean);
 
-   --  Results available after a successful Hello.
+   --  Results available after a successful Hello.  After the ServerHello is parsed,
+   --  Hello also runs the TLS 1.3 key schedule (X25519 ECDHE -> Handshake Secret ->
+   --  traffic secrets), so the handshake traffic secrets and keys are available too.
    function Cipher_Suite (S : Session) return U16;
    function Server_Key_Share (S : Session) return Byte_Array;   --  32-byte X25519
+
+   function Client_Random      (S : Session) return Byte_Array; --  32 (keylog match)
+   function Server_HS_Secret   (S : Session) return Byte_Array; --  32 (server hs traffic secret)
+   function Client_HS_Secret   (S : Session) return Byte_Array; --  32
+   function Keys_Ready         (S : Session) return Boolean;
 
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
    type Session is limited record
-      Priv, Pub   : Key32 := (others => 0);     --  our X25519 key pair
-      Server_Pub  : Key32 := (others => 0);     --  server's X25519 key share
-      Suite       : U16   := 0;
-      Have_Share  : Boolean := False;
+      Priv, Pub     : Key32 := (others => 0);   --  our X25519 key pair
+      Client_Random : Key32 := (others => 0);   --  our ClientHello random
+      Server_Pub    : Key32 := (others => 0);   --  server's X25519 key share
+      Suite         : U16   := 0;
+      Have_Share    : Boolean := False;
+      --  Key schedule outputs (handshake phase).
+      S_HS_Secret   : Key32 := (others => 0);   --  server_handshake_traffic_secret
+      C_HS_Secret   : Key32 := (others => 0);   --  client_handshake_traffic_secret
+      Server_Key    : Byte_Array (0 .. 15) := (others => 0);  --  AES-128 key
+      Server_IV     : Byte_Array (0 .. 11) := (others => 0);
+      Have_Keys     : Boolean := False;
    end record;
 end TLS_Client;

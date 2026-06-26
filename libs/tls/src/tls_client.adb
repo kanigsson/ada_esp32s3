@@ -1,13 +1,32 @@
 with Ada.Streams;            use Ada.Streams;
 with ESP32S3.RNG;
-with SPARKNaCl;
+with SPARKNaCl;               use SPARKNaCl;
 with SPARKNaCl.Scalar;
+with SPARKNaCl.Hashing.SHA256;
+with SPARKNaCl.HKDF;
 
 package body TLS_Client is
 
    use type Interfaces.Unsigned_8;
    use type Interfaces.Unsigned_16;
+   use type Interfaces.Integer_32;        --  arithmetic on SPARKNaCl N32 / I32
    use GNAT.Sockets;
+
+   package SHA renames SPARKNaCl.Hashing.SHA256;
+
+   --  Handshake transcript (ClientHello || Server|| ...), static (one at a time).
+   TR     : Byte_Array (0 .. 4095);
+   TR_Len : Natural := 0;
+
+   procedure Transcript (Data : Byte_Array) is
+   begin
+      for E of Data loop
+         if TR_Len <= TR'Last then
+            TR (TR_Len) := E;
+            TR_Len := TR_Len + 1;
+         end if;
+      end loop;
+   end Transcript;
 
    --  Record content types and handshake message types.
    CT_Change_Cipher_Spec : constant U8 := 20;
@@ -158,7 +177,7 @@ package body TLS_Client is
    --  ClientHello
    ---------------------------------------------------------------------------
 
-   procedure Send_Client_Hello (S : Session; Sock : Socket_Type; Host : String) is
+   procedure Send_Client_Hello (S : in out Session; Sock : Socket_Type; Host : String) is
       B    : Builder renames CH;
       Rnd  : ESP32S3.RNG.Byte_Array (0 .. 31);
       Rec, HS, Body_Mark, Ext_Mark, M : Natural;
@@ -172,15 +191,17 @@ package body TLS_Client is
       Body_Mark := B.Len;
 
       P16 (B, 16#0303#);                                   --  legacy_version
-      ESP32S3.RNG.Fill (Rnd);                              --  random (32)
-      for I in 0 .. 31 loop P8 (B, U8 (Rnd (I))); end loop;
+      ESP32S3.RNG.Fill (Rnd);                              --  random (32), kept for keylog
+      for I in 0 .. 31 loop
+         S.Client_Random (I) := U8 (Rnd (I));
+         P8 (B, U8 (Rnd (I)));
+      end loop;
       ESP32S3.RNG.Fill (Rnd);                              --  legacy_session_id (32)
       P8 (B, 32);
       for I in 0 .. 31 loop P8 (B, U8 (Rnd (I))); end loop;
 
-      P16 (B, 4);                                          --  cipher_suites
+      P16 (B, 2);                                          --  cipher_suites (one)
       P16 (B, TLS_AES_128_GCM_SHA256);
-      P16 (B, TLS_AES_256_GCM_SHA384);
 
       P8 (B, 1);  P8 (B, 0);                               --  compression: null
 
@@ -221,6 +242,7 @@ package body TLS_Client is
       Patch16 (B, Rec);
 
       Send_Bytes (Sock, B.Data (0 .. B.Len - 1));
+      Transcript (B.Data (5 .. B.Len - 1));         --  handshake message (no record hdr)
    end Send_Client_Hello;
 
    ---------------------------------------------------------------------------
@@ -273,6 +295,91 @@ package body TLS_Client is
    end Parse_Server_Hello;
 
    ---------------------------------------------------------------------------
+   --  TLS 1.3 key schedule (SHA-256 suite): HKDF over the X25519 shared secret.
+   ---------------------------------------------------------------------------
+
+   SHA_Empty : constant SHA.Digest :=                 --  SHA-256 of the empty string
+     (16#e3#, 16#b0#, 16#c4#, 16#42#, 16#98#, 16#fc#, 16#1c#, 16#14#,
+      16#9a#, 16#fb#, 16#f4#, 16#c8#, 16#99#, 16#6f#, 16#b9#, 16#24#,
+      16#27#, 16#ae#, 16#41#, 16#e4#, 16#64#, 16#9b#, 16#93#, 16#4c#,
+      16#a4#, 16#95#, 16#99#, 16#1b#, 16#78#, 16#52#, 16#b8#, 16#55#);
+
+   --  HKDF-Expand-Label(Secret, Label, Context, Length) per RFC 8446 7.1.
+   function Expand_Label (Secret : SHA.Digest; Label : String;
+                          Ctx : Byte_Seq; Len : Natural) return Byte_Seq
+   is
+      FL   : constant String  := "tls13 " & Label;
+      ILn  : constant Natural := 2 + 1 + FL'Length + 1 + Ctx'Length;
+      Info : Byte_Seq (0 .. N32 (ILn) - 1);
+      OKM  : HKDF.OKM_Seq (0 .. N32 (Len) - 1);
+      R    : Byte_Seq (0 .. N32 (Len) - 1);
+      P    : N32;
+   begin
+      Info (0) := Byte (Len / 256);
+      Info (1) := Byte (Len mod 256);
+      Info (2) := Byte (FL'Length);                   --  HkdfLabel.label length
+      for I in FL'Range loop
+         Info (3 + N32 (I - FL'First)) := Byte (Character'Pos (FL (I)));
+      end loop;
+      P := 3 + N32 (FL'Length);
+      Info (P) := Byte (Ctx'Length);                  --  HkdfLabel.context length
+      for I in Ctx'Range loop
+         Info (P + 1 + (I - Ctx'First)) := Ctx (I);
+      end loop;
+      HKDF.Expand (OKM, Secret, Info);
+      for I in R'Range loop
+         R (I) := OKM (I);
+      end loop;
+      return R;
+   end Expand_Label;
+
+   --  Derive-Secret(Secret, Label, Transcript-Hash) -- a 32-byte secret.
+   function Derive_Secret (Secret : SHA.Digest; Label : String; Th : SHA.Digest)
+                           return SHA.Digest
+   is
+      B : constant Byte_Seq := Expand_Label (Secret, Label, Th, 32);
+      R : SHA.Digest;
+   begin
+      for I in 0 .. 31 loop
+         R (Index_32 (I)) := B (N32 (I));
+      end loop;
+      return R;
+   end Derive_Secret;
+
+   procedure Derive_Keys (S : in out Session) is
+      Shared : constant Bytes_32 :=
+        SPARKNaCl.Scalar.Mult (To_B32 (S.Priv), To_B32 (S.Server_Pub));
+      Z32    : constant Byte_Seq (0 .. 31) := (others => 0);
+      No_Ctx : constant Byte_Seq (1 .. 0)  := (others => 0);   --  empty
+      TH_Seq : Byte_Seq (0 .. N32 (TR_Len) - 1);
+      Early, Derived, HS_Secret, S_HS, C_HS, TH : SHA.Digest;
+   begin
+      for I in 0 .. TR_Len - 1 loop                   --  Transcript-Hash(CH||SH)
+         TH_Seq (N32 (I)) := Byte (TR (I));
+      end loop;
+      TH := SHA.Hash (TH_Seq);
+
+      HKDF.Extract (Early,     IKM => Z32,    Salt => Z32);       --  Early Secret
+      Derived := Derive_Secret (Early, "derived", SHA_Empty);
+      HKDF.Extract (HS_Secret, IKM => Shared, Salt => Derived);   --  Handshake Secret
+      S_HS := Derive_Secret (HS_Secret, "s hs traffic", TH);
+      C_HS := Derive_Secret (HS_Secret, "c hs traffic", TH);
+
+      for I in 0 .. 31 loop
+         S.S_HS_Secret (I) := U8 (S_HS (Index_32 (I)));
+         S.C_HS_Secret (I) := U8 (C_HS (Index_32 (I)));
+      end loop;
+      declare
+         K : constant Byte_Seq := Expand_Label (S_HS, "key", No_Ctx, 16);
+         V : constant Byte_Seq := Expand_Label (S_HS, "iv",  No_Ctx, 12);
+      begin
+         for I in 0 .. 15 loop S.Server_Key (I) := U8 (K (N32 (I))); end loop;
+         for I in 0 .. 11 loop S.Server_IV  (I) := U8 (V (N32 (I))); end loop;
+      end;
+      S.Have_Keys := True;
+   end Derive_Keys;
+
+   ---------------------------------------------------------------------------
    --  Drive the opening exchange.
    ---------------------------------------------------------------------------
 
@@ -284,6 +391,7 @@ package body TLS_Client is
       RK    : Boolean;
    begin
       Ok := False;
+      TR_Len := 0;
       Make_Key_Pair (S);
       Send_Client_Hello (S, Sock, Host);
 
@@ -299,13 +407,20 @@ package body TLS_Client is
             null;                                 --  middlebox-compat, ignore
          elsif CType = CT_Handshake then
             Parse_Server_Hello (S, Frag, Len, Ok);
+            if Ok then
+               Transcript (Frag (Frag'First .. Frag'First + Len - 1));  --  ServerHello
+               Derive_Keys (S);
+            end if;
             return;
          end if;
       end loop;
    end Hello;
 
    function Cipher_Suite (S : Session) return U16 is (S.Suite);
-
    function Server_Key_Share (S : Session) return Byte_Array is (S.Server_Pub);
+   function Client_Random    (S : Session) return Byte_Array is (S.Client_Random);
+   function Server_HS_Secret (S : Session) return Byte_Array is (S.S_HS_Secret);
+   function Client_HS_Secret (S : Session) return Byte_Array is (S.C_HS_Secret);
+   function Keys_Ready       (S : Session) return Boolean    is (S.Have_Keys);
 
 end TLS_Client;

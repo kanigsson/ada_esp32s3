@@ -53,6 +53,22 @@ begin
          Put_Line (" ...");
       end;
       Put_Line ("[tls] handshake opening OK");
+      if TLS_Client.Keys_Ready (S) then
+         Put ("[tls] client_random=");
+         declare
+            CR : constant TLS_Client.Byte_Array := TLS_Client.Client_Random (S);
+         begin
+            for I in CR'Range loop Put_Hex (Interfaces.Unsigned_32 (CR (I)), 2); end loop;
+         end;
+         New_Line;
+         Put ("[tls] s_hs_secret=");
+         declare
+            SS : constant TLS_Client.Byte_Array := TLS_Client.Server_HS_Secret (S);
+         begin
+            for I in SS'Range loop Put_Hex (Interfaces.Unsigned_32 (SS (I)), 2); end loop;
+         end;
+         New_Line;
+      end if;
    else
       Put_Line ("[tls] handshake opening FAILED");
    end if;
