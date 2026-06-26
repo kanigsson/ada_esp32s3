@@ -406,17 +406,22 @@ with Ada.Real_Time; use Ada.Real_Time;
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
---  Minimal bare-metal Ada application.  The runtime comes up on both cores
---  (the bare-boot prints "[C] Ada runtime up on both cores"); this environment
---  task then idles.  Start adding code:
+--  <one line: what this example demonstrates>
 --
---    * library-level tasks (Jorvik requires them at library level; pin with
---      CPU => 1 for core 0, CPU => 2 for core 1);
---    * protected interrupt handlers (Ada.Interrupts.Names + Attach_Handler);
---    * peripheral drivers.
+--  Build & run:  ./x run <name>   (or, out of tree, esp32-ada run) -- build,
+--                flash, and open the serial monitor.  Default light-tasking
+--                profile; set ESP32S3_RTS_PROFILE in build.sh if you need more.
+--  Output:       <what the console prints; what success looks like>.
+--  Hardware:     <none (self-contained), or the pins / external parts needed>.
 --
---  See examples/esp32s3_gpio0_blink (a GPIO driver) and
---  examples/esp32s3_smp_skeleton (one task per core) for worked examples.
+--  Fill the header in as you write -- see the SDK's examples/STYLE.md for the
+--  house style, and esp32s3_gpio0_blink / esp32s3_gdma_copy as worked models.
+--
+--  The runtime comes up on both cores (the bare-boot prints "[C] Ada runtime up
+--  on both cores"); this environment task then idles.  Start adding code:
+--  library-level tasks (Jorvik requires them at library level; pin with
+--  CPU => 1 for core 0, CPU => 2 for core 1), protected interrupt handlers
+--  (Ada.Interrupts.Names + Attach_Handler), peripheral drivers.
 procedure Main is
 begin
    loop

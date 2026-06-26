@@ -1,0 +1,59 @@
+# Writing an example — house style
+
+The examples are documentation as much as code: people read them to learn the
+HAL and the runtime. Write them to be understood on first read, with no need to
+open the README or the book to follow along. This note is the bar; the cleanup
+sweep brought the older examples up to it, and `./x new` / `esp32-ada init`
+scaffold a new one already in this shape.
+
+Reference examples to imitate: **`esp32s3_gdma_copy`** (a terse, clear driver
+self-test) and **`esp32s3_full_tasking`** (a fuller header where the concept
+needs it). **`esp32s3_gpio0_blink`** is the minimal end.
+
+## The rules
+
+1. **Open with a header comment** that answers, in order:
+   - **What it demonstrates** — the one feature or driver, in a sentence or two.
+   - **Build & run** — the `./x run <name>` line, and the profile if it is not
+     the default light-tasking (e.g. "needs the full profile; build.sh sets
+     `ESP32S3_RTS_PROFILE=full`").
+   - **How to read the output** — what the console prints and what PASS looks
+     like; note any line that only appears under a non-default condition.
+   - **Hardware / wiring** — pins, external parts, loopback jumpers; "none
+     (self-contained)" if there is no external hardware.
+   Keep it proportional: a blink is three lines, a TLS client is a paragraph.
+
+2. **Name every magic constant.** No bare `16#...#` / unexplained literal in the
+   logic. Give it a `constant` with a comment on what it *is*:
+   ```ada
+   --  External-RAM (PSRAM) cache window on the S3 data bus.
+   PSRAM_Window_Lo : constant Integer_Address := 16#3C00_0000#;
+   ```
+   The same goes for tuning numbers (PRNG multipliers, timeouts, register bit
+   masks): name them, and say where they came from.
+
+3. **Give known-answer / vector data a legend and a provenance.** Conventional
+   terse names (crypto `K`/`IV`/`P`/`C`/`T`) are fine, but add a one-line legend
+   mapping them, and cite where the vectors came from (a NIST file + count, or
+   the exact script), so a reader can regenerate and trust them.
+
+4. **One statement (and one declaration) per line.** No `A; B; C` packed onto a
+   line, no single-line subprogram bodies. It reads slower than it saves.
+
+5. **Descriptive names; explain a necessarily-terse one.** Loop indices and the
+   like can be short; anything carrying meaning gets a real name. If a short name
+   is unavoidable (a probe, a scratch), a trailing comment says what it is.
+
+6. **Put the "why" in the code, not only the README.** If understanding a line
+   needs a fact (why this address means PSRAM, why this delay, why this order),
+   state it inline. The example should stand alone.
+
+7. **Don't change documented output to suit the rewrite.** Console strings that
+   the example's README quotes are a contract — preserve them verbatim. Improve
+   the code around them.
+
+## Before you commit
+
+- Build it: `./x build <name>` (and on its real profile if non-default).
+- If you touched an example with a README that quotes the console output, make
+  sure the strings still match.
