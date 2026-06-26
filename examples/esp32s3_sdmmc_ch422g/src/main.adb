@@ -1,22 +1,29 @@
---  SD card on the bare-metal ESP32-S3 (no FreeRTOS, no IDF), on a board where
---  the SD card's DAT3/CD line is not wired to the SoC but to a CH422G I2C
---  expander pin.  Two reusable HAL drivers together:
+--  What it demonstrates
+--    Reading an SD card on the bare-metal ESP32-S3 on a board where the card's
+--    DAT3/CD line is wired not to the SoC but to a CH422G I2C expander pin, so
+--    two reusable HAL drivers work together:
+--      * ESP32S3.CH422G drives the card's DAT3/CD high via its IO4 pin -- needed
+--        so the card enters/stays in SD mode.  The CH422G's IO direction is
+--        GLOBAL, so making IO4 an output turns the whole bank to outputs; we load
+--        the output register (IO4 high, the rest low) BEFORE enabling outputs, so
+--        DAT3 is already high the instant the bank switches to drive (no glitch).
+--        DAT3 is set once and never toggled, so the slow I2C path is fine.
+--      * ESP32S3.SDMMC then talks to the card in 1-bit mode (DAT1/2/3 not wired).
+--    READ-ONLY: it identifies the card, decodes CID/CSD/SCR (maker, product,
+--    serial, date, capacity, spec version, capabilities), negotiates High-Speed
+--    (50 MHz), and reads block 0 (checking the 0x55AA boot signature) -- it never
+--    writes, so no card content can be lost.
 --
---    * ESP32S3.CH422G (I2C0, SDA=IO8 SCL=IO9) drives the card's DAT3/CD high via
---      its IO4 pin -- needed so the card enters/stays in SD mode and is enabled.
---      The CH422G's IO direction is GLOBAL, so to make IO4 an output the whole
---      IO bank becomes outputs; we drive IO4 high and every other IO pin low.
---      We load the output register BEFORE enabling outputs, so DAT3 is already
---      high the instant the bank switches to outputs (no glitch).  DAT3 is set
---      once and never toggled during transfers, so the slow I2C path is fine.
+--  Build & run
+--    ./x run esp32s3_sdmmc_ch422g   (embedded profile; build.sh sets it)
 --
---    * ESP32S3.SDMMC then talks to the card in 1-bit mode on CLK=IO12, CMD=IO11,
---      D0=IO13 (DAT1/2/3 not wired to the SoC).
+--  Output
+--    The expander result, the card identity/capacity/capabilities, and the
+--    block-0 boot-signature check, printed over the ROM esp_rom_printf glue.
 --
---  READ-ONLY on the card: it identifies the card, decodes its CID/CSD/SCR
---  (maker, product, serial, date, capacity, spec version, capabilities),
---  negotiates High-Speed mode (50 MHz), and reads block 0 (checking the 0x55AA
---  boot signature) -- it never writes, so no card content can be lost.
+--  Hardware
+--    An SD card in the slot.  I2C0 to the CH422G on SDA=IO8 / SCL=IO9; SDMMC
+--    1-bit bus on CLK=IO12, CMD=IO11, D0=IO13.
 with System;
 with Interfaces;   use Interfaces;
 with Interfaces.C; use Interfaces.C;
