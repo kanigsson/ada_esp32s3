@@ -14,4 +14,11 @@ package Cert_Verify is
    function RSA_PKCS1_SHA256
      (TBS, Signature, Modulus, Exponent : X509.Byte_Array) return Boolean;
 
+   --  Verify an RSASSA-PSS signature (MGF1 with SHA-256, salt length 32) over
+   --  Message under the RSA public key (Modulus, Exponent).  This is the scheme
+   --  TLS 1.3 uses for a CertificateVerify made with an RSA key (rsa_pss_rsae_*);
+   --  PKCS#1 v1.5 is not allowed there.  True iff the signature verifies.
+   function RSA_PSS_SHA256
+     (Message, Signature, Modulus, Exponent : X509.Byte_Array) return Boolean;
+
 end Cert_Verify;

@@ -3,6 +3,8 @@ with Interfaces;             use Interfaces;
 with ESP32S3.RNG;
 with ESP32S3.AES;
 with ESP32S3.AES.GCM;
+with X509;
+with Cert_Verify;
 with SPARKNaCl;               use SPARKNaCl;
 with SPARKNaCl.Scalar;
 with SPARKNaCl.Hashing.SHA256;
@@ -592,6 +594,56 @@ package body TLS_Client is
       S.Fin_OK := Match;
    end Verify_Finished;
 
+   --  Verify the server CertificateVerify (RSA-PSS): the server signs
+   --    (0x20)*64 || "TLS 1.3, server CertificateVerify" || 0x00
+   --       || Transcript-Hash(ClientHello .. Certificate)
+   --  with its certificate key.
+   procedure Verify_Cert_Verify (S : in out Session) is
+      Ctx   : constant String := "TLS 1.3, server CertificateVerify";
+      CLn   : constant Natural := S.Cert_Last - S.Cert_First + 1;
+      SLn   : constant Natural := S.CV_Sig_Last - S.CV_Sig_First + 1;
+      TLen  : constant Natural := TR_Len + S.Cert_End;     --  CH .. Certificate
+      CertBuf : X509.Byte_Array (0 .. CLn - 1);
+      Sig     : X509.Byte_Array (0 .. SLn - 1);
+      Signed  : X509.Byte_Array (0 .. 64 + Ctx'Length + 1 + 32 - 1);
+      C       : X509.Certificate;
+      M       : Byte_Seq (0 .. N32 (TLen) - 1);
+      D       : SHA.Digest;
+   begin
+      S.CV_OK := False;
+      if CLn <= 0 or else SLn <= 0 or else S.Cert_End = 0
+        or else S.CV_Alg /= 16#0804#               --  only rsa_pss_rsae_sha256 here
+      then
+         return;
+      end if;
+      for I in 0 .. CLn - 1 loop CertBuf (I) := HSB (S.Cert_First + I); end loop;
+      X509.Parse (CertBuf, C);
+      if not C.Valid then
+         return;
+      end if;
+      for I in 0 .. SLn - 1 loop Sig (I) := HSB (S.CV_Sig_First + I); end loop;
+
+      --  Transcript-Hash(ClientHello .. Certificate).
+      for I in 0 .. TR_Len - 1 loop M (N32 (I)) := Byte (TR (I)); end loop;
+      for I in 0 .. S.Cert_End - 1 loop M (N32 (TR_Len + I)) := Byte (HSB (I)); end loop;
+      D := SHA.Hash (M);
+
+      for I in 0 .. 63 loop Signed (I) := 16#20#; end loop;
+      for I in Ctx'Range loop
+         Signed (64 + (I - Ctx'First)) := U8 (Character'Pos (Ctx (I)));
+      end loop;
+      Signed (64 + Ctx'Length) := 0;
+      for I in 0 .. 31 loop
+         Signed (64 + Ctx'Length + 1 + I) := U8 (D (Index_32 (I)));
+      end loop;
+
+      S.CV_OK := Cert_Verify.RSA_PSS_SHA256
+        (Message   => Signed,
+         Signature => Sig,
+         Modulus   => CertBuf (C.RSA_Modulus.First .. C.RSA_Modulus.Last),
+         Exponent  => CertBuf (C.RSA_Exponent.First .. C.RSA_Exponent.Last));
+   end Verify_Cert_Verify;
+
    ---------------------------------------------------------------------------
    --  Drive the opening exchange.
    ---------------------------------------------------------------------------
@@ -625,6 +677,7 @@ package body TLS_Client is
                Derive_Keys (S);
                Read_Server_Flight (S, Sock, S.Flight);  --  decrypt the rest
                if S.Flight then
+                  Verify_Cert_Verify (S);
                   Verify_Finished (S);
                end if;
             end if;
@@ -644,5 +697,6 @@ package body TLS_Client is
    function Server_Cert      (S : Session) return Byte_Array is
      (HSB (S.Cert_First .. S.Cert_Last));
    function Server_Finished_OK (S : Session) return Boolean is (S.Fin_OK);
+   function Server_Cert_Verify_OK (S : Session) return Boolean is (S.CV_OK);
 
 end TLS_Client;

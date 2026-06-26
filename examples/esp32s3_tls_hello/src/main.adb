@@ -73,6 +73,8 @@ begin
 
       if TLS_Client.Flight_OK (S) then
          Put_Line ("[tls] encrypted handshake decrypted + authenticated (Finished seen)");
+         Put_Line ("[tls] server CertificateVerify (RSA-PSS): "
+                   & (if TLS_Client.Server_Cert_Verify_OK (S) then "OK" else "FAIL"));
          Put_Line ("[tls] server Finished verify: "
                    & (if TLS_Client.Server_Finished_OK (S) then "OK" else "FAIL"));
          if TLS_Client.Have_Server_Cert (S) then

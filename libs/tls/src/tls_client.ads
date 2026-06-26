@@ -48,6 +48,10 @@ package TLS_Client is
    --  matches, proving the transcript, keys and decryption are all consistent.
    function Server_Finished_OK (S : Session) return Boolean;
 
+   --  The server's CertificateVerify verified: it signed the transcript with the
+   --  certificate's private key (RSA-PSS), proving it holds that key.
+   function Server_Cert_Verify_OK (S : Session) return Boolean;
+
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
@@ -77,5 +81,6 @@ private
       Fin_Last      : Natural := 0;
       Flight        : Boolean := False;
       Fin_OK        : Boolean := False;   --  server Finished verified
+      CV_OK         : Boolean := False;   --  server CertificateVerify verified
    end record;
 end TLS_Client;
