@@ -23,4 +23,17 @@ package P256 is
                     Hash         : Bytes_32;
                     R, S         : Bytes_32) return Boolean;
 
+   --  ECDH key exchange on P-256 (for TLS ECDHE with secp256r1).  Public_Key sets
+   --  (Pub_X, Pub_Y) = Priv*G -- the uncompressed public key to put in a key_share.
+   --  ECDH sets Shared_X = the X-coordinate of Priv*Peer -- the shared secret.  Both
+   --  take/return 32-byte big-endian values and return False on invalid input (Priv
+   --  not in [1, n-1], or Peer not a valid curve point).
+   --
+   --  NOTE: the scalar multiplication here is variable-time.  TLS ECDHE uses a fresh
+   --  ephemeral scalar per handshake, which limits exposure, but a constant-time
+   --  ladder is the proper hardening and is left as a follow-up.
+   function Public_Key (Priv : Bytes_32; Pub_X, Pub_Y : out Bytes_32) return Boolean;
+   function ECDH (Priv : Bytes_32; Peer_X, Peer_Y : Bytes_32;
+                  Shared_X : out Bytes_32) return Boolean;
+
 end P256;

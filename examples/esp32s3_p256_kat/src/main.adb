@@ -4,7 +4,7 @@
 --  accepts the genuine signature and rejects a one-bit-tampered hash.
 with Interfaces; use type Interfaces.Unsigned_8;
 with ESP32S3.Log; use ESP32S3.Log;
-with P256;
+with P256; use type P256.Bytes;
 
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
@@ -40,6 +40,45 @@ procedure Main is
       16#C5#, 16#45#, 16#EC#, 16#48#, 16#5F#, 16#B5#, 16#8D#, 16#7A#,
       16#EB#, 16#B4#, 16#79#, 16#6A#, 16#3A#, 16#39#, 16#4C#, 16#4F#,
       16#86#, 16#9A#, 16#63#, 16#E5#, 16#B9#, 16#B1#, 16#47#, 16#A8#);
+   ECDH_D : constant P256.Bytes_32 :=
+     (
+      16#D8#, 16#A6#, 16#42#, 16#7E#, 16#87#, 16#E0#, 16#65#, 16#6D#,
+      16#1D#, 16#D1#, 16#9C#, 16#AC#, 16#AF#, 16#8E#, 16#D2#, 16#FE#,
+      16#50#, 16#D9#, 16#DC#, 16#F0#, 16#01#, 16#F0#, 16#28#, 16#F7#,
+      16#71#, 16#73#, 16#DD#, 16#57#, 16#0B#, 16#D1#, 16#18#, 16#18#);
+   ECDH_MyX : constant P256.Bytes_32 :=
+     (
+      16#73#, 16#50#, 16#44#, 16#E7#, 16#FF#, 16#F2#, 16#51#, 16#DA#,
+      16#70#, 16#AB#, 16#B6#, 16#A5#, 16#69#, 16#B1#, 16#47#, 16#69#,
+      16#CA#, 16#A5#, 16#F3#, 16#0B#, 16#EB#, 16#E0#, 16#D3#, 16#21#,
+      16#B2#, 16#5C#, 16#24#, 16#85#, 16#7D#, 16#A5#, 16#D3#, 16#1F#);
+   ECDH_MyY : constant P256.Bytes_32 :=
+     (
+      16#E9#, 16#C9#, 16#50#, 16#E8#, 16#80#, 16#6C#, 16#FD#, 16#93#,
+      16#87#, 16#5D#, 16#4A#, 16#3E#, 16#5C#, 16#51#, 16#E0#, 16#FA#,
+      16#7A#, 16#4C#, 16#67#, 16#CC#, 16#83#, 16#6F#, 16#D5#, 16#09#,
+      16#90#, 16#B9#, 16#B4#, 16#AF#, 16#C8#, 16#CF#, 16#79#, 16#59#);
+   ECDH_PeerX : constant P256.Bytes_32 :=
+     (
+      16#F7#, 16#25#, 16#D5#, 16#E2#, 16#17#, 16#67#, 16#40#, 16#3C#,
+      16#33#, 16#48#, 16#EF#, 16#D7#, 16#EA#, 16#5B#, 16#06#, 16#42#,
+      16#8F#, 16#12#, 16#0B#, 16#A4#, 16#C6#, 16#79#, 16#42#, 16#31#,
+      16#25#, 16#80#, 16#FD#, 16#4A#, 16#65#, 16#0B#, 16#5F#, 16#27#);
+   ECDH_PeerY : constant P256.Bytes_32 :=
+     (
+      16#59#, 16#EA#, 16#42#, 16#FE#, 16#AE#, 16#55#, 16#52#, 16#9F#,
+      16#BD#, 16#43#, 16#81#, 16#EE#, 16#72#, 16#3E#, 16#FE#, 16#BA#,
+      16#67#, 16#95#, 16#74#, 16#BE#, 16#4F#, 16#D5#, 16#D0#, 16#0B#,
+      16#D3#, 16#DF#, 16#21#, 16#C2#, 16#3A#, 16#17#, 16#E3#, 16#20#);
+   ECDH_Shared : constant P256.Bytes_32 :=
+     (
+      16#EB#, 16#23#, 16#AB#, 16#BC#, 16#E9#, 16#5D#, 16#13#, 16#0E#,
+      16#03#, 16#BA#, 16#FA#, 16#69#, 16#6F#, 16#E4#, 16#40#, 16#A0#,
+      16#4E#, 16#B4#, 16#62#, 16#A6#, 16#C4#, 16#28#, 16#92#, 16#19#,
+      16#AC#, 16#05#, 16#9D#, 16#A0#, 16#3C#, 16#67#, 16#71#, 16#4C#);
+   PkX, PkY, ShX : P256.Bytes_32;
+   Pk_OK, Sh_OK : Boolean;
+   Ecdh_Pass : Boolean := False;
    Bad_Hash : P256.Bytes_32 := KAT_Hash;
    Good, Bad : Boolean;
 begin
@@ -54,6 +93,19 @@ begin
    Put_Line ("[p256] tampered hash      -> "
              & (if Bad then "VALID (FAIL)" else "INVALID (PASS)"));
 
-   Put_Line ("[p256] result: " & (if Good and not Bad then "ALL PASS" else "FAILURE"));
+
+   --  ECDH: our public key from the private scalar, and the shared secret.
+   Pk_OK := P256.Public_Key (ECDH_D, PkX, PkY);
+   Put_Line ("[p256] ECDH public key    -> "
+             & (if Pk_OK and PkX = ECDH_MyX and PkY = ECDH_MyY
+                then "MATCH (PASS)" else "MISMATCH (FAIL)"));
+   Sh_OK := P256.ECDH (ECDH_D, ECDH_PeerX, ECDH_PeerY, ShX);
+   Put_Line ("[p256] ECDH shared secret -> "
+             & (if Sh_OK and ShX = ECDH_Shared then "MATCH (PASS)" else "MISMATCH (FAIL)"));
+   Ecdh_Pass := Pk_OK and then PkX = ECDH_MyX and then PkY = ECDH_MyY
+                and then Sh_OK and then ShX = ECDH_Shared;
+
+   Put_Line ("[p256] result: "
+             & (if Good and not Bad and Ecdh_Pass then "ALL PASS" else "FAILURE"));
    loop null; end loop;
 end Main;

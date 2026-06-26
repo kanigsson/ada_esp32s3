@@ -374,4 +374,82 @@ package body P256 is
       return Vx = Rr;
    end Verify;
 
+   ---------------------------------------------------------------------------
+   --  ECDH key exchange.
+   ---------------------------------------------------------------------------
+
+   --  Num -> 32 big-endian bytes.
+   function To_BE (A : Num) return Bytes_32 is
+      R : Bytes_32;
+   begin
+      for I in 0 .. Limbs - 1 loop
+         R (31 - 4 * I) := Byte (A (I) and 16#FF#);
+         R (30 - 4 * I) := Byte (Shift_Right (A (I),  8) and 16#FF#);
+         R (29 - 4 * I) := Byte (Shift_Right (A (I), 16) and 16#FF#);
+         R (28 - 4 * I) := Byte (Shift_Right (A (I), 24) and 16#FF#);
+      end loop;
+      return R;
+   end To_BE;
+
+   --  Jacobian (Montgomery) -> plain affine (X, Y).  Ok False at infinity.
+   procedure To_Affine (Pt : Point; AX, AY : out Num; Ok : out Boolean) is
+      Zinv, Z2inv, Z3inv : Num;
+   begin
+      AX := Zero;  AY := Zero;
+      if Is_Zero (Pt.Z) then
+         Ok := False;  return;
+      end if;
+      Zinv  := Mont_Pow (Pt.Z, Sub_Raw (P, (0 => 2, others => 0)), P, P_M0, P_One_M);
+      Z2inv := FMul (Zinv, Zinv);
+      Z3inv := FMul (Z2inv, Zinv);
+      AX := Mont_Mul (FMul (Pt.X, Z2inv), One, P, P_M0);   --  x = X*Z^-2, out of Montgomery
+      AY := Mont_Mul (FMul (Pt.Y, Z3inv), One, P, P_M0);   --  y = Y*Z^-3
+      Ok := True;
+   end To_Affine;
+
+   function Public_Key (Priv : Bytes_32; Pub_X, Pub_Y : out Bytes_32) return Boolean is
+      D      : constant Num := From_BE (Priv);
+      R      : Point;
+      AX, AY : Num;
+      Ok     : Boolean;
+   begin
+      Pub_X := (others => 0);  Pub_Y := (others => 0);
+      if Is_Zero (D) or else Geq (D, NN) then
+         return False;
+      end if;
+      R := Scalar_Mul (D, To_Jacobian (GX, GY));
+      To_Affine (R, AX, AY, Ok);
+      if not Ok then
+         return False;
+      end if;
+      Pub_X := To_BE (AX);  Pub_Y := To_BE (AY);
+      return True;
+   end Public_Key;
+
+   function ECDH (Priv : Bytes_32; Peer_X, Peer_Y : Bytes_32;
+                  Shared_X : out Bytes_32) return Boolean
+   is
+      D      : constant Num := From_BE (Priv);
+      QX     : constant Num := From_BE (Peer_X);
+      QY     : constant Num := From_BE (Peer_Y);
+      R      : Point;
+      AX, AY : Num;
+      Ok     : Boolean;
+   begin
+      Shared_X := (others => 0);
+      if Is_Zero (D) or else Geq (D, NN) then
+         return False;
+      end if;
+      if Geq (QX, P) or else Geq (QY, P) or else not On_Curve (QX, QY) then
+         return False;
+      end if;
+      R := Scalar_Mul (D, To_Jacobian (QX, QY));
+      To_Affine (R, AX, AY, Ok);
+      if not Ok then
+         return False;
+      end if;
+      Shared_X := To_BE (AX);
+      return True;
+   end ECDH;
+
 end P256;
