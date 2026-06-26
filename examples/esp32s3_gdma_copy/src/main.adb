@@ -10,6 +10,13 @@
 --  tasks can't alias one) and auto-releases on scope exit, so channels can't
 --  leak or be reused through a stale copy.  Report goes through the ROM printf
 --  glue (the reliable console path here).
+--
+--  Build & run:  ./x run esp32s3_gdma_copy
+--    Drivers need finalization, so this runs on the embedded profile
+--    (build.sh sets ESP32S3_RTS_PROFILE=embedded), not the default light-tasking.
+--  Output:  a banner, one line per test, then "[gdma] done.".  PASS on both the
+--    "mem2mem copy (64 B)" and the "raii:" lines means the run succeeded.
+--  Hardware:  none (self-contained; mem-to-mem DMA, no external wiring).
 with Interfaces;   use Interfaces;
 with Ada.Real_Time; use Ada.Real_Time;
 

@@ -25,7 +25,18 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 --
 --  build.sh selects the embedded profile; the light-tasking profile
 --  omits these for code size (a raised exception would reset the board, and
---  finalization is restricted away).  Expected console transcript:
+--  finalization is restricted away).
+--
+--  Build & run:
+--
+--    ./x run embedded        --  build + flash + monitor
+--
+--  Needs the embedded profile; build.sh sets ESP32S3_RTS_PROFILE=embedded
+--  (plus a larger HEAP_SIZE/ENV_STACK_SIZE for the unwinder and finalizers).
+--
+--  Hardware: none (self-contained); console over the USB-serial-JTAG port.
+--
+--  Output -- expected console transcript:
 --
 --    === ESP32-S3 embedded profile demo ===
 --    [1] tagged dispatching:
