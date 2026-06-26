@@ -44,6 +44,10 @@ package TLS_Client is
    function Have_Server_Cert   (S : Session) return Boolean;
    function Server_Cert        (S : Session) return Byte_Array; --  leaf cert DER
 
+   --  The server's Finished verified: its HMAC over the handshake transcript
+   --  matches, proving the transcript, keys and decryption are all consistent.
+   function Server_Finished_OK (S : Session) return Boolean;
+
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
@@ -59,10 +63,19 @@ private
       Server_Key    : Byte_Array (0 .. 15) := (others => 0);  --  AES-128 key
       Server_IV     : Byte_Array (0 .. 11) := (others => 0);
       Have_Keys     : Boolean := False;
-      --  Decrypted server flight.
+      --  Decrypted server flight + the message boundaries we need for the
+      --  transcript hashes (offsets into the reassembled handshake buffer).
       Cert_First    : Natural := 1;
       Cert_Last     : Natural := 0;
       Have_Cert     : Boolean := False;
+      Cert_End      : Natural := 0;       --  end of Certificate message
+      CV_End        : Natural := 0;       --  end of CertificateVerify message
+      CV_Alg        : U16     := 0;       --  CertificateVerify signature scheme
+      CV_Sig_First  : Natural := 1;       --  CertificateVerify signature bytes
+      CV_Sig_Last   : Natural := 0;
+      Fin_First     : Natural := 1;       --  server Finished verify_data
+      Fin_Last      : Natural := 0;
       Flight        : Boolean := False;
+      Fin_OK        : Boolean := False;   --  server Finished verified
    end record;
 end TLS_Client;

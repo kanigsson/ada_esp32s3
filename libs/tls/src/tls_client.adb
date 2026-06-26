@@ -383,6 +383,32 @@ package body TLS_Client is
       S.Have_Keys := True;
    end Derive_Keys;
 
+   --  HMAC-SHA-256 over SPARKNaCl's SHA-256 (the key is <= 64 bytes here).
+   function HMAC (Key, Msg : Byte_Array) return SHA.Digest is
+      Blk      : constant := 64;
+      K0       : array (0 .. Blk - 1) of U8 := (others => 0);
+      Inner_In : Byte_Seq (0 .. N32 (Blk + Msg'Length) - 1);
+      Outer_In : Byte_Seq (0 .. N32 (Blk + 32) - 1);
+      Inner    : SHA.Digest;
+   begin
+      for I in Key'Range loop K0 (I - Key'First) := Key (I); end loop;
+      for I in 0 .. Blk - 1 loop Inner_In (N32 (I)) := Byte (K0 (I) xor 16#36#); end loop;
+      for I in 0 .. Msg'Length - 1 loop
+         Inner_In (N32 (Blk + I)) := Byte (Msg (Msg'First + I));
+      end loop;
+      Inner := SHA.Hash (Inner_In);
+      for I in 0 .. Blk - 1 loop Outer_In (N32 (I)) := Byte (K0 (I) xor 16#5C#); end loop;
+      for I in 0 .. 31 loop Outer_In (N32 (Blk + I)) := Inner (Index_32 (I)); end loop;
+      return SHA.Hash (Outer_In);
+   end HMAC;
+
+   function To_Digest (B : Key32) return SHA.Digest is
+      R : SHA.Digest;
+   begin
+      for I in 0 .. 31 loop R (Index_32 (I)) := Byte (B (I)); end loop;
+      return R;
+   end To_Digest;
+
    ---------------------------------------------------------------------------
    --  Decrypt the server's encrypted handshake flight (AES-128-GCM).
    ---------------------------------------------------------------------------
@@ -468,8 +494,21 @@ package body TLS_Client is
                         S.Have_Cert  := True;
                      end if;
                   end;
+                  S.Cert_End := P + 4 + MLen;         --  transcript point for CertVerify
                end;
+            elsif MType = 15 then                     --  CertificateVerify
+               S.CV_Alg := U16 (HSB (P + 4)) * 256 + U16 (HSB (P + 5));
+               declare
+                  SLn : constant Natural :=
+                    Natural (HSB (P + 6)) * 256 + Natural (HSB (P + 7));
+               begin
+                  S.CV_Sig_First := P + 8;
+                  S.CV_Sig_Last  := P + 8 + SLn - 1;
+               end;
+               S.CV_End := P + 4 + MLen;              --  transcript point for Finished
             elsif MType = 20 then                     --  Finished
+               S.Fin_First := P + 4;
+               S.Fin_Last  := P + 4 + MLen - 1;
                Saw_Finished := True;
             end if;
             P := P + 4 + MLen;
@@ -520,6 +559,39 @@ package body TLS_Client is
       Ok := Fin and then Records > 0;
    end Read_Server_Flight;
 
+   --  Verify the server Finished: verify_data = HMAC(finished_key,
+   --  Transcript-Hash(ClientHello .. CertificateVerify)), with finished_key =
+   --  Expand-Label(server_hs_traffic_secret, "finished", "", 32).
+   procedure Verify_Finished (S : in out Session) is
+      No_Ctx : constant Byte_Seq (1 .. 0) := (others => 0);
+      FK     : constant Byte_Seq :=
+        Expand_Label (To_Digest (S.S_HS_Secret), "finished", No_Ctx, 32);
+      FK_BA  : Byte_Array (0 .. 31);
+      TLen   : constant Natural := TR_Len + S.CV_End;     --  CH..CertificateVerify
+      M      : Byte_Seq (0 .. N32 (TLen) - 1);
+      TH     : SHA.Digest;
+      TH_BA  : Byte_Array (0 .. 31);
+      Exp    : SHA.Digest;
+      Match  : Boolean := True;
+   begin
+      S.Fin_OK := False;
+      if S.CV_End = 0 or else S.Fin_Last - S.Fin_First /= 31 then
+         return;
+      end if;
+      for I in 0 .. 31 loop FK_BA (I) := U8 (FK (N32 (I))); end loop;
+      for I in 0 .. TR_Len - 1 loop M (N32 (I)) := Byte (TR (I)); end loop;
+      for I in 0 .. S.CV_End - 1 loop M (N32 (TR_Len + I)) := Byte (HSB (I)); end loop;
+      TH := SHA.Hash (M);
+      for I in 0 .. 31 loop TH_BA (I) := U8 (TH (Index_32 (I))); end loop;
+      Exp := HMAC (FK_BA, TH_BA);
+      for I in 0 .. 31 loop
+         if U8 (Exp (Index_32 (I))) /= HSB (S.Fin_First + I) then
+            Match := False;
+         end if;
+      end loop;
+      S.Fin_OK := Match;
+   end Verify_Finished;
+
    ---------------------------------------------------------------------------
    --  Drive the opening exchange.
    ---------------------------------------------------------------------------
@@ -552,6 +624,9 @@ package body TLS_Client is
                Transcript (Frag (Frag'First .. Frag'First + Len - 1));  --  ServerHello
                Derive_Keys (S);
                Read_Server_Flight (S, Sock, S.Flight);  --  decrypt the rest
+               if S.Flight then
+                  Verify_Finished (S);
+               end if;
             end if;
             return;
          end if;
@@ -568,5 +643,6 @@ package body TLS_Client is
    function Have_Server_Cert (S : Session) return Boolean    is (S.Have_Cert);
    function Server_Cert      (S : Session) return Byte_Array is
      (HSB (S.Cert_First .. S.Cert_Last));
+   function Server_Finished_OK (S : Session) return Boolean is (S.Fin_OK);
 
 end TLS_Client;
