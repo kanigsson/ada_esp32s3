@@ -40,9 +40,15 @@ needs it). **`esp32s3_gpio0_blink`** is the minimal end.
 4. **One statement (and one declaration) per line.** No `A; B; C` packed onto a
    line, no single-line subprogram bodies. It reads slower than it saves.
 
-5. **Descriptive names; explain a necessarily-terse one.** Loop indices and the
-   like can be short; anything carrying meaning gets a real name. If a short name
-   is unavoidable (a probe, a scratch), a trailing comment says what it is.
+5. **Spell names out — an abbreviation is not a name.** Anything carrying
+   meaning gets a full, readable identifier: `Expander_Status`, not `ESt`;
+   `Block_Device`, not `BD`; `Signed`, not `Sgn`; `Card_Status`, not `St`. Do
+   **not** keep a cryptic short name and paper over it with a trailing comment —
+   rename it. The only short names allowed are loop indices (`I`, `J`, `K`) and
+   widely-recognised domain tokens that read *better* short than long: `Ok`,
+   `Buf`, `MAC`, `DER`, `CRLF`, an I2C `SDA`/`SCL`, a protocol's own identifier
+   (NMEA `GGA`/`RMC`). When in doubt, write it out. The same goes for a package
+   rename: `package Expander renames ESP32S3.CH422G;` beats `package CH ...`.
 
 6. **Put the "why" in the code, not only the README.** If understanding a line
    needs a fact (why this address means PSRAM, why this delay, why this order),
