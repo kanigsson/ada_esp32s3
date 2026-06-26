@@ -257,7 +257,8 @@ package body TLS_Client is
       P16 (B, 45);  P16 (B, 2);  P8 (B, 1);  P8 (B, 1);
 
       --  key_share: an x25519 entry (36) and a secp256r1 entry (69) -- offer both so
-      --  the server can choose either without a HelloRetryRequest.
+      --  the server can choose either without a HelloRetryRequest.  Both paths are
+      --  HW-verified (x25519 and a P-256-only ClientHello each complete a handshake).
       P16 (B, 51);  P16 (B, 107);  P16 (B, 105);           --  ext, ext len, list len
       P16 (B, 16#001D#);  P16 (B, 32);                     --  x25519 group + key length
       PBytes (B, S.Pub);
