@@ -78,10 +78,10 @@ procedure Main is
    --  8192.  Well past sector 0 (the partition table / boot sector).
    Test_LBA : constant ESP32S3.SDMMC.Block_Address := 16#2000#;
 
-   C    : ESP32S3.SDMMC.Card;
-   St   : ESP32S3.SDMMC.Status;
-   Orig : ESP32S3.SDMMC.Block;   --  bytes read first, then written back
-   Back : ESP32S3.SDMMC.Block;   --  the re-read, compared against Orig
+   C           : ESP32S3.SDMMC.Card;
+   Card_Status : ESP32S3.SDMMC.Status;
+   Orig        : ESP32S3.SDMMC.Block;   --  bytes read first, then written back
+   Back        : ESP32S3.SDMMC.Block;   --  the re-read, compared against Orig
 
    procedure Report_Read (Which : int; S : ESP32S3.SDMMC.Status;
                           B : ESP32S3.SDMMC.Block) is
@@ -100,23 +100,24 @@ begin
       Width => ESP32S3.SDMMC.Width_4,
       Init_Clock_Hz => Init_Clock_Hz, Data_Clock_Hz => Data_Clock_Hz);
 
-   ESP32S3.SDMMC.Initialize (C, St);
-   Init_R (int (ESP32S3.SDMMC.Status'Pos (St)),
+   ESP32S3.SDMMC.Initialize (C, Card_Status);
+   Init_R (int (ESP32S3.SDMMC.Status'Pos (Card_Status)),
            int (ESP32S3.SDMMC.Card_Kind'Pos (ESP32S3.SDMMC.Kind (C))),
            Bus_Width_Bits);
 
-   if St = ESP32S3.SDMMC.OK then
-      ESP32S3.SDMMC.Read_Block (C, Test_LBA, Orig, St);
-      Report_Read (1, St, Orig);
+   if Card_Status = ESP32S3.SDMMC.OK then
+      ESP32S3.SDMMC.Read_Block (C, Test_LBA, Orig, Card_Status);
+      Report_Read (1, Card_Status, Orig);
 
-      if St = ESP32S3.SDMMC.OK then
-         ESP32S3.SDMMC.Write_Block (C, Test_LBA, Orig, St);
-         Write_R (int (ESP32S3.SDMMC.Status'Pos (St)));
+      if Card_Status = ESP32S3.SDMMC.OK then
+         ESP32S3.SDMMC.Write_Block (C, Test_LBA, Orig, Card_Status);
+         Write_R (int (ESP32S3.SDMMC.Status'Pos (Card_Status)));
 
-         if St = ESP32S3.SDMMC.OK then
-            ESP32S3.SDMMC.Read_Block (C, Test_LBA, Back, St);
-            Report_Read (2, St, Back);
-            Verify_R (Boolean'Pos (St = ESP32S3.SDMMC.OK and then Orig = Back));
+         if Card_Status = ESP32S3.SDMMC.OK then
+            ESP32S3.SDMMC.Read_Block (C, Test_LBA, Back, Card_Status);
+            Report_Read (2, Card_Status, Back);
+            Verify_R (Boolean'Pos
+              (Card_Status = ESP32S3.SDMMC.OK and then Orig = Back));
          end if;
       end if;
    end if;

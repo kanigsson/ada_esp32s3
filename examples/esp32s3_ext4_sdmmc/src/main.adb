@@ -40,10 +40,10 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   package CH renames ESP32S3.CH422G;
-   package SD renames ESP32S3.SDMMC;
-   use type CH.Status;
-   use type SD.Status;
+   package CH422G renames ESP32S3.CH422G;
+   package SDMMC  renames ESP32S3.SDMMC;
+   use type CH422G.Status;
+   use type SDMMC.Status;
 
    --  Console glue (Banner/Card_R/Mount_R/Entry_R/File_R/Err_R/Done) and Cstr
    --  live in the library-level package FS_Glue so the Iterate callback below
@@ -66,11 +66,11 @@ procedure Main is
    --  ext4 block cache: 16 blocks (16 x 4 KB) on the heap build.sh sized.
    FS_Cache_Blocks : constant := 16;
 
-   Dev_CH : CH.Device;
-   ExS    : CH.Session;
-   ESt    : CH.Status;
-   SDC    : aliased SD.Card;
-   St     : SD.Status;
+   Expander         : CH422G.Device;
+   Expander_Session : CH422G.Session;
+   Expander_Status  : CH422G.Status;
+   Card             : aliased SDMMC.Card;
+   Card_Status      : SDMMC.Status;
 
    Empty : aliased constant String := (1 => Character'Val (0));
 
@@ -78,9 +78,9 @@ procedure Main is
    Startup_Delay : constant Time_Span := Milliseconds (200);
 
    procedure Stage (Name : String) is
-      N : aliased constant String := Cstr (Name);
+      C_Name : aliased constant String := Cstr (Name);
    begin
-      Err_R (N'Address);
+      Err_R (C_Name'Address);
    end Stage;
 begin
    delay until Clock + Startup_Delay;
@@ -89,37 +89,39 @@ begin
    --  CH422G: drive DAT3/CD (IO4) high -- load the output register, then enable
    --  the pins as push-pull outputs.  Order matters: set the value first so the
    --  line is already high the instant the pins switch to drive.
-   CH.Setup (Dev_CH, Sda => CH422G_Sda_Pin, Scl => CH422G_Scl_Pin);
-   CH.Acquire (ExS, Dev_CH);
-   CH.Write_IO (ExS, CH422G_IO4_High, ESt);
-   if ESt = CH.OK then
-      CH.Configure (ExS, IO_Dir => CH.Outputs, OC_Mode => CH.Push_Pull,
-                    Result => ESt);
+   CH422G.Setup (Expander, Sda => CH422G_Sda_Pin, Scl => CH422G_Scl_Pin);
+   CH422G.Acquire (Expander_Session, Expander);
+   CH422G.Write_IO (Expander_Session, CH422G_IO4_High, Expander_Status);
+   if Expander_Status = CH422G.OK then
+      CH422G.Configure (Expander_Session,
+                        IO_Dir => CH422G.Outputs, OC_Mode => CH422G.Push_Pull,
+                        Result => Expander_Status);
    end if;
 
    --  SDMMC: 1-bit, High Speed (50 MHz) if the card supports it.
-   SD.Setup (SDC, On => SD.Slot1,
-             Clk => SDMMC_Clk_Pin, Cmd => SDMMC_Cmd_Pin, D0 => SDMMC_D0_Pin,
-             Width => SD.Width_1, Data_Clock_Hz => SDMMC_Clock_Hz,
-             High_Speed => True);
-   SD.Initialize (SDC, St);
-   Card_R (Boolean'Pos (St = SD.OK));
+   SDMMC.Setup (Card, On => SDMMC.Slot1,
+                Clk => SDMMC_Clk_Pin, Cmd => SDMMC_Cmd_Pin, D0 => SDMMC_D0_Pin,
+                Width => SDMMC.Width_1, Data_Clock_Hz => SDMMC_Clock_Hz,
+                High_Speed => True);
+   SDMMC.Initialize (Card, Card_Status);
+   Card_R (Boolean'Pos (Card_Status = SDMMC.OK));
 
-   if St = SD.OK then
+   if Card_Status = SDMMC.OK then
       declare
-         BD : constant ESP32S3.Block_Dev.Device :=
-                ESP32S3.Block_Dev.SDMMC_Source.Make (SDC'Access);
-         M  : ESP32S3.Ext4.FS.Mount;
+         Block_Device : constant ESP32S3.Block_Dev.Device :=
+                ESP32S3.Block_Dev.SDMMC_Source.Make (Card'Access);
+         Mount        : ESP32S3.Ext4.FS.Mount;
       begin
-         M.Open (BD, Read_Only => True, Cache_Blocks => FS_Cache_Blocks);
-         Mount_R (1, int (M.Block_Size));
+         Mount.Open (Block_Device, Read_Only => True,
+                     Cache_Blocks => FS_Cache_Blocks);
+         Mount_R (1, int (Mount.Block_Size));
 
          --  List the root directory.
          declare
-            RI : ESP32S3.Ext4.Inode.Info;
+            Root_Info : ESP32S3.Ext4.Inode.Info;
          begin
-            M.Stat (M.Lookup ("/"), RI);
-            M.Iterate (RI, Visit'Access);
+            Mount.Stat (Mount.Lookup ("/"), Root_Info);
+            Mount.Iterate (Root_Info, Visit'Access);
          end;
 
          --  Read the start of /hello.txt (if present) for the console preview.
@@ -127,12 +129,12 @@ begin
             --  Read at most this many bytes -- enough to preview the file.
             Preview_Bytes : constant := 96;
 
-            I    : ESP32S3.Ext4.Inode.Info;
-            Buf  : Byte_Array (0 .. Preview_Bytes - 1);
-            Last : Natural;
+            File_Info : ESP32S3.Ext4.Inode.Info;
+            Buf       : Byte_Array (0 .. Preview_Bytes - 1);
+            Last      : Natural;
          begin
-            M.Stat (M.Lookup ("/hello.txt"), I);
-            M.Read_File (I, 0, Buf, Last);
+            Mount.Stat (Mount.Lookup ("/hello.txt"), File_Info);
+            Mount.Read_File (File_Info, 0, Buf, Last);
             declare
                Text : String (1 .. Last);
             begin

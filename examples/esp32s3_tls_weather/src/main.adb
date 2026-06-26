@@ -82,7 +82,7 @@ procedure Main is
 
    Server_IP : Inet_Addr_Type;
    Sock      : Socket_Type;
-   S         : TLS_Client.Session;
+   Session   : TLS_Client.Session;
    Ok        : Boolean := False;
 
    --  Minimal JSON scrape (no parser): return the NUMERIC value following the
@@ -155,16 +155,16 @@ begin
    --  Current UTC time from NTP -- the board has no RTC, and certificate validity
    --  cannot be checked without trusted time, so abort if NTP does not answer.
    declare
-      Unix                   : Interfaces.Integer_64;
-      Y, Mo, D, H, Mi, Se    : Integer;
+      Unix                                          : Interfaces.Integer_64;
+      Year, Month, Day, Hour, Minute, Second        : Integer;
       --  Print a date/time field zero-padded to two digits (e.g. 7 -> "07").
-      procedure Put2 (N : Integer) is
+      procedure Put_Padded (N : Integer) is
       begin
          if N < 10 then
             Put ("0");
          end if;
          Put (N);
-      end Put2;
+      end Put_Padded;
    begin
       Put_Line ("[wx] getting time from NTP ...");
       if not NTP_Client.Query (NTP_Server, Unix, Timeout => Lookup_Timeout) then
@@ -173,21 +173,21 @@ begin
             delay until Clock + Park_Forever;
          end loop;
       end if;
-      NTP_Client.To_UTC (Unix, Y, Mo, D, H, Mi, Se);
-      Now := X509.Pack_Time (Y, Mo, D, H, Mi, Se);
+      NTP_Client.To_UTC (Unix, Year, Month, Day, Hour, Minute, Second);
+      Now := X509.Pack_Time (Year, Month, Day, Hour, Minute, Second);
       --  Print "[wx] NTP UTC = YYYY-MM-DD HH:MM:SS".
       Put ("[wx] NTP UTC = ");
-      Put (Y);
+      Put (Year);
       Put ("-");
-      Put2 (Mo);
+      Put_Padded (Month);
       Put ("-");
-      Put2 (D);
+      Put_Padded (Day);
       Put (" ");
-      Put2 (H);
+      Put_Padded (Hour);
       Put (":");
-      Put2 (Mi);
+      Put_Padded (Minute);
       Put (":");
-      Put2 (Se);
+      Put_Padded (Second);
       New_Line;
    end;
 
@@ -196,7 +196,7 @@ begin
       begin
          Create_Socket  (Sock, Family_Inet, Socket_Stream);
          Connect_Socket (Sock, (Family_Inet, Server_IP, Server_Port));
-         TLS_Client.Hello (S, Sock, Host, Ok);
+         TLS_Client.Hello (Session, Sock, Host, Ok);
       exception
          when others => Ok := False;
       end;
@@ -219,12 +219,12 @@ begin
    end if;
 
    Put ("[wx] TLS 1.3 up: cipher 0x");
-   Put_Hex (Interfaces.Unsigned_32 (TLS_Client.Cipher_Suite (S)), 4);
+   Put_Hex (Interfaces.Unsigned_32 (TLS_Client.Cipher_Suite (Session)), 4);
    New_Line;
    Put_Line ("[wx] CertificateVerify (RSA-PSS): "
-             & (if TLS_Client.Server_Cert_Verify_OK (S) then "OK" else "FAIL"));
+             & (if TLS_Client.Server_Cert_Verify_OK (Session) then "OK" else "FAIL"));
    Put_Line ("[wx] server Finished: "
-             & (if TLS_Client.Server_Finished_OK (S) then "OK" else "FAIL"));
+             & (if TLS_Client.Server_Finished_OK (Session) then "OK" else "FAIL"));
 
    --  Authenticate the chain: validate the server's leaf+intermediate up to the
    --  pinned ISRG Root X1, checking each link's signature and the leaf hostname.
@@ -232,16 +232,16 @@ begin
       use Chain_Verify;
       Anchors : constant Cert_List :=
         (1 => (Data => Trust_Anchors.Root_DER'Access));
-      R       : Result;
+      Verdict : Result;
    begin
       Chain_Buffers.Reset;
-      for I in 1 .. TLS_Client.Server_Cert_Count (S) loop
-         Chain_Buffers.Add (TLS_Client.Server_Chain_Cert (S, I));
+      for I in 1 .. TLS_Client.Server_Cert_Count (Session) loop
+         Chain_Buffers.Add (TLS_Client.Server_Chain_Cert (Session, I));
       end loop;
-      R := Validate (Chain_Buffers.Chain, Anchors, Host, Now);
+      Verdict := Validate (Chain_Buffers.Chain, Anchors, Host, Now);
       Put_Line ("[wx] chain validation to ISRG Root X1:" & Natural'Image
-                (TLS_Client.Server_Cert_Count (S)) & " certs -> " & Result'Image (R));
-      if R /= Valid then
+                (TLS_Client.Server_Cert_Count (Session)) & " certs -> " & Result'Image (Verdict));
+      if Verdict /= Valid then
          Put_Line ("[wx] WARNING: chain not trusted -- aborting before sending data");
          Close_Socket (Sock);
          loop
@@ -263,18 +263,18 @@ begin
       Req_Bytes : TLS_Client.Byte_Array (0 .. Req'Length - 1);
       Buf       : TLS_Client.Byte_Array (0 .. Recv_Chunk - 1);
       Last      : Natural;
-      R_Ok      : Boolean;
+      Recv_Ok   : Boolean;
       Resp      : String (1 .. Resp_Cap);
       Resp_Len  : Natural := 0;
    begin
       for I in 0 .. Req'Length - 1 loop
          Req_Bytes (I) := Interfaces.Unsigned_8 (Character'Pos (Req (Req'First + I)));
       end loop;
-      TLS_Client.Send (S, Sock, Req_Bytes);
+      TLS_Client.Send (Session, Sock, Req_Bytes);
 
       loop
-         TLS_Client.Recv (S, Sock, Buf, Last, R_Ok);
-         exit when not R_Ok;
+         TLS_Client.Recv (Session, Sock, Buf, Last, Recv_Ok);
+         exit when not Recv_Ok;
          for I in Buf'First .. Last loop
             if Resp_Len < Resp'Last then
                Resp_Len := Resp_Len + 1;

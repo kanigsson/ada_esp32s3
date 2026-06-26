@@ -63,10 +63,10 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   package CH renames ESP32S3.CH422G;
-   package SD renames ESP32S3.SDMMC;
-   use type CH.Status;
-   use type SD.Status;
+   package CH422G renames ESP32S3.CH422G;
+   package SDMMC  renames ESP32S3.SDMMC;
+   use type CH422G.Status;
+   use type SDMMC.Status;
 
    procedure Banner;  pragma Import (C, Banner, "native_w_banner");
    procedure Card_R (Ok : int);   pragma Import (C, Card_R, "native_w_card");
@@ -78,14 +78,14 @@ procedure Main is
                       pragma Import (C, Check_C, "native_w_check");
    procedure Done;  pragma Import (C, Done, "native_w_done");
 
-   Expander     : CH.Device;    --  CH422G that drives the card's DAT3/CD
-   Expander_Bus : CH.Session;
-   Expander_St  : CH.Status;
-   SD_Card      : aliased SD.Card;
-   SD_St        : SD.Status;
+   Expander         : CH422G.Device;    --  CH422G that drives the card's DAT3/CD
+   Expander_Session : CH422G.Session;
+   Expander_Status  : CH422G.Status;
+   Card             : aliased SDMMC.Card;
+   Card_Status      : SDMMC.Status;
 
    --  CH422G output byte with bit 4 set: drive its IO4 (the card DAT3/CD) high.
-   CH_IO4_High : constant := 2#0001_0000#;
+   CH422G_IO4_High : constant := 2#0001_0000#;
 
    --  SD High-Speed mode clock ceiling, and the fastest the 1-bit wiring runs
    --  reliably here.
@@ -118,11 +118,11 @@ procedure Main is
    begin
       for I in 1 .. Str'Length loop
          declare
-            Ch : constant Character := Str (Str'First + I - 1);
+            Source_Char : constant Character := Str (Str'First + I - 1);
          begin
             Result (I) :=
-              (if Character'Pos (Ch) in First_Printable .. Last_Printable
-               then Ch else '.');
+              (if Character'Pos (Source_Char) in First_Printable .. Last_Printable
+               then Source_Char else '.');
          end;
       end loop;
       Result (Result'Last) := Character'Val (0);
@@ -162,21 +162,21 @@ begin
 
    --  CH422G expander on I2C0 (SDA=IO8 SCL=IO9): drive its IO4 high so the
    --  card's DAT3/CD line is held high.
-   CH.Setup (Expander, Sda => 8, Scl => 9);
-   CH.Acquire (Expander_Bus, Expander);
-   CH.Write_IO (Expander_Bus, CH_IO4_High, Expander_St);
-   if Expander_St = CH.OK then
-      CH.Configure (Expander_Bus, IO_Dir => CH.Outputs,
-                    OC_Mode => CH.Push_Pull, Result => Expander_St);
+   CH422G.Setup (Expander, Sda => 8, Scl => 9);
+   CH422G.Acquire (Expander_Session, Expander);
+   CH422G.Write_IO (Expander_Session, CH422G_IO4_High, Expander_Status);
+   if Expander_Status = CH422G.OK then
+      CH422G.Configure (Expander_Session, IO_Dir => CH422G.Outputs,
+                        OC_Mode => CH422G.Push_Pull, Result => Expander_Status);
    end if;
 
    --  SDMMC slot 1, 1-bit bus, High Speed.
-   SD.Setup (SD_Card, On => SD.Slot1, Clk => 12, Cmd => 11, D0 => 13,
-             Width => SD.Width_1, Data_Clock_Hz => SD_High_Speed_Clock_Hz,
-             High_Speed => True);
-   SD.Initialize (SD_Card, SD_St);
-   Card_R (Boolean'Pos (SD_St = SD.OK));
-   if SD_St /= SD.OK then
+   SDMMC.Setup (Card, On => SDMMC.Slot1, Clk => 12, Cmd => 11, D0 => 13,
+                Width => SDMMC.Width_1, Data_Clock_Hz => SD_High_Speed_Clock_Hz,
+                High_Speed => True);
+   SDMMC.Initialize (Card, Card_Status);
+   Card_R (Boolean'Pos (Card_Status = SDMMC.OK));
+   if Card_Status /= SDMMC.OK then
       Done;
       --  No card / init failed: nothing more to do -- park forever.
       loop
@@ -192,27 +192,27 @@ begin
       Cache_Depth_Blocks : constant := 16;
 
       Block_Device : constant ESP32S3.Block_Dev.Device :=
-             ESP32S3.Block_Dev.SDMMC_Source.Make (SD_Card'Access);
+             ESP32S3.Block_Dev.SDMMC_Source.Make (Card'Access);
       M  : ESP32S3.Ext4.FS.Mount;   --  the mounted volume
 
       --  True if Path resolves.  These helpers reference M but are only ever
       --  CALLED directly (never 'Access'd), so no nested-subprogram trampoline.
       function Exists (Path : String) return Boolean is
-         Ino : ESP32S3.Ext4.Inode_Number;
-         pragma Unreferenced (Ino);
+         Inode_Of_Path : ESP32S3.Ext4.Inode_Number;
+         pragma Unreferenced (Inode_Of_Path);
       begin
-         Ino := M.Lookup (Path);
+         Inode_Of_Path := M.Lookup (Path);
          return True;
       exception
          when Name_Error => return False;
       end Exists;
 
-      function Ino_Of (Path : String) return ESP32S3.Ext4.Inode_Number is
+      function Inode_Of (Path : String) return ESP32S3.Ext4.Inode_Number is
       begin
          return M.Lookup (Path);
       exception
          when Name_Error => return 0;
-      end Ino_Of;
+      end Inode_Of;
 
       --  Best-effort removal so the battery is re-runnable without reformat.
       procedure Try_Unlink (Dir, Name : String) is
@@ -324,14 +324,14 @@ begin
          --  A hard link is a second directory entry for the SAME inode, so both
          --  names must resolve to one non-zero inode whose link count is now 2.
          Expected_Link_Count : constant := 2;
-         Original_Ino : constant Inode_Number := Ino_Of ("/ada_write.txt");
-         Linked_Ino   : constant Inode_Number := Ino_Of ("/ada_hard.txt");
-         Link_Info    : Inode.Info;
+         Original_Inode : constant Inode_Number := Inode_Of ("/ada_write.txt");
+         Linked_Inode   : constant Inode_Number := Inode_Of ("/ada_hard.txt");
+         Link_Info      : Inode.Info;
       begin
-         M.Stat (Original_Ino, Link_Info);
+         M.Stat (Original_Inode, Link_Info);
          Check ("hard link (same inode, nlink=2)",
-                Original_Ino /= 0
-                and then Original_Ino = Linked_Ino
+                Original_Inode /= 0
+                and then Original_Inode = Linked_Inode
                 and then Link_Info.Links = Expected_Link_Count);
       end;
 

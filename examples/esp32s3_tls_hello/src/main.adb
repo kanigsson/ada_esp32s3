@@ -50,9 +50,9 @@ procedure Main is
    Max_Connect_Tries : constant := 20;
    Connect_Retry     : constant Time_Span := Milliseconds (700);
 
-   Sock : Socket_Type;        --  the TCP socket carrying the encrypted records
-   S    : TLS_Client.Session; --  TLS state (keys, transcript, peer cert chain)
-   Ok   : Boolean;            --  did the handshake open successfully?
+   Sock    : Socket_Type;        --  the TCP socket carrying the encrypted records
+   Session : TLS_Client.Session; --  TLS state (keys, transcript, peer cert chain)
+   Ok      : Boolean;            --  did the handshake open successfully?
 begin
    delay until Clock + Milliseconds (200);
    --  TLS key generation needs real randomness; turn on the hardware CSPRNG
@@ -90,7 +90,7 @@ begin
          end;
       end loop;
       if Connected then
-         TLS_Client.Hello (S, Sock, Host, Ok);
+         TLS_Client.Hello (Session, Sock, Host, Ok);
       else
          Put_Line ("[tls] could not connect");
       end if;
@@ -101,73 +101,78 @@ begin
 
    if Ok then
       Put ("[tls] ServerHello: cipher suite = 0x");
-      Put_Hex (Interfaces.Unsigned_32 (TLS_Client.Cipher_Suite (S)), 4);
+      Put_Hex (Interfaces.Unsigned_32 (TLS_Client.Cipher_Suite (Session)), 4);
       New_Line;
       Put ("[tls] server key share = ");
       declare
          --  Just preview the first few bytes of the 32-byte X25519 share.
          Key_Share_Preview : constant := 8;
-         KS : constant TLS_Client.Byte_Array := TLS_Client.Server_Key_Share (S);
+         Key_Share : constant TLS_Client.Byte_Array :=
+           TLS_Client.Server_Key_Share (Session);
       begin
          for I in 0 .. Key_Share_Preview - 1 loop
-            Put_Hex (Interfaces.Unsigned_32 (KS (KS'First + I)), 2);
+            Put_Hex (Interfaces.Unsigned_32 (Key_Share (Key_Share'First + I)), 2);
          end loop;
          Put_Line (" ...");
       end;
       Put_Line ("[tls] handshake opening OK");
-      if TLS_Client.Keys_Ready (S) then
+      if TLS_Client.Keys_Ready (Session) then
          --  Dump the inputs and derived handshake secrets so a run can be
          --  cross-checked against a reference TLS trace (e.g. Wireshark keylog).
          Put ("[tls] client_random=");
          declare
-            CR : constant TLS_Client.Byte_Array := TLS_Client.Client_Random (S);
+            Client_Random : constant TLS_Client.Byte_Array :=
+              TLS_Client.Client_Random (Session);
          begin
-            for I in CR'Range loop
-               Put_Hex (Interfaces.Unsigned_32 (CR (I)), 2);
+            for I in Client_Random'Range loop
+               Put_Hex (Interfaces.Unsigned_32 (Client_Random (I)), 2);
             end loop;
          end;
          New_Line;
          Put ("[tls] s_hs_secret=");
          declare
-            SS : constant TLS_Client.Byte_Array := TLS_Client.Server_HS_Secret (S);
+            Server_Handshake_Secret : constant TLS_Client.Byte_Array :=
+              TLS_Client.Server_HS_Secret (Session);
          begin
-            for I in SS'Range loop
-               Put_Hex (Interfaces.Unsigned_32 (SS (I)), 2);
+            for I in Server_Handshake_Secret'Range loop
+               Put_Hex (Interfaces.Unsigned_32 (Server_Handshake_Secret (I)), 2);
             end loop;
          end;
          New_Line;
          Put ("[tls] c_hs_secret=");
          declare
-            CS : constant TLS_Client.Byte_Array := TLS_Client.Client_HS_Secret (S);
+            Client_Handshake_Secret : constant TLS_Client.Byte_Array :=
+              TLS_Client.Client_HS_Secret (Session);
          begin
-            for I in CS'Range loop
-               Put_Hex (Interfaces.Unsigned_32 (CS (I)), 2);
+            for I in Client_Handshake_Secret'Range loop
+               Put_Hex (Interfaces.Unsigned_32 (Client_Handshake_Secret (I)), 2);
             end loop;
          end;
          New_Line;
       end if;
 
-      if TLS_Client.Flight_OK (S) then
+      if TLS_Client.Flight_OK (Session) then
          Put_Line ("[tls] encrypted handshake decrypted + authenticated (Finished seen)");
          Put_Line ("[tls] server CertificateVerify (RSA-PSS): "
-                   & (if TLS_Client.Server_Cert_Verify_OK (S) then "OK" else "FAIL"));
+                   & (if TLS_Client.Server_Cert_Verify_OK (Session) then "OK" else "FAIL"));
          Put_Line ("[tls] server Finished verify: "
-                   & (if TLS_Client.Server_Finished_OK (S) then "OK" else "FAIL"));
-         if TLS_Client.Have_Server_Cert (S) then
+                   & (if TLS_Client.Server_Finished_OK (Session) then "OK" else "FAIL"));
+         if TLS_Client.Have_Server_Cert (Session) then
             declare
-               DER : constant TLS_Client.Byte_Array := TLS_Client.Server_Cert (S);
-               CB  : X509.Byte_Array (0 .. DER'Length - 1);
-               C   : X509.Certificate;
+               DER : constant TLS_Client.Byte_Array := TLS_Client.Server_Cert (Session);
+               Cert_Bytes : X509.Byte_Array (0 .. DER'Length - 1);
+               Cert       : X509.Certificate;
             begin
                --  Re-base the leaf DER to 0-based bounds for X509.Parse.
                for I in 0 .. DER'Length - 1 loop
-                  CB (I) := DER (DER'First + I);
+                  Cert_Bytes (I) := DER (DER'First + I);
                end loop;
-               X509.Parse (CB, C);
+               X509.Parse (Cert_Bytes, Cert);
                Put ("[tls] server cert" & Natural'Image (DER'Length) & " bytes: ");
-               if C.Valid then
+               if Cert.Valid then
                   Put ("parsed; host match=");
-                  Put_Line (if X509.Host_Matches (CB, C, Host) then "yes" else "no");
+                  Put_Line
+                    (if X509.Host_Matches (Cert_Bytes, Cert, Host) then "yes" else "no");
                else
                   Put_Line ("PARSE FAIL");
                end if;
@@ -177,33 +182,33 @@ begin
          --  Anchor the server's chain to our pinned root (Chain_Verify): every
          --  link's signature, each cert's validity at Now, and the leaf hostname.
          --  Now would come from NTP in production; here it is a fixed reference.
-         if TLS_Client.Server_Cert_Count (S) >= 1 then
+         if TLS_Client.Server_Cert_Count (Session) >= 1 then
             declare
                use Chain_Verify;
-               Now     : constant X509.Time_64 :=
+               Now          : constant X509.Time_64 :=
                  X509.Pack_Time (2026, 6, 25, 12, 0, 0);
-               Anchors : constant Cert_List :=
+               Anchors      : constant Cert_List :=
                  (1 => (Data => Trust_Anchors.Root_DER'Access));
-               R       : Result;
+               Chain_Result : Result;
             begin
                Chain_Buffers.Reset;
-               for I in 1 .. TLS_Client.Server_Cert_Count (S) loop
-                  Chain_Buffers.Add (TLS_Client.Server_Chain_Cert (S, I));
+               for I in 1 .. TLS_Client.Server_Cert_Count (Session) loop
+                  Chain_Buffers.Add (TLS_Client.Server_Chain_Cert (Session, I));
                end loop;
-               R := Validate (Chain_Buffers.Chain, Anchors, Host, Now);
+               Chain_Result := Validate (Chain_Buffers.Chain, Anchors, Host, Now);
                Put_Line ("[tls] chain validation (pinned root):" & Natural'Image
-                         (TLS_Client.Server_Cert_Count (S)) & " certs -> "
-                         & Result'Image (R));
+                         (TLS_Client.Server_Cert_Count (Session)) & " certs -> "
+                         & Result'Image (Chain_Result));
             end;
          end if;
       else
          Put_Line ("[tls] encrypted handshake decrypt FAILED");
       end if;
 
-      Put_Line ("[tls] ready=" & (if TLS_Client.Ready (S) then "yes" else "no"));
+      Put_Line ("[tls] ready=" & (if TLS_Client.Ready (Session) then "yes" else "no"));
 
       --  Encrypted application data: send an HTTP GET, decrypt the response.
-      if TLS_Client.Ready (S) then
+      if TLS_Client.Ready (Session) then
          declare
             --  HTTP/1.0 GET; "Connection: close" so the server ends the body
             --  by closing, which is how Recv below sees the end of data.
@@ -217,17 +222,17 @@ begin
             Req_Bytes : TLS_Client.Byte_Array (0 .. Req'Length - 1);
             Buf       : TLS_Client.Byte_Array (0 .. Recv_Buf_Size - 1);
             Last      : Natural;
-            R_Ok      : Boolean;
+            Recv_Ok   : Boolean;
          begin
             --  Convert the request text to bytes for the encrypted Send.
             for I in 0 .. Req'Length - 1 loop
                Req_Bytes (I) :=
                  Interfaces.Unsigned_8 (Character'Pos (Req (Req'First + I)));
             end loop;
-            TLS_Client.Send (S, Sock, Req_Bytes);
+            TLS_Client.Send (Session, Sock, Req_Bytes);
             Put_Line ("[tls] sent HTTP GET (encrypted)");
-            TLS_Client.Recv (S, Sock, Buf, Last, R_Ok);
-            if R_Ok then
+            TLS_Client.Recv (Session, Sock, Buf, Last, Recv_Ok);
+            if Recv_Ok then
                Put_Line ("[tls] decrypted response:");
                for I in Buf'First .. Last loop
                   Put (Character'Val (Natural (Buf (I))));

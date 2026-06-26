@@ -34,17 +34,18 @@ procedure Main is
    procedure C_Free (P : Address);
    pragma Import (C, C_Free, "free");
 
-   procedure Fill (A : Address; Sz : Storage_Count; V : Storage_Element) is
-      Arr : Storage_Array (1 .. Sz) with Import, Address => A;
+   procedure Fill (A : Address; Size : Storage_Count; Value : Storage_Element)
+   is
+      Arr : Storage_Array (1 .. Size) with Import, Address => A;
    begin
-      Arr := (others => V);
+      Arr := (others => Value);
    end Fill;
 
-   function Verify (A : Address; Sz : Storage_Count; V : Storage_Element)
+   function Verify (A : Address; Size : Storage_Count; Value : Storage_Element)
                     return Boolean is
-      Arr : Storage_Array (1 .. Sz) with Import, Address => A;
+      Arr : Storage_Array (1 .. Size) with Import, Address => A;
    begin
-      return (for all B of Arr => B = V);
+      return (for all B of Arr => B = Value);
    end Verify;
 
    --  Deterministic glibc-style linear congruential generator (LCG).  We use a
@@ -77,39 +78,40 @@ procedure Main is
    Live   : array (1 .. Max_Live) of Slot;
    Bad    : Natural := 0;   -- misalignments + corruptions detected
    Allocs : Natural := 0;   -- successful mallocs (for the report)
-   Idx    : Natural;        -- chosen slot for this iteration
+   Index  : Natural;        -- chosen slot for this iteration
 begin
    --  Let the console settle before the banner so it isn't lost in boot noise.
    delay until Clock + Milliseconds (200);
    Put_Line ("[heap] on-target malloc/free stress (Ada Tlsf allocator)");
 
    for Step in 1 .. Iterations loop
-      Idx := Random_Below (Max_Live) + 1;
-      if Live (Idx).Addr = Null_Address then
+      Index := Random_Below (Max_Live) + 1;
+      if Live (Index).Addr = Null_Address then
          --  Slot is empty: allocate, stamp a pattern, and record it.
          declare
-            Sz : constant Storage_Count :=
+            Size : constant Storage_Count :=
               Storage_Count (Random_Below (Max_Bytes) + 1);
-            A  : constant Address := Malloc (size_t (Sz));
+            A    : constant Address := Malloc (size_t (Size));
          begin
             if A /= Null_Address then
                if To_Integer (A) mod Min_Align /= 0 then
                   Bad := Bad + 1;
                end if;
-               Live (Idx) :=
-                 (A, Sz, Storage_Element (Random_Below (Max_Bytes)));
-               Fill (A, Sz, Live (Idx).Pattern);
+               Live (Index) :=
+                 (A, Size, Storage_Element (Random_Below (Max_Bytes)));
+               Fill (A, Size, Live (Index).Pattern);
                Allocs := Allocs + 1;
             end if;
          end;
       else
          --  Slot is live: re-check its pattern survived, then free it.
-         if not Verify (Live (Idx).Addr, Live (Idx).Size, Live (Idx).Pattern)
+         if not Verify (Live (Index).Addr, Live (Index).Size,
+                        Live (Index).Pattern)
          then
             Bad := Bad + 1;
          end if;
-         C_Free (Live (Idx).Addr);
-         Live (Idx) := (Null_Address, 0, 0);
+         C_Free (Live (Index).Addr);
+         Live (Index) := (Null_Address, 0, 0);
       end if;
    end loop;
 

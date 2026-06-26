@@ -82,8 +82,8 @@ procedure Main is
    File_Start_Offset : constant U64     := 0;
    Read_Buffer_Size  : constant Natural := 16;   --  bytes read in one go
 
-   Card : aliased ESP32S3.SD_SPI.Card;
-   St   : ESP32S3.SD_SPI.Status;          --  SD init outcome (OK / error)
+   Card        : aliased ESP32S3.SD_SPI.Card;
+   Card_Status : ESP32S3.SD_SPI.Status;   --  SD init outcome (OK / error)
 begin
    delay until Clock + Console_Settle_Delay;
    Banner;
@@ -95,11 +95,12 @@ begin
       Mosi => SD_Mosi,
       Miso => SD_Miso,
       Cs   => SD_Cs);
-   ESP32S3.SD_SPI.Initialize (Card, St);
-   Card_Result (if St = ESP32S3.SD_SPI.OK then Status_OK else Status_Failed);
+   ESP32S3.SD_SPI.Initialize (Card, Card_Status);
+   Card_Result
+     (if Card_Status = ESP32S3.SD_SPI.OK then Status_OK else Status_Failed);
 
    --  Only attempt the mount/read once the card itself answered.
-   if St = ESP32S3.SD_SPI.OK then
+   if Card_Status = ESP32S3.SD_SPI.OK then
       declare
          --  Present the card as a generic block device to the filesystem.
          Device : constant ESP32S3.Block_Dev.Device :=

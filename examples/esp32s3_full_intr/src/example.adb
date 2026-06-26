@@ -19,8 +19,8 @@ with Blink;
 --  The test body is identical to the embedded version, so it also re-checks
 --  interrupt-vector context preservation under the full kernel.  A low-priority
 --  "victim" holds register-resident state across a tight loop -- four FP
---  accumulators (the identity X := X * Lm * Li, with Lm/Li read once from
---  Volatile cells so the optimizer keeps them in F registers with NO in-loop
+--  accumulators (the identity X := X * Loop_Mul * Loop_Inv, with both factors
+--  read once from Volatile cells so the optimizer keeps them in F registers with NO in-loop
 --  memory traffic) plus a THREADPTR sentinel.  Each batch it fires the L2 and L3
 --  device interrupts (which preempt it through __gnat_level2_vector /
 --  __gnat_level3_vector); the L5 tick preempts it asynchronously throughout.  If
@@ -50,7 +50,7 @@ procedure Example is
    procedure Fire_L3; pragma Import (C, Fire_L3, "ada_fire_l3");
    function  Get_TP return Interfaces.C.unsigned;
    pragma Import (C, Get_TP, "ada_get_tp");
-   procedure Set_TP (V : Interfaces.C.unsigned);
+   procedure Set_TP (Value : Interfaces.C.unsigned);
    pragma Import (C, Set_TP, "ada_set_tp");
 
    --  Console-marker bases: the C ada_log prints the integer as "[intr] <n>",
@@ -67,13 +67,13 @@ procedure Example is
    --  that clobbered it.
    Sentinel : constant Interfaces.C.unsigned := 16#DEAD_0001#;
 
-   --  Loop multipliers: Lm * Li = 1.0 exactly (2.0 * 0.5), so each accumulator
-   --  is an identity over the batch and must return to its seed.  Read from
-   --  Volatile cells so the compiler cannot fold the loop away.
-   VM : Float := 2.0 with Volatile;
-   VI : Float := 0.5 with Volatile;
-   Lm : constant Float := VM;
-   Li : constant Float := VI;
+   --  Loop factors: Loop_Mul * Loop_Inv = 1.0 exactly (2.0 * 0.5), so each
+   --  accumulator is an identity over the batch and must return to its seed.
+   --  Read from Volatile cells so the compiler cannot fold the loop away.
+   Mul_Cell : Float := 2.0 with Volatile;
+   Inv_Cell : Float := 0.5 with Volatile;
+   Loop_Mul : constant Float := Mul_Cell;
+   Loop_Inv : constant Float := Inv_Cell;
 
    --  Four FP accumulators with distinct seeds -- each must come back to its
    --  seed (1.0 / 2.0 / 3.0 / 4.0) after a clean batch.
@@ -87,16 +87,16 @@ procedure Example is
    Batch_Iterations : constant := 400_000;
    Fire_Period      : constant := 100_000;
 
-   Iter : Interfaces.C.int := 0;             --  clean-batch counter
+   Clean_Batches : Interfaces.C.int := 0;    --  clean-batch counter
 begin
    Setup;                       --  route FROM_CPU_0/1 -> CPU_INT 19/23 (L2/L3)
    Set_TP (Sentinel);
    loop
       for I in 1 .. Batch_Iterations loop
-         X1 := X1 * Lm * Li;
-         X2 := X2 * Lm * Li;
-         X3 := X3 * Lm * Li;
-         X4 := X4 * Lm * Li;
+         X1 := X1 * Loop_Mul * Loop_Inv;
+         X2 := X2 * Loop_Mul * Loop_Inv;
+         X3 := X3 * Loop_Mul * Loop_Inv;
+         X4 := X4 * Loop_Mul * Loop_Inv;
          if I mod Fire_Period = 0 then
             Fire_L2;
             Fire_L3;
@@ -113,10 +113,10 @@ begin
          X4 := 4.0;
          Set_TP (Sentinel);
       else
-         Iter := Iter + 1;
+         Clean_Batches := Clean_Batches + 1;
          Log (L2_Marker_Base    + Interfaces.C.int (Blink.L2_Count));
          Log (L3_Marker_Base    + Interfaces.C.int (Blink.L3_Count));
-         Log (Clean_Marker_Base + Iter);
+         Log (Clean_Marker_Base + Clean_Batches);
       end if;
    end loop;
 end Example;

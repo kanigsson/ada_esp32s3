@@ -47,13 +47,13 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
 
-   Rate     : constant := 16_000;      --  I2S sample rate (Hz)
-   Freq     : constant := 440;         --  test-tone frequency (Hz), concert A
-   Amp      : constant := 30_000;      --  sine peak ~-1 dBFS (full-scale Int16)
-   Mic_Gain : constant := 24;          --  ADC PGA gain (dB), range 0 .. 42
-   --  Samples are signed 16-bit per channel; the codec runs MCLK = 256 * Rate
-   --  (= 4.096 MHz at 16 kHz), the 256x ratio the driver's coefficient table
-   --  is built for.
+   Sample_Rate    : constant := 16_000;   --  I2S sample rate (Hz)
+   Tone_Frequency : constant := 440;       --  test-tone frequency (Hz), concert A
+   Amplitude      : constant := 30_000;    --  sine peak ~-1 dBFS (full-scale Int16)
+   Mic_Gain       : constant := 24;        --  ADC PGA gain (dB), range 0 .. 42
+   --  Samples are signed 16-bit per channel; the codec runs MCLK = 256 *
+   --  Sample_Rate (= 4.096 MHz at 16 kHz), the 256x ratio the driver's
+   --  coefficient table is built for.
 
    --  Codec DAC volume, 0 .. 100 %.  Reg 0x32 is 0.5 dB/step, so ~75 % ~= 0 dB
    --  (unity) and higher is positive gain (100 % ~= +32 dB) that CLIPS.  Drive
@@ -71,29 +71,30 @@ procedure Main is
    --  Playback: one seamless loop = the fewest whole cycles that are an integer
    --  number of samples.  gcd(16000, 440) = 40, so 11 cycles = 400 frames.
    ----------------------------------------------------------------------------
-   Cycles    : constant := Freq / 40;          --  11
-   Frames    : constant := Rate / 40;          --  400
+   Cycles    : constant := Tone_Frequency / 40;   --  11
+   Frames    : constant := Sample_Rate / 40;      --  400
    Buf_Bytes : constant := Frames * 4;         --  1600 bytes (<= 4095)
 
    Cycle : array (0 .. Frames - 1) of Sample;  --  one full sine cycle
 
    procedure Build_Cycle is
-      Half : constant := Frames / 2;           --  200 (one half-cycle)
-      V    : Integer;
+      Half  : constant := Frames / 2;          --  200 (one half-cycle)
+      Value : Integer;
    begin
       for K in 0 .. Half - 1 loop
          declare
-            P   : constant Integer := K * (Half - K);
-            --  64-bit intermediate: Amp*16*P reaches ~5.2e9 at full scale.
-            Num : constant Long_Long_Integer :=
-              Long_Long_Integer (Amp) * 16 * Long_Long_Integer (P);
-            Den : constant Long_Long_Integer :=
-              Long_Long_Integer (5 * Half * Half - 4 * P);
+            Parabola : constant Integer := K * (Half - K);
+            --  64-bit intermediate: Amplitude*16*Parabola reaches ~5.2e9 at
+            --  full scale.
+            Numerator : constant Long_Long_Integer :=
+              Long_Long_Integer (Amplitude) * 16 * Long_Long_Integer (Parabola);
+            Denominator : constant Long_Long_Integer :=
+              Long_Long_Integer (5 * Half * Half - 4 * Parabola);
          begin
-            V := Integer (Num / Den);
+            Value := Integer (Numerator / Denominator);
          end;
-         Cycle (K)        :=  Sample (V);
-         Cycle (K + Half) := -Sample (V);
+         Cycle (K)        :=  Sample (Value);
+         Cycle (K + Half) := -Sample (Value);
       end loop;
    end Build_Cycle;
 
@@ -103,10 +104,10 @@ procedure Main is
    ----------------------------------------------------------------------------
    --  Capture: one chunk we sample from the ADC and analyse.
    ----------------------------------------------------------------------------
-   Cap_Frames : constant := 800;               --  50 ms = ~22 cycles of 440 Hz
-   Cap_Bytes  : constant := Cap_Frames * 4;    --  3200 bytes (<= 4095)
-   type Cap_Buffer is array (0 .. Cap_Frames - 1) of Frame;
-   Cap : Cap_Buffer;
+   Capture_Frames : constant := 800;                  --  50 ms = ~22 cycles of 440 Hz
+   Capture_Bytes  : constant := Capture_Frames * 4;   --  3200 bytes (<= 4095)
+   type Capture_Buffer is array (0 .. Capture_Frames - 1) of Frame;
+   Capture_Buf : Capture_Buffer;
 
    Quiet_Peak : constant := 200;               --  captured peak below this = silence
 
@@ -114,45 +115,46 @@ procedure Main is
    --
    --  Robustness: skip the first frames (RX-start FIFO-priming transient can
    --  drop a rail-value spike), remove the ADC's DC offset, and base the
-   --  detection threshold on the mean-absolute-deviation (MAD) rather than a
+   --  detection threshold on the mean-absolute-deviation rather than a
    --  single peak -- so one stray spike can't lift the threshold above the real
-   --  tone.  For a sine, peak ~= 1.57 * MAD.  Frequency is from threshold
-   --  zero-crossings: two +/- crossings per cycle, so freq = flips*Rate/(2*N).
-   Skip  : constant := 64;                   --  drop ~4 ms of startup transient
-   First : constant := Skip;                 --  Cap is 0-indexed
-   N_An  : constant := Cap_Frames - Skip;    --  frames actually analysed
+   --  tone.  For a sine, peak ~= 1.57 * mean-absolute-deviation.  Frequency is
+   --  from threshold zero-crossings: two +/- crossings per cycle, so
+   --  frequency = flips*Sample_Rate/(2*Analysed_Frames).
+   Skip_Frames     : constant := 64;                       --  drop ~4 ms of startup transient
+   First           : constant := Skip_Frames;              --  Capture_Buf is 0-indexed
+   Analysed_Frames : constant := Capture_Frames - Skip_Frames;
 
-   procedure Analyse (Peak : out Integer; Freq_Hz : out Integer) is
-      Sum   : Long_Long_Integer := 0;
-      Mean  : Integer;
-      MAD   : Integer;
-      Thr   : Integer;
-      State : Integer := 0;        --  +1 above +Thr, -1 below -Thr, 0 unknown
-      Flips : Natural := 0;
+   procedure Analyse (Peak : out Integer; Frequency_Hz : out Integer) is
+      Sum           : Long_Long_Integer := 0;
+      Mean          : Integer;
+      Mean_Abs_Dev  : Integer;
+      Threshold     : Integer;
+      State         : Integer := 0;   --  +1 above +Threshold, -1 below -Threshold, 0 unknown
+      Flips         : Natural := 0;
    begin
-      for I in First .. Cap'Last loop
-         Sum := Sum + Long_Long_Integer (Cap (I).L);
+      for I in First .. Capture_Buf'Last loop
+         Sum := Sum + Long_Long_Integer (Capture_Buf (I).L);
       end loop;
-      Mean := Integer (Sum / N_An);
+      Mean := Integer (Sum / Analysed_Frames);
 
       Sum := 0;
-      for I in First .. Cap'Last loop
-         Sum := Sum + Long_Long_Integer (abs (Integer (Cap (I).L) - Mean));
+      for I in First .. Capture_Buf'Last loop
+         Sum := Sum + Long_Long_Integer (abs (Integer (Capture_Buf (I).L) - Mean));
       end loop;
-      MAD  := Integer (Sum / N_An);
-      Peak := (MAD * 157) / 100;              --  ~ sine peak, for display
-      Thr  := Integer'Max (MAD / 2, 1);       --  safely below peak, above noise
+      Mean_Abs_Dev := Integer (Sum / Analysed_Frames);
+      Peak         := (Mean_Abs_Dev * 157) / 100;          --  ~ sine peak, for display
+      Threshold    := Integer'Max (Mean_Abs_Dev / 2, 1);   --  safely below peak, above noise
 
-      for I in First .. Cap'Last loop
+      for I in First .. Capture_Buf'Last loop
          declare
-            V : constant Integer := Integer (Cap (I).L) - Mean;
+            Value : constant Integer := Integer (Capture_Buf (I).L) - Mean;
          begin
-            if V > Thr then
+            if Value > Threshold then
                if State = -1 then
                   Flips := Flips + 1;
                end if;
                State := 1;
-            elsif V < -Thr then
+            elsif Value < -Threshold then
                if State = 1 then
                   Flips := Flips + 1;
                end if;
@@ -160,7 +162,7 @@ procedure Main is
             end if;
          end;
       end loop;
-      Freq_Hz := Flips * Rate / (2 * N_An);
+      Frequency_Hz := Flips * Sample_Rate / (2 * Analysed_Frames);
    end Analyse;
 
 begin
@@ -173,17 +175,17 @@ begin
    --  (Cycles*i) mod Frames so the 400 frames carry exactly 11 cycles.
    for I in Buf'Range loop
       declare
-         S : constant Sample := Cycle ((Cycles * I) mod Frames);
+         Sine_Sample : constant Sample := Cycle ((Cycles * I) mod Frames);
       begin
-         Buf (I) := (L => S, R => S);
+         Buf (I) := (L => Sine_Sample, R => Sine_Sample);
       end;
    end loop;
 
    declare
-      Ok        : Boolean;
-      Audio     : ESP32S3.ES8311.Output;
-      Peak      : Integer;     --  estimated sine peak of the captured tone
-      Est_Tone  : Integer;     --  estimated captured frequency (Hz)
+      Ok             : Boolean;
+      Audio          : ESP32S3.ES8311.Output;
+      Peak           : Integer;   --  estimated sine peak of the captured tone
+      Estimated_Tone : Integer;   --  estimated captured frequency (Hz)
    begin
       ESP32S3.ES8311.Setup
         (I2C_Bus => ESP32S3.I2C.I2C0,
@@ -191,7 +193,7 @@ begin
          Port    => ESP32S3.I2S.I2S0,
          Mclk    => 1,  Sclk  => 2,  Lrck => 4,  Dsdin => 5,
          Asdout  => 3,                        --  codec ADC out -> our data in
-         Sample_Rate => Rate,
+         Sample_Rate => Sample_Rate,
          Volume      => Dac_Volume,
          Mic_Gain_Db => Mic_Gain,
          Ok          => Ok);
@@ -215,8 +217,8 @@ begin
       Put (Mic_Gain);
       Put_Line (" dB) -- play feeds the speaker, mic should hear it");
       loop
-         ESP32S3.ES8311.Capture (Audio, Cap'Address, Cap_Bytes);
-         Analyse (Peak, Est_Tone);
+         ESP32S3.ES8311.Capture (Audio, Capture_Buf'Address, Capture_Bytes);
+         Analyse (Peak, Estimated_Tone);
          --  Below this captured-peak level the line is treated as silence, so
          --  the (meaningless) frequency estimate is suppressed.
          if Peak < Quiet_Peak then
@@ -227,7 +229,7 @@ begin
             Put ("[es8311] captured: peak=");
             Put (Peak);
             Put ("  est tone=");
-            Put (Est_Tone);
+            Put (Estimated_Tone);
             Put_Line (" Hz");
          end if;
          delay until Clock + Milliseconds (1000);

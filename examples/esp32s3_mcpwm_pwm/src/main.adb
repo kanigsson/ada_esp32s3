@@ -55,14 +55,14 @@ procedure Main is
                 & "(GPIO-sampled, no wiring)");
    end Banner;
 
-   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz : Integer; Ok : Boolean) is
+   procedure Result (Set_Pct, Measured_Pct_X10, Measured_Hz : Integer; Ok : Boolean) is
    begin
       Put ("[mcpwm] duty set=");
       Put (Set_Pct);
       Put ("%  measured=");
-      Put_Fixed (Meas_Pct_X10, 10, 1);
+      Put_Fixed (Measured_Pct_X10, 10, 1);
       Put ("%  freq=");
-      Put (Meas_Hz);
+      Put (Measured_Hz);
       Put (" Hz  ");
       Put_Line (if Ok then "PASS" else "FAIL");
    end Result;
@@ -79,7 +79,7 @@ procedure Main is
       Put_Line (if Ok then "PASS" else "FAIL");
    end Pair;
 
-   procedure Cap_Result (Freq_Hz, Duty_X10 : Integer; Ok : Boolean) is
+   procedure Capture_Result (Freq_Hz, Duty_X10 : Integer; Ok : Boolean) is
    begin
       Put ("[mcpwm] capture: freq=");
       Put (Freq_Hz);
@@ -87,7 +87,7 @@ procedure Main is
       Put_Fixed (Duty_X10, 10, 1);
       Put ("%  ");
       Put_Line (if Ok then "PASS" else "FAIL");
-   end Cap_Result;
+   end Capture_Result;
 
    procedure Fault_Result (Run_Pct, Fault_Pct, Resume_Pct : Integer; Ok : Boolean) is
    begin
@@ -146,17 +146,17 @@ procedure Main is
    Freq_Tol_Frac     : constant Float := 0.10;  --  duty test: 10 % of frequency
    Pair_Tol_Pct      : constant Float := 6.0;   --  each pad ~50 % (less dead-time)
    Overlap_Max_Pct   : constant Float := 1.0;   --  both-high time must be ~0
-   Cap_Freq_Tol_Frac : constant Float := 0.05;  --  capture: 5 % of frequency
-   Cap_Duty_Tol_Pct  : constant Float := 3.0;   --  capture: |measured-30 %|
+   Capture_Freq_Tol_Frac : constant Float := 0.05;  --  capture: 5 % of frequency
+   Capture_Duty_Tol_Pct  : constant Float := 3.0;   --  capture: |measured-30 %|
    Fault_Tol_Pct     : constant Float := 6.0;   --  run/resume ~50 %
    Fault_Trip_Max    : constant Float := 2.0;   --  tripped output ~0 %
 
    --  Claimed channel handles (declared up front so the nested helpers below can
    --  see the capture handle).  Each is released automatically when Main returns.
-   Gen0 : Channel;     --  channel 0 -> Out_Pin (duty + capture + fault tests)
-   Gen1 : Channel;     --  channel 1 -> complementary pair
-   Gen2 : Channel;     --  channel 2 -> carrier test
-   Cap  : Capture;     --  capture channel 0 -> Out_Pin
+   Generator0 : Channel;     --  channel 0 -> Out_Pin (duty + capture + fault tests)
+   Generator1 : Channel;     --  channel 1 -> complementary pair
+   Generator2 : Channel;     --  channel 2 -> carrier test
+   Capture_Channel : Capture; --  capture channel 0 -> Out_Pin
 
    --  Sample the (driver-driven) output pad for Window_Ms; return the high-sample
    --  fraction as a duty %, and rising-edges / elapsed-time as a frequency.
@@ -164,26 +164,27 @@ procedure Main is
       T0      : constant Time := Clock;
       Deadline : constant Time := T0 + Milliseconds (Window_Ms);
       Samples, Highs, Rising : Natural := 0;
-      Cur  : Boolean;
-      Prev : Boolean := False;
-      Secs : Float;
+      Current  : Boolean;
+      Previous : Boolean := False;
+      Elapsed_Seconds : Float;
    begin
       loop
-         Cur := ESP32S3.GPIO.Read (Out_Pin);
+         Current := ESP32S3.GPIO.Read (Out_Pin);
          Samples := Samples + 1;
-         if Cur then
+         if Current then
             Highs := Highs + 1;
-            if not Prev then
+            if not Previous then
                Rising := Rising + 1;
             end if;
          end if;
-         Prev := Cur;
+         Previous := Current;
          exit when Clock >= Deadline;
       end loop;
-      Secs := Float (To_Duration (Clock - T0));
+      Elapsed_Seconds := Float (To_Duration (Clock - T0));
       Duty_Pct := (if Samples = 0 then 0.0
                    else Float (Highs) / Float (Samples) * 100.0);
-      Freq_Hz  := (if Secs = 0.0 then 0.0 else Float (Rising) / Secs);
+      Freq_Hz  := (if Elapsed_Seconds = 0.0 then 0.0
+                   else Float (Rising) / Elapsed_Seconds);
    end Measure;
 
    --  Sample a complementary pair: per-pad duty and the fraction of time BOTH
@@ -246,12 +247,12 @@ procedure Main is
       Spin_Limit : constant Natural := 5_000_000;
       Guard      : Natural := Spin_Limit;
    begin
-      while Capture_Pending (Cap) loop               --  drain stale captures
-         Read_Capture (Cap, Stamp, Falling);
+      while Capture_Pending (Capture_Channel) loop   --  drain stale captures
+         Read_Capture (Capture_Channel, Stamp, Falling);
       end loop;
       loop
-         if Capture_Pending (Cap) then
-            Read_Capture (Cap, Stamp, Falling);
+         if Capture_Pending (Capture_Channel) then
+            Read_Capture (Capture_Channel, Stamp, Falling);
             if not Got_First_Rise and then not Falling then
                First_Rise := Stamp;
                Got_First_Rise := True;
@@ -270,7 +271,7 @@ procedure Main is
       High   := Natural (Fall - First_Rise);
    end Capture_Measure;
 
-   Meas_Duty, Meas_Freq      : Float;
+   Measured_Duty, Measured_Freq : Float;
    Duty_A, Duty_B, Overlap   : Float;
    Ok                        : Boolean;
 begin
@@ -278,33 +279,33 @@ begin
    Banner;
 
    Setup (MCPWM0);
-   Claim (Gen0, MCPWM0, Ch0);
-   Configure_Channel (Gen0, Freq => Frequency_Hz, Pin => Out_Pin);
-   Start (Gen0);
+   Claim (Generator0, MCPWM0, Ch0);
+   Configure_Channel (Generator0, Freq => Frequency_Hz, Pin => Out_Pin);
+   Start (Generator0);
 
    for I in Duties'Range loop
-      Set_Duty (Gen0, Duties (I));
+      Set_Duty (Generator0, Duties (I));
       delay until Clock + Milliseconds (5);     --  let the new duty latch
-      Measure (50, Meas_Duty, Meas_Freq);
+      Measure (50, Measured_Duty, Measured_Freq);
 
-      Ok := abs (Meas_Duty - Float (Duties (I))) <= Duty_Tol_Pct
+      Ok := abs (Measured_Duty - Float (Duties (I))) <= Duty_Tol_Pct
               and then
-            abs (Meas_Freq - Float (Frequency_Hz))
+            abs (Measured_Freq - Float (Frequency_Hz))
               <= Float (Frequency_Hz) * Freq_Tol_Frac;
 
-      Result (Integer (Float (Duties (I))), Integer (Meas_Duty * 10.0),
-              Integer (Meas_Freq), Ok);
+      Result (Integer (Float (Duties (I))), Integer (Measured_Duty * 10.0),
+              Integer (Measured_Freq), Ok);
    end loop;
 
    --  Complementary pair + dead-time on channel 1: A on Pair_A, inverted B on
    --  Pair_B, with 1 us of dead-time, at 50 % duty.  Expect A and B each ~50 %
    --  (minus the dead-time gap) and ~0 % overlap -- the dead-time guarantees the
    --  two are never high together.
-   Claim (Gen1, MCPWM0, Ch1);
-   Configure_Channel (Gen1, Freq => Frequency_Hz, Pin => Pair_A,
+   Claim (Generator1, MCPWM0, Ch1);
+   Configure_Channel (Generator1, Freq => Frequency_Hz, Pin => Pair_A,
                       Complement_Pin => Pair_B, Dead_Time_Ns => Dead_Time_Ns);
-   Start (Gen1);
-   Set_Duty (Gen1, 50.0);
+   Start (Generator1);
+   Set_Duty (Generator1, 50.0);
    delay until Clock + Milliseconds (5);
    Measure_Pair (50, Duty_A, Duty_B, Overlap);
    Ok := abs (Duty_A - 50.0) <= Pair_Tol_Pct  --  A ~ 50 % (less the dead-time gap)
@@ -317,23 +318,23 @@ begin
    --  Test 3: CAPTURE -- feed channel 0's own output (Out_Pin) into capture 0
    --  on the same pad and measure period + high precisely (80 MHz timer).
    ----------------------------------------------------------------------------
-   Set_Duty (Gen0, 30.0);
-   Claim (Cap, MCPWM0, Cap0);
-   Configure_Capture (Cap, Pin => Out_Pin, Edge => Both_Edges);
+   Set_Duty (Generator0, 30.0);
+   Claim (Capture_Channel, MCPWM0, Cap0);
+   Configure_Capture (Capture_Channel, Pin => Out_Pin, Edge => Both_Edges);
    delay until Clock + Milliseconds (5);
    declare
       Period, High      : Natural;       --  80 MHz timer ticks
-      Cap_Freq, Cap_Duty : Float;
+      Capture_Freq, Capture_Duty : Float;
    begin
       Capture_Measure (Period, High);
-      Cap_Freq := (if Period = 0 then 0.0
-                   else Float (Capture_Clock_Hz) / Float (Period));
-      Cap_Duty := (if Period = 0 then 0.0
-                   else Float (High) / Float (Period) * 100.0);
-      Ok := abs (Cap_Freq - Float (Frequency_Hz))
-              <= Float (Frequency_Hz) * Cap_Freq_Tol_Frac
-              and then abs (Cap_Duty - 30.0) <= Cap_Duty_Tol_Pct;
-      Cap_Result (Integer (Cap_Freq), Integer (Cap_Duty * 10.0), Ok);
+      Capture_Freq := (if Period = 0 then 0.0
+                       else Float (Capture_Clock_Hz) / Float (Period));
+      Capture_Duty := (if Period = 0 then 0.0
+                       else Float (High) / Float (Period) * 100.0);
+      Ok := abs (Capture_Freq - Float (Frequency_Hz))
+              <= Float (Frequency_Hz) * Capture_Freq_Tol_Frac
+              and then abs (Capture_Duty - 30.0) <= Capture_Duty_Tol_Pct;
+      Capture_Result (Integer (Capture_Freq), Integer (Capture_Duty * 10.0), Ok);
    end;
 
    ----------------------------------------------------------------------------
@@ -343,8 +344,8 @@ begin
    ESP32S3.GPIO.Configure (Fault_Pin, ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Clear (Fault_Pin);                       --  inactive (no fault)
    Configure_Fault (MCPWM0, Fault0, Pin => Fault_Pin, Active_High => True);
-   Protect_Channel (Gen0, Fault0, One_Shot, Force_Low);
-   Set_Duty (Gen0, 50.0);
+   Protect_Channel (Generator0, Fault0, One_Shot, Force_Low);
+   Set_Duty (Generator0, 50.0);
    delay until Clock + Milliseconds (2);
    declare
       Run, Trip, Resume : Float;
@@ -354,7 +355,7 @@ begin
       delay until Clock + Milliseconds (2);
       Trip := Duty_Of (Out_Pin, 20);
       ESP32S3.GPIO.Clear (Fault_Pin);                    --  deassert ...
-      Clear_Fault (Gen0);                                --  ... and release the latch
+      Clear_Fault (Generator0);                          --  ... and release the latch
       delay until Clock + Milliseconds (2);
       Resume := Duty_Of (Out_Pin, 20);
       Ok := abs (Run - 50.0) <= Fault_Tol_Pct
@@ -367,10 +368,10 @@ begin
    --  Test 5: CARRIER -- channel 2 at 100 % duty: constant high with the carrier
    --  off, chopped to the carrier's own duty (~50 %) with it on.
    ----------------------------------------------------------------------------
-   Claim (Gen2, MCPWM0, Ch2);
-   Configure_Channel (Gen2, Freq => Frequency_Hz, Pin => Carrier_Pin);
-   Start (Gen2);
-   Set_Duty (Gen2, 100.0);
+   Claim (Generator2, MCPWM0, Ch2);
+   Configure_Channel (Generator2, Freq => Frequency_Hz, Pin => Carrier_Pin);
+   Start (Generator2);
+   Set_Duty (Generator2, 100.0);
    delay until Clock + Milliseconds (2);
    declare
       --  Carrier (chopper) settings: a high-frequency square wave that the
@@ -388,7 +389,7 @@ begin
       Off, On : Float;
    begin
       Off := Duty_Of (Carrier_Pin, 20);                  --  ~100 %
-      Set_Carrier (Gen2, Enable => True,
+      Set_Carrier (Generator2, Enable => True,
                    Prescale     => Carrier_Prescale,
                    Duty_Eighths => Carrier_Duty_Eighths,
                    First_Pulse  => Carrier_First_Pulse);

@@ -102,11 +102,11 @@ procedure Main is
    --  I2C addresses are named by the drivers; the QMI8658C is probed at runtime
    --  (SA0-low 0x6B, falling back to SA0-high 0x6A).
 
-   Disp    : LCD.Device;
-   S       : LCD.Session;
-   Env     : SHT.Device;
-   Clk     : RTC.Device;
-   Imu_Dev : IMU.Device;
+   Display           : LCD.Device;
+   Screen            : LCD.Session;
+   Environment_Sensor : SHT.Device;
+   Clock_Dev         : RTC.Device;
+   Imu_Dev           : IMU.Device;
 
    --  Set True once the RTC has been loaded from a GPS UTC fix (done once).
    RTC_Synced : Boolean := False;
@@ -139,7 +139,7 @@ procedure Main is
    Green : constant LCD.Color := LCD.RGB (0, 255, 0);
    Cyan  : constant LCD.Color := LCD.RGB (0, 220, 255);
    Amber : constant LCD.Color := LCD.RGB (255, 190, 0);
-   Dim   : constant LCD.Color := LCD.RGB (130, 130, 130);   --  muted/grey.
+   Grey  : constant LCD.Color := LCD.RGB (130, 130, 130);   --  muted/grey.
 
    Digit : constant String := "0123456789";
 
@@ -149,75 +149,79 @@ procedure Main is
 
    --  Right-justified, zero-padded Width-digit rendering of Value (mod 10**W).
    function Nat_Fixed (Value, Width : Natural) return String is
-      R : String (1 .. Width);
-      V : Natural := Value;
+      Result    : String (1 .. Width);
+      Remaining : Natural := Value;
    begin
       for I in reverse 1 .. Width loop
-         R (I) := Digit (V mod 10 + 1);
-         V := V / 10;
+         Result (I) := Digit (Remaining mod 10 + 1);
+         Remaining := Remaining / 10;
       end loop;
-      return R;
+      return Result;
    end Nat_Fixed;
 
    --  Minimal-width rendering (no leading zeros).
-   function Nat_Img (V : Natural) return String is
-     (if V < 10 then (1 => Digit (V + 1))
-      else Nat_Img (V / 10) & Digit (V mod 10 + 1));
+   function Nat_Img (Value : Natural) return String is
+     (if Value < 10 then (1 => Digit (Value + 1))
+      else Nat_Img (Value / 10) & Digit (Value mod 10 + 1));
 
-   --  Pad / clip Str to exactly W characters.
-   function Pad (Str : String; W : Natural) return String is
-     (if Str'Length >= W then Str (Str'First .. Str'First + W - 1)
-      else Str & (1 .. W - Str'Length => ' '));
+   --  Pad / clip Str to exactly Width characters.
+   function Pad (Str : String; Width : Natural) return String is
+     (if Str'Length >= Width then Str (Str'First .. Str'First + Width - 1)
+      else Str & (1 .. Width - Str'Length => ' '));
 
    --  A milli-unit integer (e.g. 23_450) -> "23.45"; Signed prefixes '+' for
    --  non-negative values (handy for accelerometer axes).
-   function Fmt_Milli (M : Integer; Signed : Boolean := False) return String is
-      A   : constant Natural := abs M;
-      Sgn : constant String  :=
-        (if M < 0 then "-" elsif Signed then "+" else "");
+   function Fmt_Milli (Value : Integer; Signed : Boolean := False) return String
+   is
+      Magnitude : constant Natural := abs Value;
+      Sign      : constant String  :=
+        (if Value < 0 then "-" elsif Signed then "+" else "");
    begin
-      return Sgn & Nat_Img (A / 1000) & "." & Nat_Fixed ((A mod 1000) / 10, 2);
+      return Sign & Nat_Img (Magnitude / 1000) & "."
+             & Nat_Fixed ((Magnitude mod 1000) / 10, 2);
    end Fmt_Milli;
 
-   function Fmt_Time (T : GPS.UTC_Time) return String is
-     ("UTC " & Nat_Fixed (T.Hour, 2) & ":" & Nat_Fixed (T.Minute, 2)
-      & ":" & Nat_Fixed (T.Second, 2));
+   function Fmt_Time (Time : GPS.UTC_Time) return String is
+     ("UTC " & Nat_Fixed (Time.Hour, 2) & ":" & Nat_Fixed (Time.Minute, 2)
+      & ":" & Nat_Fixed (Time.Second, 2));
 
-   --  1e-7-degree integer -> "DD.DDDDDDD H" (Int_W integer digits + hemisphere).
+   --  1e-7-degree integer -> "DD.DDDDDDD H"
+   --  (Int_Width integer digits + hemisphere).
    function Fmt_Deg
-     (V : Interfaces.Integer_32; Int_W : Positive; Pos, Neg : Character)
+     (Value : Interfaces.Integer_32; Int_Width : Positive; Pos, Neg : Character)
       return String
    is
-      A : constant Natural := Natural (abs V);
+      Magnitude : constant Natural := Natural (abs Value);
    begin
-      return Nat_Fixed (A / 10_000_000, Int_W) & "."
-             & Nat_Fixed (A mod 10_000_000, 7) & ' '
-             & (if V < 0 then Neg else Pos);
+      return Nat_Fixed (Magnitude / 10_000_000, Int_Width) & "."
+             & Nat_Fixed (Magnitude mod 10_000_000, 7) & ' '
+             & (if Value < 0 then Neg else Pos);
    end Fmt_Deg;
 
-   function Mode_Str (M : GPS.Fix_Type) return String is
-     (case M is when GPS.Fix_None => "--",
-                when GPS.Fix_2D   => "2D",
-                when GPS.Fix_3D   => "3D");
+   function Mode_Str (Mode : GPS.Fix_Type) return String is
+     (case Mode is when GPS.Fix_None => "--",
+                   when GPS.Fix_2D   => "2D",
+                   when GPS.Fix_3D   => "3D");
 
-   function Day_Str (W : RTC.Weekday) return String is
-     (case W is when RTC.Sunday => "Sun", when RTC.Monday    => "Mon",
-                when RTC.Tuesday => "Tue", when RTC.Wednesday => "Wed",
-                when RTC.Thursday => "Thu", when RTC.Friday   => "Fri",
-                when RTC.Saturday => "Sat");
+   function Day_Str (Day : RTC.Weekday) return String is
+     (case Day is when RTC.Sunday => "Sun", when RTC.Monday    => "Mon",
+                  when RTC.Tuesday => "Tue", when RTC.Wednesday => "Wed",
+                  when RTC.Thursday => "Thu", when RTC.Friday   => "Fri",
+                  when RTC.Saturday => "Sat");
 
    --  Weekday for a Gregorian date (Sakamoto's algorithm; 0 = Sunday).  The GPS
    --  carries date + time but no weekday, so derive it before loading the RTC.
-   function Weekday_Of (Y, M, D : Natural) return RTC.Weekday is
-      T  : constant array (1 .. 12) of Natural :=
+   function Weekday_Of (Year, Month, Day : Natural) return RTC.Weekday is
+      Month_Offset : constant array (1 .. 12) of Natural :=
              (0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4);
-      Yr : Natural := Y;
+      Adjusted_Year : Natural := Year;
    begin
-      if M < 3 then
-         Yr := Yr - 1;
+      if Month < 3 then
+         Adjusted_Year := Adjusted_Year - 1;
       end if;
       return RTC.Weekday'Val
-        ((Yr + Yr / 4 - Yr / 100 + Yr / 400 + T (M) + D) mod 7);
+        ((Adjusted_Year + Adjusted_Year / 4 - Adjusted_Year / 100
+          + Adjusted_Year / 400 + Month_Offset (Month) + Day) mod 7);
    end Weekday_Of;
 
    ----------------------------------------------------------------------------
@@ -243,21 +247,21 @@ procedure Main is
    --  Paint one fixed-width row to the panel (over the view's black background)
    --  and echo it to the console.
    procedure Draw_Row (Y : Natural; Text : String; FG : LCD.Color) is
-      P : constant String := Pad (Text, Field_Width);
+      Padded : constant String := Pad (Text, Field_Width);
    begin
-      LCD.Text.Draw_Text (S, X => Row_X, Y => Y, Str => P,
+      LCD.Text.Draw_Text (Screen, X => Row_X, Y => Y, Str => Padded,
                           FG => FG, BG => LCD.Black, Scale => Value_Scale);
-      Console (P);
+      Console (Padded);
    end Draw_Row;
 
    --  Clear the panel and draw a view's title + subtitle (once per view entry).
-   procedure Header (Title, Sub : String; C : LCD.Color) is
+   procedure Header (Title, Sub : String; Color : LCD.Color) is
    begin
-      LCD.Fill (S, LCD.Black);
-      LCD.Text.Draw_Text (S, X => Title_X, Y => Title_Y, Str => Title,
-                          FG => C, BG => LCD.Black, Scale => Title_Scale);
-      LCD.Text.Draw_Text (S, X => Sub_X, Y => Sub_Y, Str => Sub,
-                          FG => Dim, BG => LCD.Black, Scale => Sub_Scale);
+      LCD.Fill (Screen, LCD.Black);
+      LCD.Text.Draw_Text (Screen, X => Title_X, Y => Title_Y, Str => Title,
+                          FG => Color, BG => LCD.Black, Scale => Title_Scale);
+      LCD.Text.Draw_Text (Screen, X => Sub_X, Y => Sub_Y, Str => Sub,
+                          FG => Grey, BG => LCD.Black, Scale => Sub_Scale);
       Console ("== " & Title & " : " & Sub & " ==");
    end Header;
 
@@ -266,25 +270,29 @@ procedure Main is
    ----------------------------------------------------------------------------
 
    procedure Update_GPS is
-      T : constant GPS.Time_Reading     := GPS.Current_Time;
-      P : constant GPS.Position_Reading := GPS.Current_Position;
-      F : constant GPS.Fix_Reading      := GPS.Current_Fix;
-      G : constant GPS.Signal_Reading   := GPS.Current_Signal;
+      Time     : constant GPS.Time_Reading     := GPS.Current_Time;
+      Position : constant GPS.Position_Reading := GPS.Current_Position;
+      Fix      : constant GPS.Fix_Reading      := GPS.Current_Fix;
+      Signal   : constant GPS.Signal_Reading   := GPS.Current_Signal;
       Time_Fresh : constant Boolean :=
-        T.Valid and then To_Duration (GPS.Age (T.Updated_At)) < Time_Stale_After;
+        Time.Valid
+          and then To_Duration (GPS.Age (Time.Updated_At)) < Time_Stale_After;
       Pos_Fresh : constant Boolean :=
-        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < Pos_Stale_After;
+        Position.Valid
+          and then To_Duration (GPS.Age (Position.Updated_At)) < Pos_Stale_After;
    begin
       if Time_Fresh then
-         Draw_Row (R1, Fmt_Time (T.Value), White);
+         Draw_Row (R1, Fmt_Time (Time.Value), White);
       else
          Draw_Row (R1, "UTC --:--:--", White);
       end if;
       if Pos_Fresh then
-         Draw_Row (R2, "Lat " & Fmt_Deg (P.Value.Latitude, 2, 'N', 'S'), White);
-         Draw_Row (R3, "Lon " & Fmt_Deg (P.Value.Longitude, 3, 'E', 'W'), White);
-         Draw_Row (R4, "Fix " & Mode_Str (G.Mode) & " Sat "
-                       & Nat_Fixed (F.Satellites, 2), Green);
+         Draw_Row (R2, "Lat " & Fmt_Deg (Position.Value.Latitude, 2, 'N', 'S'),
+                   White);
+         Draw_Row (R3, "Lon " & Fmt_Deg (Position.Value.Longitude, 3, 'E', 'W'),
+                   White);
+         Draw_Row (R4, "Fix " & Mode_Str (Signal.Mode) & " Sat "
+                       & Nat_Fixed (Fix.Satellites, 2), Green);
       else
          Draw_Row (R2, "Lat --", White);
          Draw_Row (R3, "Lon --", White);
@@ -293,13 +301,14 @@ procedure Main is
    end Update_GPS;
 
    procedure Update_Env is
-      M  : SHT.Measurement;
-      St : SHT.Status;
+      Measurement : SHT.Measurement;
+      Status      : SHT.Status;
    begin
-      SHT.Measure (Env, M, St);
-      if St = SHT.OK then
-         Draw_Row (R1, "Temp " & Fmt_Milli (M.Temperature) & " C", White);
-         Draw_Row (R2, "Hum  " & Fmt_Milli (M.Humidity) & " %", Cyan);
+      SHT.Measure (Environment_Sensor, Measurement, Status);
+      if Status = SHT.OK then
+         Draw_Row (R1, "Temp " & Fmt_Milli (Measurement.Temperature) & " C",
+                   White);
+         Draw_Row (R2, "Hum  " & Fmt_Milli (Measurement.Humidity) & " %", Cyan);
       else
          Draw_Row (R1, "Temp  --", Amber);
          Draw_Row (R2, "Hum   --", Amber);
@@ -307,24 +316,26 @@ procedure Main is
    end Update_Env;
 
    procedure Update_RTC is
-      T     : RTC.Time;
-      Valid : Boolean;
-      St    : RTC.Status;
+      Time   : RTC.Time;
+      Valid  : Boolean;
+      Status : RTC.Status;
    begin
-      RTC.Get_Time (Clk, T, Valid, St);
-      if St = RTC.OK then
-         Draw_Row (R1, "Date " & Nat_Fixed (T.Year, 4) & "-"
-                       & Nat_Fixed (T.Month, 2) & "-" & Nat_Fixed (T.Day, 2),
+      RTC.Get_Time (Clock_Dev, Time, Valid, Status);
+      if Status = RTC.OK then
+         Draw_Row (R1, "Date " & Nat_Fixed (Time.Year, 4) & "-"
+                       & Nat_Fixed (Time.Month, 2) & "-"
+                       & Nat_Fixed (Time.Day, 2),
                    White);
-         Draw_Row (R2, "Time " & Nat_Fixed (T.Hour, 2) & ":"
-                       & Nat_Fixed (T.Minute, 2) & ":" & Nat_Fixed (T.Second, 2),
+         Draw_Row (R2, "Time " & Nat_Fixed (Time.Hour, 2) & ":"
+                       & Nat_Fixed (Time.Minute, 2) & ":"
+                       & Nat_Fixed (Time.Second, 2),
                    White);
-         Draw_Row (R3, "Day  " & Day_Str (T.Day_Of_Week)
+         Draw_Row (R3, "Day  " & Day_Str (Time.Day_Of_Week)
                        & (if Valid then "" else " (unset)"), Cyan);
          if RTC_Synced then
             Draw_Row (R4, "Src  GPS UTC", Green);
          elsif Valid then
-            Draw_Row (R4, "Src  battery", Dim);
+            Draw_Row (R4, "Src  battery", Grey);
          else
             Draw_Row (R4, "Src  awaiting GPS", Amber);
          end if;
@@ -334,33 +345,37 @@ procedure Main is
    end Update_RTC;
 
    --  QMI8658C die-temperature scale: the raw 16-bit reading is in 1/256 C.
-   IMU_Temp_LSB_Per_C : constant := 256;
+   IMU_Temp_Counts_Per_C : constant := 256;
 
    procedure Update_IMU is
-      A   : IMU.Axes;
-      Raw : Interfaces.Integer_16;
-      St  : IMU.Status;
-      St2 : IMU.Status;
+      Accel           : IMU.Axes;
+      Raw_Temperature : Interfaces.Integer_16;
+      Accel_Status    : IMU.Status;
+      Temp_Status     : IMU.Status;
 
       --  Accelerometer counts per 1 g for the configured range (set in Configure
-      --  below); raw counts * 1000 / LSB gives milli-g for Fmt_Milli.
-      LSB : constant Positive := IMU.Accel_LSB_Per_G (Imu_Dev);
+      --  below); raw counts * 1000 / Counts_Per_G gives milli-g for Fmt_Milli.
+      Counts_Per_G : constant Positive := IMU.Accel_LSB_Per_G (Imu_Dev);
    begin
-      IMU.Read_Accelerometer (Imu_Dev, A, St);
-      IMU.Read_Temperature (Imu_Dev, Raw, St2);
-      if St = IMU.OK then
-         Draw_Row (R1, "Ax " & Fmt_Milli (Integer (A.X) * 1000 / LSB, True)
+      IMU.Read_Accelerometer (Imu_Dev, Accel, Accel_Status);
+      IMU.Read_Temperature (Imu_Dev, Raw_Temperature, Temp_Status);
+      if Accel_Status = IMU.OK then
+         Draw_Row (R1, "Ax "
+                       & Fmt_Milli (Integer (Accel.X) * 1000 / Counts_Per_G, True)
                        & " g", White);
-         Draw_Row (R2, "Ay " & Fmt_Milli (Integer (A.Y) * 1000 / LSB, True)
+         Draw_Row (R2, "Ay "
+                       & Fmt_Milli (Integer (Accel.Y) * 1000 / Counts_Per_G, True)
                        & " g", White);
-         Draw_Row (R3, "Az " & Fmt_Milli (Integer (A.Z) * 1000 / LSB, True)
+         Draw_Row (R3, "Az "
+                       & Fmt_Milli (Integer (Accel.Z) * 1000 / Counts_Per_G, True)
                        & " g", White);
       else
          Draw_Row (R1, "IMU bus error", Amber);
       end if;
-      if St2 = IMU.OK then
+      if Temp_Status = IMU.OK then
          Draw_Row (R4, "Temp "
-                       & Fmt_Milli (Integer (Raw) * 1000 / IMU_Temp_LSB_Per_C)
+                       & Fmt_Milli (Integer (Raw_Temperature) * 1000
+                                    / IMU_Temp_Counts_Per_C)
                        & " C", Cyan);
       end if;
    end Update_IMU;
@@ -370,36 +385,42 @@ procedure Main is
    --  so the RTC then reads back Valid until power is lost.  The GPS UTC snapshot
    --  can be up to ~1 s old (no PPS alignment here), which is fine for a clock.
    procedure Sync_RTC_From_GPS is
-      P  : constant GPS.Position_Reading := GPS.Current_Position;
-      Dt : constant GPS.Date_Reading     := GPS.Current_Date;
-      Tm : constant GPS.Time_Reading     := GPS.Current_Time;
+      Position : constant GPS.Position_Reading := GPS.Current_Position;
+      Date     : constant GPS.Date_Reading     := GPS.Current_Date;
+      Time     : constant GPS.Time_Reading     := GPS.Current_Time;
       Locked : constant Boolean :=
-        P.Valid and then To_Duration (GPS.Age (P.Updated_At)) < Pos_Stale_After;
-      T  : RTC.Time;
-      St : RTC.Status;
+        Position.Valid
+          and then To_Duration (GPS.Age (Position.Updated_At)) < Pos_Stale_After;
+      RTC_Time : RTC.Time;
+      Status   : RTC.Status;
    begin
-      if RTC_Synced or else not (Locked and then Dt.Valid and then Tm.Valid) then
+      if RTC_Synced
+        or else not (Locked and then Date.Valid and then Time.Valid)
+      then
          return;
       end if;
-      T := (Year        => Dt.Value.Year,
-            Month       => Dt.Value.Month,
-            Day         => Dt.Value.Day,
-            Day_Of_Week => Weekday_Of (Dt.Value.Year, Dt.Value.Month,
-                                       Dt.Value.Day),
-            Hour        => Tm.Value.Hour,
-            Minute      => Tm.Value.Minute,
-            Second      => Tm.Value.Second);
-      RTC.Set_Time (Clk, T, St);
-      if St = RTC.OK then
+      RTC_Time := (Year        => Date.Value.Year,
+                   Month       => Date.Value.Month,
+                   Day         => Date.Value.Day,
+                   Day_Of_Week => Weekday_Of (Date.Value.Year, Date.Value.Month,
+                                              Date.Value.Day),
+                   Hour        => Time.Value.Hour,
+                   Minute      => Time.Value.Minute,
+                   Second      => Time.Value.Second);
+      RTC.Set_Time (Clock_Dev, RTC_Time, Status);
+      if Status = RTC.OK then
          RTC_Synced := True;
          Console ("RTC set from GPS UTC "
-                  & Nat_Fixed (T.Year, 4) & "-" & Nat_Fixed (T.Month, 2) & "-"
-                  & Nat_Fixed (T.Day, 2) & " " & Nat_Fixed (T.Hour, 2) & ":"
-                  & Nat_Fixed (T.Minute, 2) & ":" & Nat_Fixed (T.Second, 2));
+                  & Nat_Fixed (RTC_Time.Year, 4) & "-"
+                  & Nat_Fixed (RTC_Time.Month, 2) & "-"
+                  & Nat_Fixed (RTC_Time.Day, 2) & " "
+                  & Nat_Fixed (RTC_Time.Hour, 2) & ":"
+                  & Nat_Fixed (RTC_Time.Minute, 2) & ":"
+                  & Nat_Fixed (RTC_Time.Second, 2));
       end if;
    end Sync_RTC_From_GPS;
 
-   type View_Kind is (V_GPS, V_Env, V_RTC, V_IMU);
+   type View_Kind is (View_GPS, View_Env, View_RTC, View_IMU);
 begin
    delay until Clock + Milliseconds (200);
    Banner;
@@ -408,61 +429,61 @@ begin
    ESP32S3.GPIO.Configure (Backlight, Mode => ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Set (Backlight);
 
-   LCD.Setup (Disp, Sclk => LCD_Sclk, Mosi => LCD_Mosi,
+   LCD.Setup (Display, Sclk => LCD_Sclk, Mosi => LCD_Mosi,
               DC => LCD_DC, CS => LCD_CS);                          --  240x240
-   LCD.Acquire (S, Disp);
-   LCD.Init (S);
+   LCD.Acquire (Screen, Display);
+   LCD.Init (Screen);
 
    --  Startup splash: the textless Ada mascot, full screen for ~2.5 s.
-   LCD.Draw_Bitmap (S, X => 0, Y => 0,
+   LCD.Draw_Bitmap (Screen, X => 0, Y => 0,
                     W => Ada_Logo.Width, H => Ada_Logo.Height,
                     Pixels => Ada_Logo.Pixels);
    Console ("splash: Ada logo");
    delay until Clock + Milliseconds (2500);   --  ~2.5 s splash hold.
-   LCD.Fill (S, LCD.Black);
+   LCD.Fill (Screen, LCD.Black);
 
    --  Bring up the GPS service (releases its reader task) and the I2C sensors.
    GPS.Setup (Port => ESP32S3.UART.UART0,
               Rx => GPS_Rx_Pin, Tx => GPS_Tx_Pin, Baud => GPS_Baud);
-   SHT.Setup (Env, Sda => Sda, Scl => Scl);
-   RTC.Setup (Clk, Sda => Sda, Scl => Scl);
+   SHT.Setup (Environment_Sensor, Sda => Sda, Scl => Scl);
+   RTC.Setup (Clock_Dev, Sda => Sda, Scl => Scl);
 
    --  IMU: probe the SA0-low address (0x6B); fall back to 0x6A, then configure.
    declare
-      Id : Interfaces.Unsigned_8;
-      St : IMU.Status;
+      Who_Am_I : Interfaces.Unsigned_8;
+      Status   : IMU.Status;
       use type Interfaces.Unsigned_8;
    begin
       IMU.Setup (Imu_Dev, Sda => Sda, Scl => Scl,
                  Address => IMU.Address_SA0_Low);
-      IMU.Read_Who_Am_I (Imu_Dev, Id, St);
-      if St /= IMU.OK or else Id /= IMU.Who_Am_I_Value then
+      IMU.Read_Who_Am_I (Imu_Dev, Who_Am_I, Status);
+      if Status /= IMU.OK or else Who_Am_I /= IMU.Who_Am_I_Value then
          IMU.Setup (Imu_Dev, Sda => Sda, Scl => Scl,
                     Address => IMU.Address_SA0_High);
       end if;
-      IMU.Reset (Imu_Dev, St);
+      IMU.Reset (Imu_Dev, Status);
       delay until Clock + Milliseconds (20);
       IMU.Configure (Imu_Dev, Accel => IMU.Range_8G, Gyro => IMU.Range_512DPS,
-                     Rate => IMU.ODR_235_Hz, Result => St);
+                     Rate => IMU.ODR_235_Hz, Result => Status);
    end;
 
    --  Cycle the views, five seconds (five 1 Hz updates) on each.
    loop
-      for V in View_Kind loop
-         case V is
-            when V_GPS => Header ("GPS", "NMEA receiver",    Green);
-            when V_Env => Header ("ENV", "SHT41 temp/humid", Cyan);
-            when V_RTC => Header ("RTC", "PCF85063A clock",  White);
-            when V_IMU => Header ("IMU", "QMI8658C 6-axis",  Amber);
+      for View in View_Kind loop
+         case View is
+            when View_GPS => Header ("GPS", "NMEA receiver",    Green);
+            when View_Env => Header ("ENV", "SHT41 temp/humid", Cyan);
+            when View_RTC => Header ("RTC", "PCF85063A clock",  White);
+            when View_IMU => Header ("IMU", "QMI8658C 6-axis",  Amber);
          end case;
 
-         for Sec in 1 .. 5 loop
+         for Tick in 1 .. 5 loop
             Sync_RTC_From_GPS;   --  one-time, as soon as the GPS locks
-            case V is
-               when V_GPS => Update_GPS;
-               when V_Env => Update_Env;
-               when V_RTC => Update_RTC;
-               when V_IMU => Update_IMU;
+            case View is
+               when View_GPS => Update_GPS;
+               when View_Env => Update_Env;
+               when View_RTC => Update_RTC;
+               when View_IMU => Update_IMU;
             end case;
             delay until Clock + Seconds (1);
          end loop;
