@@ -3,13 +3,18 @@ with Ada.Interrupts.Names;
 with System;
 
 --  L2/L3 interrupt handlers for the vector regression test.  Two library-level
---  protected objects attach to the L2 (Device_L2_0 = CPU_INT 19) and L3
---  (Device_L3_0 = CPU_INT 23) device interrupts.  example.adb fires them via the
---  FROM_CPU matrix sources; each handler clears its (level-triggered) source and
---  counts.  This exercises __gnat_level2_vector / __gnat_level3_vector (whose
---  XT_STK frame build now masks debug across the per-task stack watchpoint).
+--  protected objects attach to the L2 and L3 device interrupts -- on this port
+--  Device_L2_0 = CPU_INT 19 and Device_L3_0 = CPU_INT 23.  example.adb fires
+--  them via the FROM_CPU interrupt-matrix sources; each handler clears its
+--  (level-triggered) source and counts.  This exercises __gnat_level2_vector /
+--  __gnat_level3_vector (whose XT_STK frame build now masks debug across the
+--  per-task stack watchpoint).  The handlers must be closure-free and
+--  library-level -- a captured-environment handler would need a GNAT trampoline,
+--  which faults on this part (No_Implicit_Dynamic_Code).
 package body Blink is
 
+   --  Clear the level-triggered FROM_CPU source so the handler does not re-enter
+   --  the moment it returns (implemented in the example's C glue).
    procedure Clear_L2;
    pragma Import (C, Clear_L2, "ada_clear_l2");
    procedure Clear_L3;
@@ -22,16 +27,16 @@ package body Blink is
    private
       procedure Handle;
       pragma Attach_Handler (Handle, Ada.Interrupts.Names.Device_L2_0);
-      N : Integer := 0;
+      Fired : Integer := 0;    --  times the L2 handler has run
    end L2_PO;
 
    protected body L2_PO is
       procedure Handle is
       begin
          Clear_L2;
-         N := N + 1;
+         Fired := Fired + 1;
       end Handle;
-      function Count return Integer is (N);
+      function Count return Integer is (Fired);
    end L2_PO;
 
    protected L3_PO with
@@ -41,16 +46,16 @@ package body Blink is
    private
       procedure Handle;
       pragma Attach_Handler (Handle, Ada.Interrupts.Names.Device_L3_0);
-      N : Integer := 0;
+      Fired : Integer := 0;    --  times the L3 handler has run
    end L3_PO;
 
    protected body L3_PO is
       procedure Handle is
       begin
          Clear_L3;
-         N := N + 1;
+         Fired := Fired + 1;
       end Handle;
-      function Count return Integer is (N);
+      function Count return Integer is (Fired);
    end L3_PO;
 
    function L2_Count return Integer is (L2_PO.Count);

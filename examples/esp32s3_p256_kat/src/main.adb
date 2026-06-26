@@ -1,15 +1,49 @@
---  Known-answer test for the pure-Ada P-256 (secp256r1) ECDSA verifier (P256).
---  The vector was produced with OpenSSL (ecparam prime256v1 + dgst -sha256 -sign)
---  and confirmed valid by `openssl dgst -verify`.  We check that P256.Verify
---  accepts the genuine signature and rejects a one-bit-tampered hash.
+--  Known-answer test for the pure-Ada P-256 (secp256r1) ECDSA + ECDH (P256)
+--  ==========================================================================
+--  What it demonstrates: the pure-Ada P-256 primitives produce the expected
+--  fixed answers.  Two parts run against baked-in vectors:
+--    ECDSA verify -- P256.Verify accepts a genuine signature and rejects the
+--                    same signature against a one-bit-tampered message hash;
+--    ECDH         -- P256.Public_Key reproduces the public key for a known
+--                    private scalar, and P256.ECDH reproduces the known shared
+--                    secret against a known peer public key.
+--
+--  Build & run: ./x run esp32s3_p256_kat
+--    (build.sh sets ESP32S3_RTS_PROFILE=embedded, the no-tasking bare profile.)
+--
+--  Output: each line ends in (PASS) when the primitive matches the vector, and
+--  the run ends with "[p256] result: ALL PASS".  Note that the EXPECTED state of
+--  the tampered-hash line is INVALID -- "INVALID (PASS)" means the verifier
+--  correctly rejected the bad signature.
+--
+--  Hardware: none (self-contained -- all data is baked-in test vectors).
+--
+--  Vector legend (all 32-byte big-endian field/scalar values):
+--    Qx,   Qy    -- the signer's public key (point Q = d*G on the curve);
+--    Hash        -- the SHA-256 message digest that was signed;
+--    R,    S     -- the ECDSA signature pair over Hash;
+--    D           -- our ECDH private scalar;
+--    MyX,  MyY   -- our public key (point D*G), the expected Public_Key output;
+--    PeerX, PeerY -- the peer's public key point;
+--    Shared      -- the expected ECDH shared secret (X-coord of D*Peer).
+--
+--  Provenance: the ECDSA key/signature/hash vector was produced with OpenSSL
+--  (`openssl ecparam -name prime256v1` + `openssl dgst -sha256 -sign`) and
+--  confirmed valid by `openssl dgst -verify`.  The ECDH key pairs and shared
+--  secret were likewise generated with OpenSSL (a pair of prime256v1 keys plus
+--  `openssl pkeyutl -derive`); both sides deriving the same secret X-coordinate
+--  is the standard ECDH cross-check.
 with Interfaces; use type Interfaces.Unsigned_8;
 with ESP32S3.Log; use ESP32S3.Log;
 with P256; use type P256.Bytes;
 
+--  Pull the SMP slave-start entry into the link closure (the bare glue calls it
+--  after elaboration); this KAT runs single-core, so nothing else is needed.
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
+   --  ECDSA-over-SHA-256 vector: signer public key Q = (Qx, Qy).
    KAT_Qx : constant P256.Bytes_32 :=
      (
       16#A3#, 16#D5#, 16#B9#, 16#BE#, 16#79#, 16#43#, 16#F5#, 16#4F#,
@@ -22,12 +56,14 @@ procedure Main is
       16#7B#, 16#13#, 16#9B#, 16#57#, 16#67#, 16#E4#, 16#44#, 16#63#,
       16#E0#, 16#1F#, 16#5F#, 16#06#, 16#2E#, 16#1C#, 16#4F#, 16#05#,
       16#9D#, 16#8A#, 16#8E#, 16#75#, 16#30#, 16#1B#, 16#50#, 16#7E#);
+   --  The SHA-256 digest that was signed.
    KAT_Hash : constant P256.Bytes_32 :=
      (
       16#0F#, 16#B7#, 16#6E#, 16#5A#, 16#9C#, 16#8D#, 16#DE#, 16#38#,
       16#8D#, 16#06#, 16#56#, 16#55#, 16#26#, 16#17#, 16#EB#, 16#ED#,
       16#E9#, 16#25#, 16#C7#, 16#31#, 16#07#, 16#93#, 16#C4#, 16#E1#,
       16#3C#, 16#54#, 16#91#, 16#05#, 16#72#, 16#CB#, 16#67#, 16#24#);
+   --  The ECDSA signature pair (R, S) over KAT_Hash under the key above.
    KAT_R : constant P256.Bytes_32 :=
      (
       16#1E#, 16#FF#, 16#4D#, 16#52#, 16#69#, 16#2D#, 16#F9#, 16#AB#,
@@ -40,6 +76,8 @@ procedure Main is
       16#C5#, 16#45#, 16#EC#, 16#48#, 16#5F#, 16#B5#, 16#8D#, 16#7A#,
       16#EB#, 16#B4#, 16#79#, 16#6A#, 16#3A#, 16#39#, 16#4C#, 16#4F#,
       16#86#, 16#9A#, 16#63#, 16#E5#, 16#B9#, 16#B1#, 16#47#, 16#A8#);
+   --  ECDH vector: our private scalar D, and the public key D*G we expect
+   --  Public_Key to derive from it -- (ECDH_MyX, ECDH_MyY).
    ECDH_D : constant P256.Bytes_32 :=
      (
       16#D8#, 16#A6#, 16#42#, 16#7E#, 16#87#, 16#E0#, 16#65#, 16#6D#,
@@ -58,6 +96,7 @@ procedure Main is
       16#87#, 16#5D#, 16#4A#, 16#3E#, 16#5C#, 16#51#, 16#E0#, 16#FA#,
       16#7A#, 16#4C#, 16#67#, 16#CC#, 16#83#, 16#6F#, 16#D5#, 16#09#,
       16#90#, 16#B9#, 16#B4#, 16#AF#, 16#C8#, 16#CF#, 16#79#, 16#59#);
+   --  The peer's public key point (PeerX, PeerY).
    ECDH_PeerX : constant P256.Bytes_32 :=
      (
       16#F7#, 16#25#, 16#D5#, 16#E2#, 16#17#, 16#67#, 16#40#, 16#3C#,
@@ -70,42 +109,67 @@ procedure Main is
       16#BD#, 16#43#, 16#81#, 16#EE#, 16#72#, 16#3E#, 16#FE#, 16#BA#,
       16#67#, 16#95#, 16#74#, 16#BE#, 16#4F#, 16#D5#, 16#D0#, 16#0B#,
       16#D3#, 16#DF#, 16#21#, 16#C2#, 16#3A#, 16#17#, 16#E3#, 16#20#);
+   --  The expected shared secret: X-coordinate of D*Peer (== Peer_D*MyKey).
    ECDH_Shared : constant P256.Bytes_32 :=
      (
       16#EB#, 16#23#, 16#AB#, 16#BC#, 16#E9#, 16#5D#, 16#13#, 16#0E#,
       16#03#, 16#BA#, 16#FA#, 16#69#, 16#6F#, 16#E4#, 16#40#, 16#A0#,
       16#4E#, 16#B4#, 16#62#, 16#A6#, 16#C4#, 16#28#, 16#92#, 16#19#,
       16#AC#, 16#05#, 16#9D#, 16#A0#, 16#3C#, 16#67#, 16#71#, 16#4C#);
-   PkX, PkY, ShX : P256.Bytes_32;
-   Pk_OK, Sh_OK : Boolean;
-   Ecdh_Pass : Boolean := False;
-   Bad_Hash : P256.Bytes_32 := KAT_Hash;
-   Good, Bad : Boolean;
+   --  Public_Key outputs: the derived public key point (X, Y).
+   Derived_Pub_X : P256.Bytes_32;
+   Derived_Pub_Y : P256.Bytes_32;
+
+   --  ECDH output: the X-coordinate of the computed shared secret.
+   Derived_Shared_X : P256.Bytes_32;
+
+   --  Did each primitive return success (curve/range checks passed)?
+   Public_Key_OK : Boolean;
+   ECDH_OK : Boolean;
+
+   --  Overall ECDH verdict: both primitives succeeded AND matched their vectors.
+   ECDH_Pass : Boolean := False;
+
+   --  A copy of the genuine hash with one bit flipped, to drive the reject test.
+   Tampered_Hash : P256.Bytes_32 := KAT_Hash;
+
+   --  ECDSA verdicts: the genuine signature should verify, the tampered one not.
+   Genuine_Valid : Boolean;
+   Tampered_Valid : Boolean;
 begin
    Put_Line ("[p256] ECDSA P-256 verify KAT");
 
-   Good := P256.Verify (KAT_Qx, KAT_Qy, KAT_Hash, KAT_R, KAT_S);
+   Genuine_Valid := P256.Verify (KAT_Qx, KAT_Qy, KAT_Hash, KAT_R, KAT_S);
    Put_Line ("[p256] genuine signature  -> "
-             & (if Good then "VALID (PASS)" else "INVALID (FAIL)"));
+             & (if Genuine_Valid then "VALID (PASS)" else "INVALID (FAIL)"));
 
-   Bad_Hash (0) := Bad_Hash (0) xor 1;                 --  flip one bit of the hash
-   Bad := P256.Verify (KAT_Qx, KAT_Qy, Bad_Hash, KAT_R, KAT_S);
+   --  Flip one bit of the hash so the signature no longer matches: a correct
+   --  verifier must now reject it.
+   Tampered_Hash (0) := Tampered_Hash (0) xor 1;
+   Tampered_Valid := P256.Verify (KAT_Qx, KAT_Qy, Tampered_Hash, KAT_R, KAT_S);
    Put_Line ("[p256] tampered hash      -> "
-             & (if Bad then "VALID (FAIL)" else "INVALID (PASS)"));
+             & (if Tampered_Valid then "VALID (FAIL)" else "INVALID (PASS)"));
 
 
-   --  ECDH: our public key from the private scalar, and the shared secret.
-   Pk_OK := P256.Public_Key (ECDH_D, PkX, PkY);
+   --  ECDH: derive our public key from the private scalar, then the shared
+   --  secret against the peer's public key, and compare both to the vectors.
+   Public_Key_OK := P256.Public_Key (ECDH_D, Derived_Pub_X, Derived_Pub_Y);
    Put_Line ("[p256] ECDH public key    -> "
-             & (if Pk_OK and PkX = ECDH_MyX and PkY = ECDH_MyY
+             & (if Public_Key_OK and Derived_Pub_X = ECDH_MyX
+                   and Derived_Pub_Y = ECDH_MyY
                 then "MATCH (PASS)" else "MISMATCH (FAIL)"));
-   Sh_OK := P256.ECDH (ECDH_D, ECDH_PeerX, ECDH_PeerY, ShX);
+   ECDH_OK := P256.ECDH (ECDH_D, ECDH_PeerX, ECDH_PeerY, Derived_Shared_X);
    Put_Line ("[p256] ECDH shared secret -> "
-             & (if Sh_OK and ShX = ECDH_Shared then "MATCH (PASS)" else "MISMATCH (FAIL)"));
-   Ecdh_Pass := Pk_OK and then PkX = ECDH_MyX and then PkY = ECDH_MyY
-                and then Sh_OK and then ShX = ECDH_Shared;
+             & (if ECDH_OK and Derived_Shared_X = ECDH_Shared
+                then "MATCH (PASS)" else "MISMATCH (FAIL)"));
+   ECDH_Pass := Public_Key_OK
+                and then Derived_Pub_X = ECDH_MyX
+                and then Derived_Pub_Y = ECDH_MyY
+                and then ECDH_OK
+                and then Derived_Shared_X = ECDH_Shared;
 
    Put_Line ("[p256] result: "
-             & (if Good and not Bad and Ecdh_Pass then "ALL PASS" else "FAILURE"));
+             & (if Genuine_Valid and not Tampered_Valid and ECDH_Pass
+                then "ALL PASS" else "FAILURE"));
    loop null; end loop;
 end Main;

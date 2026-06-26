@@ -1,23 +1,48 @@
---  ext4 WRITE battery for the pure-Ada filesystem (ESP32S3.Ext4) over SDMMC, on
---  a board where the SD card's DAT3/CD is driven by a CH422G expander (IO4).
+--  ext4 WRITE battery for the pure-Ada filesystem on the bare-metal ESP32-S3
+--  ==========================================================================
+--  What it demonstrates
+--    The WRITE + journal (JBD2) API of the pure-Ada filesystem (ESP32S3.Ext4)
+--    on a real mkfs.ext4 SD card, over the SDMMC block driver.  It mounts the
+--    card read-write and runs the whole battery as ONE journaled transaction:
+--      * create a regular file + write it
+--      * mkdir a subdirectory + create a file inside it
+--      * write a 1 MiB file (forces the single-indirect block map, >12 blocks)
+--      * hard link        (two names -> one inode, nlink=2)
+--      * symbolic link    (fast/inline symlink)
+--      * rename / move
+--      * delete (unlink)
+--    Each step is asserted on-device; the card then passes 'e2fsck -f' clean on
+--    a host, where the tree, the symlink target and the big-file pattern verify.
 --
---  It mounts read-write and exercises the write API as one journaled transaction:
---    * create a regular file + write it
---    * mkdir a subdirectory + create a file inside it
---    * write a 1 MiB file (forces the single-indirect block map, >12 blocks)
---    * hard link        (two names -> one inode, nlink=2)
---    * symbolic link    (fast/inline symlink)
---    * rename / move
---    * delete (unlink)
---  Each step is asserted on-device; the card then passes 'e2fsck -f' clean on a
---  host, where the tree, the symlink target and the big-file pattern verify.
+--  Build & run
+--    ./x run esp32s3_ext4_write          (./x flash / build take the same name)
+--    Embedded profile -- both the FS (block cache) and SDMMC use controlled /
+--    secondary-stack resources, and the journal commit allocates a ~64 KB
+--    transaction buffer, so build.sh sets ESP32S3_RTS_PROFILE=embedded and puts
+--    the heap arena in the 8 MB external PSRAM (HEAP_PSRAM=1).
 --
---  The card MUST be whole-device and NON-metadata_csum:
---     mkfs.ext4 -F -O ^metadata_csum /dev/sdX
---  Writing a metadata_csum volume is refused (Read_Only) and reported.
+--  Output -- what success looks like
+--    A "[ext4w] mount (read-write): OK" line, then one "[PASS]" per operation
+--    (cleanup, create, mkdir, file-inside-dir, big file, hard link, symlink,
+--    rename, delete), ending with
+--      [ext4w] all operations committed (journaled): OK
+--    A [FAIL] on any check, or a "write FAILED: ..." line, means the run did not
+--    pass; "metadata_csum volume" there means the card was formatted wrong.
 --
---  Wiring:  SDMMC 1-bit CLK=IO12 CMD=IO11 D0=IO13 ; DAT3 via CH422G (I2C0
---  SDA=IO8 SCL=IO9, IO4).
+--  Hardware
+--    A FAT-free SD card formatted ext4, whole-device (not a partition) and
+--    WITHOUT metadata_csum:
+--        mkfs.ext4 -F -O ^metadata_csum /dev/sdX     (/dev/sdX, NOT /dev/sdX1)
+--    The pure-Ada FS reads metadata_csum volumes but REFUSES to write them (it
+--    does not yet recompute every metadata CRC32c), raising Read_Only -- which
+--    this example catches and reports.  Run on a freshly-formatted card; the
+--    SDMMC write path is known to drift the free counts when re-run on an
+--    already-written volume.
+--
+--  Wiring -- SDMMC in 1-bit mode, with the card's DAT3/CD driven by a CH422G:
+--        SDMMC CLK / CMD / D0 = IO12 / IO11 / IO13   (1-bit)
+--        SD DAT3 / CD         = CH422G IO4           (held high)
+--        CH422G I2C           = SDA=IO8  SCL=IO9     (I2C0)
 with System;
 with Interfaces;   use Interfaces;
 with Interfaces.C; use Interfaces.C;
@@ -53,51 +78,73 @@ procedure Main is
                       pragma Import (C, Check_C, "native_w_check");
    procedure Done;  pragma Import (C, Done, "native_w_done");
 
-   Dev_CH : CH.Device;
-   ExS    : CH.Session;
-   ESt    : CH.Status;
-   SDC    : aliased SD.Card;
-   St     : SD.Status;
+   Expander     : CH.Device;    --  CH422G that drives the card's DAT3/CD
+   Expander_Bus : CH.Session;
+   Expander_St  : CH.Status;
+   SD_Card      : aliased SD.Card;
+   SD_St        : SD.Status;
+
+   --  CH422G output byte with bit 4 set: drive its IO4 (the card DAT3/CD) high.
+   CH_IO4_High : constant := 2#0001_0000#;
+
+   --  SD High-Speed mode clock ceiling, and the fastest the 1-bit wiring runs
+   --  reliably here.
+   SD_High_Speed_Clock_Hz : constant := 50_000_000;
 
    --  A 1 MiB file exercises the single-indirect block map (>12 direct blocks).
-   Big_Size : constant := 1024 * 1024;
+   Big_File_Size : constant := 1024 * 1024;
    type Byte_Array_Ptr is access ESP32S3.Ext4.Byte_Array;
    procedure Free is new Ada.Unchecked_Deallocation
      (ESP32S3.Ext4.Byte_Array, Byte_Array_Ptr);
 
-   function Pat (I : Natural) return U8 is (U8 (I mod 251));   --  big-file byte
+   --  The big file is filled with a repeating, position-dependent byte so the
+   --  host (and the on-device head/tail check) can verify the contents exactly.
+   --  251 is the largest prime < 256, so the pattern's period (251) is coprime
+   --  with the 4 KiB block size -- no block boundary lines up with a repeat,
+   --  catching block-map mistakes that a constant fill would hide.
+   Pattern_Period : constant := 251;
+   function Pattern_Byte (Offset : Natural) return U8 is
+     (U8 (Offset mod Pattern_Period));
 
-   --  NUL-terminate Str for the C %s glue (non-printables -> '.').
-   function Cstr (Str : String) return String is
-      R : String (1 .. Str'Length + 1);
+   --  Printable-ASCII range (space .. tilde); anything outside maps to '.' so a
+   --  stray control byte can't corrupt the console line.
+   First_Printable : constant := 32;
+   Last_Printable  : constant := 126;
+
+   --  Make a NUL-terminated copy of Str for the C "%s" console glue, with
+   --  non-printables replaced by '.'.
+   function C_String (Str : String) return String is
+      Result : String (1 .. Str'Length + 1);   --  + 1 for the trailing NUL
    begin
       for I in 1 .. Str'Length loop
          declare
             Ch : constant Character := Str (Str'First + I - 1);
          begin
-            R (I) := (if Character'Pos (Ch) in 32 .. 126 then Ch else '.');
+            Result (I) :=
+              (if Character'Pos (Ch) in First_Printable .. Last_Printable
+               then Ch else '.');
          end;
       end loop;
-      R (R'Last) := Character'Val (0);
-      return R;
-   end Cstr;
+      Result (Result'Last) := Character'Val (0);
+      return Result;
+   end C_String;
 
    procedure Step (S : String) is
-      M : aliased constant String := Cstr (S);
+      Msg : aliased constant String := C_String (S);
    begin
-      Step_C (M'Address);
+      Step_C (Msg'Address);
    end Step;
 
    procedure Check (Label : String; Ok : Boolean) is
-      M : aliased constant String := Cstr (Label);
+      Msg : aliased constant String := C_String (Label);
    begin
-      Check_C (M'Address, Boolean'Pos (Ok));
+      Check_C (Msg'Address, Boolean'Pos (Ok));
    end Check;
 
-   procedure Report_Error (Msg : String) is
-      M : aliased constant String := Cstr (Msg);
+   procedure Report_Error (Msg_Text : String) is
+      Msg : aliased constant String := C_String (Msg_Text);
    begin
-      Write_R (0, M'Address);
+      Write_R (0, Msg'Address);
    end Report_Error;
 
    --  Fill Data with text Str (caller sizes Data to Str'Length).
@@ -109,33 +156,44 @@ procedure Main is
    end Fill;
 
 begin
+   --  Let the USB-serial console attach before the first line is printed.
    delay until Clock + Milliseconds (200);
    Banner;
 
-   --  CH422G: drive DAT3/CD (IO4) high.
-   CH.Setup (Dev_CH, Sda => 8, Scl => 9);
-   CH.Acquire (ExS, Dev_CH);
-   CH.Write_IO (ExS, 16#10#, ESt);
-   if ESt = CH.OK then
-      CH.Configure (ExS, IO_Dir => CH.Outputs, OC_Mode => CH.Push_Pull,
-                    Result => ESt);
+   --  CH422G expander on I2C0 (SDA=IO8 SCL=IO9): drive its IO4 high so the
+   --  card's DAT3/CD line is held high.
+   CH.Setup (Expander, Sda => 8, Scl => 9);
+   CH.Acquire (Expander_Bus, Expander);
+   CH.Write_IO (Expander_Bus, CH_IO4_High, Expander_St);
+   if Expander_St = CH.OK then
+      CH.Configure (Expander_Bus, IO_Dir => CH.Outputs,
+                    OC_Mode => CH.Push_Pull, Result => Expander_St);
    end if;
 
-   --  SDMMC: 1-bit, High Speed.
-   SD.Setup (SDC, On => SD.Slot1, Clk => 12, Cmd => 11, D0 => 13,
-             Width => SD.Width_1, Data_Clock_Hz => 50_000_000,
+   --  SDMMC slot 1, 1-bit bus, High Speed.
+   SD.Setup (SD_Card, On => SD.Slot1, Clk => 12, Cmd => 11, D0 => 13,
+             Width => SD.Width_1, Data_Clock_Hz => SD_High_Speed_Clock_Hz,
              High_Speed => True);
-   SD.Initialize (SDC, St);
-   Card_R (Boolean'Pos (St = SD.OK));
-   if St /= SD.OK then
+   SD.Initialize (SD_Card, SD_St);
+   Card_R (Boolean'Pos (SD_St = SD.OK));
+   if SD_St /= SD.OK then
       Done;
-      loop delay until Clock + Seconds (3600); end loop;
+      --  No card / init failed: nothing more to do -- park forever.
+      loop
+         delay until Clock + Seconds (3600);
+      end loop;
    end if;
 
    declare
-      BD : constant ESP32S3.Block_Dev.Device :=
-             ESP32S3.Block_Dev.SDMMC_Source.Make (SDC'Access);
-      M  : ESP32S3.Ext4.FS.Mount;
+      --  Block cache depth.  The journal commit buffers the whole dirty set, so
+      --  this bounds how much metadata a single transaction can touch; 16 blocks
+      --  comfortably covers this battery (a file larger than the cache is still
+      --  written, but is checkpointed by eviction rather than held to commit).
+      Cache_Depth_Blocks : constant := 16;
+
+      Block_Device : constant ESP32S3.Block_Dev.Device :=
+             ESP32S3.Block_Dev.SDMMC_Source.Make (SD_Card'Access);
+      M  : ESP32S3.Ext4.FS.Mount;   --  the mounted volume
 
       --  True if Path resolves.  These helpers reference M but are only ever
       --  CALLED directly (never 'Access'd), so no nested-subprogram trampoline.
@@ -171,7 +229,8 @@ begin
          when others => null;
       end Try_Rmdir;
    begin
-      M.Open (BD, Read_Only => False, Cache_Blocks => 16);
+      M.Open (Block_Device, Read_Only => False,
+              Cache_Blocks => Cache_Depth_Blocks);
       Mount_R (1);
       Bitmap.Reset_Phantom_Free_Count;   --  arm the stale-read / double-free tripwire
 
@@ -211,39 +270,49 @@ begin
          M.Write_File (M.Create_File ("/ada_dir", "inside.txt"), Data);
       end;
       declare
-         DI : Inode.Info;
+         Dir_Info : Inode.Info;
       begin
-         M.Stat (M.Lookup ("/ada_dir"), DI);
-         Check ("mkdir (is a directory)", Inode.Is_Dir (DI));
+         M.Stat (M.Lookup ("/ada_dir"), Dir_Info);
+         Check ("mkdir (is a directory)", Inode.Is_Dir (Dir_Info));
       end;
       Check ("file inside dir", Exists ("/ada_dir/inside.txt"));
 
       --  3. A 1 MiB file -> single-indirect block map.
       Step ("write big file /ada_big.bin (1 MiB)");
       declare
-         Big  : Byte_Array_Ptr := new Byte_Array (0 .. Big_Size - 1);
-         BI   : Inode.Info;
-         Buf  : Byte_Array (0 .. 127);
-         Last : Natural;
-         Ok   : Boolean := True;
+         --  Verify the first and last Probe_Bytes of the round-tripped file
+         --  (a full 1 MiB compare is left to the host's cmp); the tail probe
+         --  reaches past the 12 direct blocks into the single-indirect map.
+         Probe_Bytes : constant := 128;
+
+         Big      : Byte_Array_Ptr := new Byte_Array (0 .. Big_File_Size - 1);
+         Big_Info : Inode.Info;
+         Probe    : Byte_Array (0 .. Probe_Bytes - 1);
+         Last     : Natural;
+         Ok       : Boolean := True;
       begin
-         for I in Big'Range loop
-            Big (I) := Pat (I);
+         for Offset in Big'Range loop
+            Big (Offset) := Pattern_Byte (Offset);
          end loop;
          M.Write_File (M.Create_File ("/", "ada_big.bin"), Big.all);
          Free (Big);
 
-         M.Stat (M.Lookup ("/ada_big.bin"), BI);
-         Ok := BI.Size = U64 (Big_Size);
-         M.Read_File (BI, 0, Buf, Last);                 --  head
-         Ok := Ok and then Last = Buf'Length;
+         M.Stat (M.Lookup ("/ada_big.bin"), Big_Info);
+         Ok := Big_Info.Size = U64 (Big_File_Size);
+
+         --  Head: first Probe_Bytes from offset 0.
+         M.Read_File (Big_Info, 0, Probe, Last);
+         Ok := Ok and then Last = Probe'Length;
          for K in 0 .. Last - 1 loop
-            Ok := Ok and then Buf (K) = Pat (K);
+            Ok := Ok and then Probe (K) = Pattern_Byte (K);
          end loop;
-         M.Read_File (BI, U64 (Big_Size - 128), Buf, Last);   --  tail
-         Ok := Ok and then Last = Buf'Length;
+
+         --  Tail: last Probe_Bytes of the file.
+         M.Read_File (Big_Info, U64 (Big_File_Size - Probe_Bytes), Probe, Last);
+         Ok := Ok and then Last = Probe'Length;
          for K in 0 .. Last - 1 loop
-            Ok := Ok and then Buf (K) = Pat (Big_Size - 128 + K);
+            Ok := Ok and then
+              Probe (K) = Pattern_Byte (Big_File_Size - Probe_Bytes + K);
          end loop;
          Check ("big file size + head/tail pattern", Ok);
       end;
@@ -252,24 +321,32 @@ begin
       Step ("hard link /ada_hard.txt -> /ada_write.txt");
       M.Link ("/ada_write.txt", "/", "ada_hard.txt");
       declare
-         I1 : constant Inode_Number := Ino_Of ("/ada_write.txt");
-         I2 : constant Inode_Number := Ino_Of ("/ada_hard.txt");
-         HI : Inode.Info;
+         --  A hard link is a second directory entry for the SAME inode, so both
+         --  names must resolve to one non-zero inode whose link count is now 2.
+         Expected_Link_Count : constant := 2;
+         Original_Ino : constant Inode_Number := Ino_Of ("/ada_write.txt");
+         Linked_Ino   : constant Inode_Number := Ino_Of ("/ada_hard.txt");
+         Link_Info    : Inode.Info;
       begin
-         M.Stat (I1, HI);
+         M.Stat (Original_Ino, Link_Info);
          Check ("hard link (same inode, nlink=2)",
-                I1 /= 0 and then I1 = I2 and then HI.Links = 2);
+                Original_Ino /= 0
+                and then Original_Ino = Linked_Ino
+                and then Link_Info.Links = Expected_Link_Count);
       end;
 
-      --  5. Symbolic link (target "ada_write.txt" -> 13 bytes, fast symlink).
+      --  5. Symbolic link.  A fast symlink stores the target inline in the inode,
+      --  so the inode size equals the target string length.
       Step ("symlink /ada_link -> ada_write.txt");
       M.Symlink ("/", "ada_link", "ada_write.txt");
       declare
-         LI : Inode.Info;
+         Symlink_Target_Len : constant := 13;   --  "ada_write.txt" is 13 chars
+         Symlink_Info : Inode.Info;
       begin
-         M.Stat (M.Lookup ("/ada_link"), LI);
+         M.Stat (M.Lookup ("/ada_link"), Symlink_Info);
          Check ("symlink (is a symlink, size=13)",
-                Inode.Is_Symlink (LI) and then LI.Size = 13);
+                Inode.Is_Symlink (Symlink_Info)
+                and then Symlink_Info.Size = Symlink_Target_Len);
       end;
 
       --  6. Rename / move.
