@@ -1,5 +1,8 @@
 with Ada.Streams;            use Ada.Streams;
+with Interfaces;             use Interfaces;
 with ESP32S3.RNG;
+with ESP32S3.AES;
+with ESP32S3.AES.GCM;
 with SPARKNaCl;               use SPARKNaCl;
 with SPARKNaCl.Scalar;
 with SPARKNaCl.Hashing.SHA256;
@@ -9,6 +12,7 @@ package body TLS_Client is
 
    use type Interfaces.Unsigned_8;
    use type Interfaces.Unsigned_16;
+   use type Interfaces.Unsigned_64;
    use type Interfaces.Integer_32;        --  arithmetic on SPARKNaCl N32 / I32
    use GNAT.Sockets;
 
@@ -380,6 +384,143 @@ package body TLS_Client is
    end Derive_Keys;
 
    ---------------------------------------------------------------------------
+   --  Decrypt the server's encrypted handshake flight (AES-128-GCM).
+   ---------------------------------------------------------------------------
+
+   GC_C : ESP32S3.AES.GCM.Byte_Array (0 .. 4095);   --  ciphertext / plaintext scratch
+   GC_P : ESP32S3.AES.GCM.Byte_Array (0 .. 4095);
+   HSB  : Byte_Array (0 .. 8191);                   --  reassembled handshake messages
+   HSB_Len : Natural := 0;
+
+   --  Decrypt one TLS 1.3 record fragment Frag(.. Len-1) under the server key, with
+   --  record sequence Seq.  On success, the inner handshake bytes are GC_P (0 ..
+   --  Out_Len-1) and Inner_Type is the real content type (22 = handshake).
+   procedure Decrypt_Record (S : Session; Frag : Byte_Array; Len : Natural;
+                             Seq : Unsigned_64; Out_Len : out Natural;
+                             Inner_Type : out U8; Ok : out Boolean)
+   is
+      use ESP32S3.AES.GCM;
+      CLen : constant Natural := (if Len >= 16 then Len - 16 else 0);
+      Key  : ESP32S3.AES.Key_Bytes (0 .. 15);
+      IV   : Nonce;
+      AAD  : ESP32S3.AES.GCM.Byte_Array (0 .. 4);
+      Tag  : Auth_Tag;
+      DOk  : Boolean;
+      P    : Integer;
+   begin
+      Out_Len := 0;  Inner_Type := 0;  Ok := False;
+      if Len < 17 or else CLen > GC_C'Length then
+         return;
+      end if;
+      for I in 0 .. 15 loop Key (I) := S.Server_Key (I); end loop;
+      for I in 0 .. 11 loop IV (I) := S.Server_IV (I); end loop;     --  iv XOR seq
+      for I in 0 .. 7 loop
+         IV (11 - I) := IV (11 - I) xor U8 (Shift_Right (Seq, 8 * I) and 16#FF#);
+      end loop;
+      AAD := (16#17#, 16#03#, 16#03#, U8 (Len / 256), U8 (Len mod 256));
+      for I in 0 .. CLen - 1 loop GC_C (I) := Frag (Frag'First + I); end loop;
+      for I in 0 .. 15 loop Tag (I) := Frag (Frag'First + CLen + I); end loop;
+
+      Decrypt (Key, IV, AAD, GC_C (0 .. CLen - 1), Tag, GC_P (0 .. CLen - 1), DOk);
+      if not DOk then
+         return;
+      end if;
+      --  Strip trailing zero padding; the last non-zero byte is the content type.
+      P := CLen - 1;
+      while P >= 0 and then GC_P (P) = 0 loop P := P - 1; end loop;
+      if P < 0 then
+         return;
+      end if;
+      Inner_Type := GC_P (P);
+      Out_Len    := P;                 --  handshake bytes = GC_P (0 .. P-1)
+      Ok := True;
+   end Decrypt_Record;
+
+   --  Walk the reassembled handshake messages: note the Certificate (extract the
+   --  leaf) and whether a Finished was seen.
+   procedure Scan_Messages (S : in out Session; Saw_Finished : out Boolean) is
+      P : Natural := 0;
+   begin
+      Saw_Finished := False;
+      while P + 4 <= HSB_Len loop
+         declare
+            MType : constant U8 := HSB (P);
+            MLen  : constant Natural :=
+              Natural (HSB (P + 1)) * 65536 + Natural (HSB (P + 2)) * 256
+              + Natural (HSB (P + 3));
+         begin
+            exit when P + 4 + MLen > HSB_Len;        --  message not fully present yet
+            if MType = 11 then                       --  Certificate
+               declare
+                  CP : Natural := P + 4;
+               begin
+                  CP := CP + 1 + Natural (HSB (CP));  --  certificate_request_context
+                  CP := CP + 3;                       --  certificate_list length
+                  declare
+                     CLn : constant Natural :=
+                       Natural (HSB (CP)) * 65536 + Natural (HSB (CP + 1)) * 256
+                       + Natural (HSB (CP + 2));
+                  begin
+                     CP := CP + 3;                    --  first entry cert length
+                     if CP + CLn - 1 <= HSB'Last and then CLn > 0 then
+                        S.Cert_First := CP;
+                        S.Cert_Last  := CP + CLn - 1;
+                        S.Have_Cert  := True;
+                     end if;
+                  end;
+               end;
+            elsif MType = 20 then                     --  Finished
+               Saw_Finished := True;
+            end if;
+            P := P + 4 + MLen;
+         end;
+      end loop;
+   end Scan_Messages;
+
+   procedure Read_Server_Flight (S : in out Session; Sock : Socket_Type;
+                                 Ok : out Boolean) is
+      Frag    : Byte_Array renames RB;
+      CType   : U8;
+      Len     : Natural;
+      RK      : Boolean;
+      Seq     : Unsigned_64 := 0;
+      ITyp    : U8;
+      OLen    : Natural;
+      DOk     : Boolean;
+      Records : Natural := 0;
+      Fin     : Boolean := False;
+   begin
+      Ok := False;
+      HSB_Len := 0;
+      for Attempt in 1 .. 16 loop
+         Recv_Record (Sock, CType, Frag, Len, RK);
+         exit when not RK;
+         if CType = CT_Change_Cipher_Spec then
+            null;                                     --  middlebox-compat, ignore
+         elsif CType = 23 then                        --  encrypted handshake
+            Decrypt_Record (S, Frag, Len, Seq, OLen, ITyp, DOk);
+            if not DOk then
+               return;                                --  bad tag => wrong keys
+            end if;
+            Seq := Seq + 1;
+            Records := Records + 1;
+            if ITyp = 22 then                         --  handshake content
+               for I in 0 .. OLen - 1 loop
+                  if HSB_Len <= HSB'Last then
+                     HSB (HSB_Len) := GC_P (I);  HSB_Len := HSB_Len + 1;
+                  end if;
+               end loop;
+               Scan_Messages (S, Fin);
+               exit when Fin;
+            end if;
+         else
+            exit;                                     --  alert or unexpected
+         end if;
+      end loop;
+      Ok := Fin and then Records > 0;
+   end Read_Server_Flight;
+
+   ---------------------------------------------------------------------------
    --  Drive the opening exchange.
    ---------------------------------------------------------------------------
 
@@ -410,6 +551,7 @@ package body TLS_Client is
             if Ok then
                Transcript (Frag (Frag'First .. Frag'First + Len - 1));  --  ServerHello
                Derive_Keys (S);
+               Read_Server_Flight (S, Sock, S.Flight);  --  decrypt the rest
             end if;
             return;
          end if;
@@ -422,5 +564,9 @@ package body TLS_Client is
    function Server_HS_Secret (S : Session) return Byte_Array is (S.S_HS_Secret);
    function Client_HS_Secret (S : Session) return Byte_Array is (S.C_HS_Secret);
    function Keys_Ready       (S : Session) return Boolean    is (S.Have_Keys);
+   function Flight_OK        (S : Session) return Boolean    is (S.Flight);
+   function Have_Server_Cert (S : Session) return Boolean    is (S.Have_Cert);
+   function Server_Cert      (S : Session) return Byte_Array is
+     (HSB (S.Cert_First .. S.Cert_Last));
 
 end TLS_Client;

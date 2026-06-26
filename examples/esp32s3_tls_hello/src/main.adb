@@ -5,6 +5,7 @@ with Ada.Real_Time; use Ada.Real_Time;
 with Interfaces;
 with GNAT.Sockets;  use GNAT.Sockets;
 with TLS_Client;
+with X509;
 with W5500_Dev;
 with ESP32S3.RNG;
 with ESP32S3.Log;   use ESP32S3.Log;
@@ -68,6 +69,29 @@ begin
             for I in SS'Range loop Put_Hex (Interfaces.Unsigned_32 (SS (I)), 2); end loop;
          end;
          New_Line;
+      end if;
+
+      if TLS_Client.Flight_OK (S) then
+         Put_Line ("[tls] encrypted handshake decrypted + authenticated (Finished seen)");
+         if TLS_Client.Have_Server_Cert (S) then
+            declare
+               DER : constant TLS_Client.Byte_Array := TLS_Client.Server_Cert (S);
+               CB  : X509.Byte_Array (0 .. DER'Length - 1);
+               C   : X509.Certificate;
+            begin
+               for I in 0 .. DER'Length - 1 loop CB (I) := DER (DER'First + I); end loop;
+               X509.Parse (CB, C);
+               Put ("[tls] server cert" & Natural'Image (DER'Length) & " bytes: ");
+               if C.Valid then
+                  Put ("parsed; host match=");
+                  Put_Line (if X509.Host_Matches (CB, C, Host) then "yes" else "no");
+               else
+                  Put_Line ("PARSE FAIL");
+               end if;
+            end;
+         end if;
+      else
+         Put_Line ("[tls] encrypted handshake decrypt FAILED");
       end if;
    else
       Put_Line ("[tls] handshake opening FAILED");

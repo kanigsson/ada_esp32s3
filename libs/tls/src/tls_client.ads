@@ -36,6 +36,14 @@ package TLS_Client is
    function Client_HS_Secret   (S : Session) return Byte_Array; --  32
    function Keys_Ready         (S : Session) return Boolean;
 
+   --  Hello also reads + decrypts the server's encrypted handshake flight
+   --  (EncryptedExtensions, Certificate, CertificateVerify, Finished) under the
+   --  handshake keys.  Flight_OK means every record's AES-GCM tag authenticated and
+   --  a Finished was seen -- which on its own proves the keys are right.
+   function Flight_OK          (S : Session) return Boolean;
+   function Have_Server_Cert   (S : Session) return Boolean;
+   function Server_Cert        (S : Session) return Byte_Array; --  leaf cert DER
+
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
@@ -51,5 +59,10 @@ private
       Server_Key    : Byte_Array (0 .. 15) := (others => 0);  --  AES-128 key
       Server_IV     : Byte_Array (0 .. 11) := (others => 0);
       Have_Keys     : Boolean := False;
+      --  Decrypted server flight.
+      Cert_First    : Natural := 1;
+      Cert_Last     : Natural := 0;
+      Have_Cert     : Boolean := False;
+      Flight        : Boolean := False;
    end record;
 end TLS_Client;
