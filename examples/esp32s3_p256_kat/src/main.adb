@@ -1,9 +1,11 @@
 --  Known-answer test for the pure-Ada P-256 (secp256r1) ECDSA + ECDH (P256)
 --  ==========================================================================
 --  What it demonstrates: the pure-Ada P-256 primitives produce the expected
---  fixed answers.  Two parts run against baked-in vectors:
+--  fixed answers.  Three parts run against baked-in vectors:
 --    ECDSA verify -- P256.Verify accepts a genuine signature and rejects the
 --                    same signature against a one-bit-tampered message hash;
+--    ECDSA sign   -- P256.Sign reproduces the RFC 6979 deterministic signature
+--                    for a known key + digest, bit-for-bit;
 --    ECDH         -- P256.Public_Key reproduces the public key for a known
 --                    private scalar, and P256.ECDH reproduces the known shared
 --                    secret against a known peer public key.
@@ -76,6 +78,36 @@ procedure Main is
       16#C5#, 16#45#, 16#EC#, 16#48#, 16#5F#, 16#B5#, 16#8D#, 16#7A#,
       16#EB#, 16#B4#, 16#79#, 16#6A#, 16#3A#, 16#39#, 16#4C#, 16#4F#,
       16#86#, 16#9A#, 16#63#, 16#E5#, 16#B9#, 16#B1#, 16#47#, 16#A8#);
+   --  RFC 6979 deterministic-ECDSA vector (Appendix A.2.5, P-256/SHA-256, message
+   --  "sample"): private key, the SHA-256 digest, and the expected (R, S) that
+   --  P256.Sign must reproduce bit-for-bit.
+   Sign_Priv : constant P256.Bytes_32 :=
+     (
+      16#C9#, 16#AF#, 16#A9#, 16#D8#, 16#45#, 16#BA#, 16#75#, 16#16#,
+      16#6B#, 16#5C#, 16#21#, 16#57#, 16#67#, 16#B1#, 16#D6#, 16#93#,
+      16#4E#, 16#50#, 16#C3#, 16#DB#, 16#36#, 16#E8#, 16#9B#, 16#12#,
+      16#7B#, 16#8A#, 16#62#, 16#2B#, 16#12#, 16#0F#, 16#67#, 16#21#);
+   Sign_Hash : constant P256.Bytes_32 :=
+     (
+      16#AF#, 16#2B#, 16#DB#, 16#E1#, 16#AA#, 16#9B#, 16#6E#, 16#C1#,
+      16#E2#, 16#AD#, 16#E1#, 16#D6#, 16#94#, 16#F4#, 16#1F#, 16#C7#,
+      16#1A#, 16#83#, 16#1D#, 16#02#, 16#68#, 16#E9#, 16#89#, 16#15#,
+      16#62#, 16#11#, 16#3D#, 16#8A#, 16#62#, 16#AD#, 16#D1#, 16#BF#);
+   Sign_Want_R : constant P256.Bytes_32 :=
+     (
+      16#EF#, 16#D4#, 16#8B#, 16#2A#, 16#AC#, 16#B6#, 16#A8#, 16#FD#,
+      16#11#, 16#40#, 16#DD#, 16#9C#, 16#D4#, 16#5E#, 16#81#, 16#D6#,
+      16#9D#, 16#2C#, 16#87#, 16#7B#, 16#56#, 16#AA#, 16#F9#, 16#91#,
+      16#C3#, 16#4D#, 16#0E#, 16#A8#, 16#4E#, 16#AF#, 16#37#, 16#16#);
+   Sign_Want_S : constant P256.Bytes_32 :=
+     (
+      16#F7#, 16#CB#, 16#1C#, 16#94#, 16#2D#, 16#65#, 16#7C#, 16#41#,
+      16#D4#, 16#36#, 16#C7#, 16#A1#, 16#B6#, 16#E2#, 16#9F#, 16#65#,
+      16#F3#, 16#E9#, 16#00#, 16#DB#, 16#B9#, 16#AF#, 16#F4#, 16#06#,
+      16#4D#, 16#C4#, 16#AB#, 16#2F#, 16#84#, 16#3A#, 16#CD#, 16#A8#);
+   Sign_R, Sign_S : P256.Bytes_32;
+   Sign_OK, Sign_Pass : Boolean := False;
+
    --  ECDH vector: our private scalar D, and the public key D*G we expect
    --  Public_Key to derive from it -- (ECDH_MyX, ECDH_MyY).
    ECDH_D : constant P256.Bytes_32 :=
@@ -150,6 +182,14 @@ begin
    Put_Line ("[p256] tampered hash      -> "
              & (if Tampered_Valid then "VALID (FAIL)" else "INVALID (PASS)"));
 
+   --  ECDSA sign: the deterministic (RFC 6979) signature must match the published
+   --  vector bit-for-bit and then verify under the same public key.
+   Sign_OK := P256.Sign (Sign_Priv, Sign_Hash, Sign_R, Sign_S);
+   Sign_Pass := Sign_OK
+                and then Sign_R = Sign_Want_R
+                and then Sign_S = Sign_Want_S;
+   Put_Line ("[p256] deterministic sign -> "
+             & (if Sign_Pass then "MATCH (PASS)" else "MISMATCH (FAIL)"));
 
    --  ECDH: derive our public key from the private scalar, then the shared
    --  secret against the peer's public key, and compare both to the vectors.
@@ -169,7 +209,7 @@ begin
                 and then Derived_Shared_X = ECDH_Shared;
 
    Put_Line ("[p256] result: "
-             & (if Genuine_Valid and not Tampered_Valid and ECDH_Pass
+             & (if Genuine_Valid and not Tampered_Valid and Sign_Pass and ECDH_Pass
                 then "ALL PASS" else "FAILURE"));
    loop null; end loop;
 end Main;

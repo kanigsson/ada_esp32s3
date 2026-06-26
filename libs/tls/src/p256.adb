@@ -1,4 +1,6 @@
 with Interfaces; use Interfaces;
+with SPARKNaCl;
+with SPARKNaCl.Hashing.SHA256;
 
 package body P256 is
 
@@ -451,5 +453,128 @@ package body P256 is
       Shared_X := To_BE (AX);
       return True;
    end ECDH;
+
+   ---------------------------------------------------------------------------
+   --  ECDSA signing (deterministic nonce, RFC 6979).
+   ---------------------------------------------------------------------------
+
+   --  SHA-256 of Data via SPARKNaCl.
+   function SHA256 (Data : Bytes) return Bytes_32 is
+      Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
+      Dg  : SPARKNaCl.Hashing.SHA256.Digest;
+      R   : Bytes_32;
+   begin
+      for I in 0 .. Data'Length - 1 loop
+         Msg (SPARKNaCl.N32 (I)) := SPARKNaCl.Byte (Data (Data'First + I));
+      end loop;
+      Dg := SPARKNaCl.Hashing.SHA256.Hash (Msg);
+      for I in 0 .. 31 loop
+         R (I) := Byte (Dg (SPARKNaCl.Index_32 (I)));
+      end loop;
+      return R;
+   end SHA256;
+
+   --  HMAC-SHA-256.  Keys here are always 32 bytes (the DRBG V/K), which fit in
+   --  one 64-byte block, so no key-shortening hash is needed.
+   HMAC_Block : constant := 64;
+   function HMAC_SHA256 (Key, Msg : Bytes) return Bytes_32 is
+      K0    : Bytes (0 .. HMAC_Block - 1) := (others => 0);
+      Inner : Bytes (0 .. HMAC_Block - 1 + Msg'Length);
+      Outer : Bytes (0 .. HMAC_Block - 1 + 32);
+      H1    : Bytes_32;
+   begin
+      for I in 0 .. Key'Length - 1 loop
+         K0 (I) := Key (Key'First + I);
+      end loop;
+      for I in 0 .. HMAC_Block - 1 loop
+         Inner (I) := K0 (I) xor 16#36#;
+      end loop;
+      for I in 0 .. Msg'Length - 1 loop
+         Inner (HMAC_Block + I) := Msg (Msg'First + I);
+      end loop;
+      H1 := SHA256 (Inner);
+      for I in 0 .. HMAC_Block - 1 loop
+         Outer (I) := K0 (I) xor 16#5C#;
+      end loop;
+      for I in 0 .. 31 loop
+         Outer (HMAC_Block + I) := H1 (I);
+      end loop;
+      return SHA256 (Outer);
+   end HMAC_SHA256;
+
+   function Sign (Priv, Hash : Bytes_32; R, S : out Bytes_32) return Boolean is
+      D       : constant Num := From_BE (Priv);
+      E       : Num := From_BE (Hash);
+      N_One_M : constant Num := To_Mont (One, NN, N_M0, N_R2);
+      V       : Bytes_32 := (others => 16#01#);
+      K       : Bytes_32 := (others => 16#00#);
+      Count   : Natural := 0;
+   begin
+      R := (others => 0);  S := (others => 0);
+      if Is_Zero (D) or else Geq (D, NN) then            --  private key in [1, n-1]
+         return False;
+      end if;
+      if Geq (E, NN) then E := Sub_Raw (E, NN); end if;  --  e = hash mod n
+
+      declare
+         X_Oct : constant Bytes_32 := Priv;              --  int2octets(x)
+         H_Oct : constant Bytes_32 := To_BE (E);         --  bits2octets(h1) = e mod n
+         Seed  : Bytes (0 .. 96);                        --  V(32) || sep(1) || X || H
+      begin
+         --  RFC 6979 3.2 (b)..(g): seed the HMAC-DRBG.
+         Seed (0 .. 31) := V;  Seed (32) := 16#00#;
+         Seed (33 .. 64) := X_Oct;  Seed (65 .. 96) := H_Oct;
+         K := HMAC_SHA256 (K, Seed);
+         V := HMAC_SHA256 (K, V);
+         Seed (0 .. 31) := V;  Seed (32) := 16#01#;
+         Seed (33 .. 64) := X_Oct;  Seed (65 .. 96) := H_Oct;
+         K := HMAC_SHA256 (K, Seed);
+         V := HMAC_SHA256 (K, V);
+
+         --  Generate candidate k = bits2int(T) until it yields a valid (r, s).
+         --  hlen = qlen = 256, so one HMAC produces a full-width T.
+         while Count < 64 loop
+            Count := Count + 1;
+            V := HMAC_SHA256 (K, V);
+            declare
+               Kk     : constant Num := From_BE (V);
+               KG     : Point;
+               AX, AY : Num;
+               Ok     : Boolean;
+               Rn, Sn, T : Num;
+            begin
+               if not Is_Zero (Kk) and then not Geq (Kk, NN) then
+                  KG := Scalar_Mul (Kk, To_Jacobian (GX, GY));   --  k*G
+                  To_Affine (KG, AX, AY, Ok);
+                  if Ok then
+                     Rn := AX;
+                     if Geq (Rn, NN) then Rn := Sub_Raw (Rn, NN); end if;  --  r = x mod n
+                     if not Is_Zero (Rn) then
+                        --  s = k^-1 (e + r*d) mod n
+                        T  := Mul_Mod (Rn, D, NN, N_M0, N_R2);
+                        T  := Add_Mod (E, T, NN);
+                        Sn := Inv_Mod (Kk, NN, N_M0, N_R2, N_One_M);
+                        Sn := Mul_Mod (Sn, T, NN, N_M0, N_R2);
+                        if not Is_Zero (Sn) then
+                           R := To_BE (Rn);
+                           S := To_BE (Sn);
+                           return True;
+                        end if;
+                     end if;
+                  end if;
+               end if;
+            end;
+            --  k rejected: reseed K, V and try the next candidate.
+            declare
+               M : Bytes (0 .. 32);
+            begin
+               M (0 .. 31) := V;  M (32) := 16#00#;
+               K := HMAC_SHA256 (K, M);
+               V := HMAC_SHA256 (K, V);
+            end;
+         end loop;
+         return False;                                   --  not reached in practice
+      end;
+   end Sign;
 
 end P256;
