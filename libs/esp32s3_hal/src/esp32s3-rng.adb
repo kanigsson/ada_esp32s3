@@ -58,9 +58,13 @@ package body ESP32S3.RNG is
       Settle;
 
       --  SAR ADC continuously sampling a disconnected input, for extra entropy.
-      --  Pulse the ADC digital-controller clock (clock-enable reset).
+      --  Enable the ADC digital-controller's APB clock and LEAVE it on: the register
+      --  writes below target the APB_SARADC peripheral, and accessing an unclocked
+      --  peripheral stalls the CPU bus.  Reset the block via its own reset bit (a
+      --  True->False pulse), not by gating its clock.
       Sy.PERIP_CLK_EN0.APB_SARADC_CLK_EN := True;
-      Sy.PERIP_CLK_EN0.APB_SARADC_CLK_EN := False;
+      Sy.PERIP_RST_EN0.APB_SARADC_RST    := True;
+      Sy.PERIP_RST_EN0.APB_SARADC_RST    := False;
 
       --  ADC digital-controller clock = APB, enabled, divided down.
       A.CLKM_CONF.CLK_SEL         := 2;

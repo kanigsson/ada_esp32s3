@@ -1,6 +1,9 @@
---  TLS 1.3 handshake opening over the W5500: send a ClientHello (X25519 + AES-GCM,
---  SNI), receive and parse the ServerHello.  Point Server_IP at a TLS 1.3 server,
---  e.g.  openssl s_server -tls1_3 -accept 4433 -cert c.pem -key k.pem
+--  Pure-Ada TLS 1.3 client over the W5500: full handshake (X25519 ECDHE, AES-128-
+--  GCM, HKDF key schedule, server CertificateVerify/Finished, our own Finished),
+--  then an encrypted HTTP GET and the decrypted response.  All crypto is Ada
+--  (SPARKNaCl) + the ESP32-S3 accelerators -- no external C TLS library.
+--  Point Server_IP at a TLS 1.3 server, e.g. a Python ssl server or
+--  openssl s_server -tls1_3 -accept 4433 -cert c.pem -key k.pem
 with Ada.Real_Time; use Ada.Real_Time;
 with Interfaces;
 with GNAT.Sockets;  use GNAT.Sockets;
@@ -23,21 +26,37 @@ procedure Main is
    Ok   : Boolean;
 begin
    delay until Clock + Milliseconds (200);
-   ESP32S3.RNG.Enable_Entropy_Source;            --  keys need real entropy
-   Put_Line ("[tls] TLS 1.3 ClientHello / ServerHello over the W5500");
+   ESP32S3.RNG.Enable_Entropy_Source;            --  keys need real entropy (CSPRNG)
+   Put_Line ("[tls] pure-Ada TLS 1.3 client over the W5500");
    if not W5500_Dev.Bring_Up then
       loop delay until Clock + Seconds (3600); end loop;
    end if;
 
    Ok := False;
+   declare
+      Connected : Boolean := False;
    begin
-      Create_Socket  (Sock, Family_Inet, Socket_Stream);
       Put_Line ("[tls] connecting to " & Server_IP & ":4433 ...");
-      Connect_Socket (Sock, (Family_Inet, Inet_Addr (Server_IP), Server_Port));
-      TLS_Client.Hello (S, Sock, Host, Ok);
+      for Try in 1 .. 20 loop
+         begin
+            Create_Socket  (Sock, Family_Inet, Socket_Stream);
+            Connect_Socket (Sock, (Family_Inet, Inet_Addr (Server_IP), Server_Port));
+            Connected := True;
+            exit;
+         exception
+            when others =>
+               begin Close_Socket (Sock); exception when others => null; end;
+               delay until Clock + Milliseconds (700);
+         end;
+      end loop;
+      if Connected then
+         TLS_Client.Hello (S, Sock, Host, Ok);
+      else
+         Put_Line ("[tls] could not connect");
+      end if;
    exception
       when others =>
-         Put_Line ("[tls] connection error (is the server up?)");
+         Put_Line ("[tls] handshake exception");
    end;
 
    if Ok then
@@ -69,6 +88,13 @@ begin
             for I in SS'Range loop Put_Hex (Interfaces.Unsigned_32 (SS (I)), 2); end loop;
          end;
          New_Line;
+         Put ("[tls] c_hs_secret=");
+         declare
+            CS : constant TLS_Client.Byte_Array := TLS_Client.Client_HS_Secret (S);
+         begin
+            for I in CS'Range loop Put_Hex (Interfaces.Unsigned_32 (CS (I)), 2); end loop;
+         end;
+         New_Line;
       end if;
 
       if TLS_Client.Flight_OK (S) then
@@ -96,6 +122,39 @@ begin
          end if;
       else
          Put_Line ("[tls] encrypted handshake decrypt FAILED");
+      end if;
+
+      Put_Line ("[tls] ready=" & (if TLS_Client.Ready (S) then "yes" else "no"));
+
+      --  Encrypted application data: send an HTTP GET, decrypt the response.
+      if TLS_Client.Ready (S) then
+         declare
+            Req : constant String :=
+              "GET / HTTP/1.0" & ASCII.CR & ASCII.LF
+              & "Host: " & Host & ASCII.CR & ASCII.LF
+              & "Connection: close" & ASCII.CR & ASCII.LF & ASCII.CR & ASCII.LF;
+            Req_Bytes : TLS_Client.Byte_Array (0 .. Req'Length - 1);
+            Buf       : TLS_Client.Byte_Array (0 .. 1023);
+            Last      : Natural;
+            R_Ok      : Boolean;
+         begin
+            for I in 0 .. Req'Length - 1 loop
+               Req_Bytes (I) :=
+                 Interfaces.Unsigned_8 (Character'Pos (Req (Req'First + I)));
+            end loop;
+            TLS_Client.Send (S, Sock, Req_Bytes);
+            Put_Line ("[tls] sent HTTP GET (encrypted)");
+            TLS_Client.Recv (S, Sock, Buf, Last, R_Ok);
+            if R_Ok then
+               Put_Line ("[tls] decrypted response:");
+               for I in Buf'First .. Last loop
+                  Put (Character'Val (Natural (Buf (I))));
+               end loop;
+               New_Line;
+            else
+               Put_Line ("[tls] no application data (server closed / alert)");
+            end if;
+         end;
       end if;
    else
       Put_Line ("[tls] handshake opening FAILED");

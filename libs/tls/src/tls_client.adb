@@ -374,13 +374,18 @@ package body TLS_Client is
       for I in 0 .. 31 loop
          S.S_HS_Secret (I) := U8 (S_HS (Index_32 (I)));
          S.C_HS_Secret (I) := U8 (C_HS (Index_32 (I)));
+         S.HS_Secret   (I) := U8 (HS_Secret (Index_32 (I)));   --  for the Master Secret
       end loop;
       declare
-         K : constant Byte_Seq := Expand_Label (S_HS, "key", No_Ctx, 16);
-         V : constant Byte_Seq := Expand_Label (S_HS, "iv",  No_Ctx, 12);
+         SK : constant Byte_Seq := Expand_Label (S_HS, "key", No_Ctx, 16);
+         SV : constant Byte_Seq := Expand_Label (S_HS, "iv",  No_Ctx, 12);
+         CK : constant Byte_Seq := Expand_Label (C_HS, "key", No_Ctx, 16);
+         CV : constant Byte_Seq := Expand_Label (C_HS, "iv",  No_Ctx, 12);
       begin
-         for I in 0 .. 15 loop S.Server_Key (I) := U8 (K (N32 (I))); end loop;
-         for I in 0 .. 11 loop S.Server_IV  (I) := U8 (V (N32 (I))); end loop;
+         for I in 0 .. 15 loop S.Server_Key (I) := U8 (SK (N32 (I))); end loop;
+         for I in 0 .. 11 loop S.Server_IV  (I) := U8 (SV (N32 (I))); end loop;
+         for I in 0 .. 15 loop S.Client_Key (I) := U8 (CK (N32 (I))); end loop;
+         for I in 0 .. 11 loop S.Client_IV  (I) := U8 (CV (N32 (I))); end loop;
       end;
       S.Have_Keys := True;
    end Derive_Keys;
@@ -423,7 +428,8 @@ package body TLS_Client is
    --  Decrypt one TLS 1.3 record fragment Frag(.. Len-1) under the server key, with
    --  record sequence Seq.  On success, the inner handshake bytes are GC_P (0 ..
    --  Out_Len-1) and Inner_Type is the real content type (22 = handshake).
-   procedure Decrypt_Record (S : Session; Frag : Byte_Array; Len : Natural;
+   procedure Decrypt_Record (RKey : Byte_Array; RIV : Byte_Array;
+                             Frag : Byte_Array; Len : Natural;
                              Seq : Unsigned_64; Out_Len : out Natural;
                              Inner_Type : out U8; Ok : out Boolean)
    is
@@ -440,8 +446,8 @@ package body TLS_Client is
       if Len < 17 or else CLen > GC_C'Length then
          return;
       end if;
-      for I in 0 .. 15 loop Key (I) := S.Server_Key (I); end loop;
-      for I in 0 .. 11 loop IV (I) := S.Server_IV (I); end loop;     --  iv XOR seq
+      for I in 0 .. 15 loop Key (I) := RKey (RKey'First + I); end loop;
+      for I in 0 .. 11 loop IV (I) := RIV (RIV'First + I); end loop;  --  iv XOR seq
       for I in 0 .. 7 loop
          IV (11 - I) := IV (11 - I) xor U8 (Shift_Right (Seq, 8 * I) and 16#FF#);
       end loop;
@@ -539,7 +545,7 @@ package body TLS_Client is
          if CType = CT_Change_Cipher_Spec then
             null;                                     --  middlebox-compat, ignore
          elsif CType = 23 then                        --  encrypted handshake
-            Decrypt_Record (S, Frag, Len, Seq, OLen, ITyp, DOk);
+            Decrypt_Record (S.Server_Key, S.Server_IV, Frag, Len, Seq, OLen, ITyp, DOk);
             if not DOk then
                return;                                --  bad tag => wrong keys
             end if;
@@ -645,6 +651,96 @@ package body TLS_Client is
    end Verify_Cert_Verify;
 
    ---------------------------------------------------------------------------
+   --  Encrypt + send a record; complete the handshake (client Finished + app keys)
+   ---------------------------------------------------------------------------
+
+   GE_P : ESP32S3.AES.GCM.Byte_Array (0 .. 4095);
+   GE_C : ESP32S3.AES.GCM.Byte_Array (0 .. 4095);
+   ER   : Byte_Array (0 .. 4127);
+
+   --  Encrypt Inner (plus its content-type byte) under (RKey, RIV) at Seq and send
+   --  it as one TLS 1.3 application_data record.
+   procedure Send_Encrypted (Sock : Socket_Type; RKey, RIV : Byte_Array;
+                             Seq : Unsigned_64; Inner : Byte_Array; Inner_Type : U8)
+   is
+      use ESP32S3.AES.GCM;
+      PLen : constant Natural := Inner'Length + 1;
+      RLen : constant Natural := PLen + 16;
+      Key  : ESP32S3.AES.Key_Bytes (0 .. 15);
+      IV   : Nonce;
+      AAD  : ESP32S3.AES.GCM.Byte_Array (0 .. 4);
+      Tag  : Auth_Tag;
+   begin
+      if PLen > GE_P'Length then
+         return;
+      end if;
+      for I in 0 .. 15 loop Key (I) := RKey (RKey'First + I); end loop;
+      for I in 0 .. 11 loop IV (I) := RIV (RIV'First + I); end loop;
+      for I in 0 .. 7 loop
+         IV (11 - I) := IV (11 - I) xor U8 (Shift_Right (Seq, 8 * I) and 16#FF#);
+      end loop;
+      AAD := (16#17#, 16#03#, 16#03#, U8 (RLen / 256), U8 (RLen mod 256));
+      for I in 0 .. Inner'Length - 1 loop GE_P (I) := Inner (Inner'First + I); end loop;
+      GE_P (PLen - 1) := Inner_Type;
+      Encrypt (Key, IV, AAD, GE_P (0 .. PLen - 1), GE_C (0 .. PLen - 1), Tag);
+      ER (0) := 16#17#; ER (1) := 16#03#; ER (2) := 16#03#;
+      ER (3) := U8 (RLen / 256);  ER (4) := U8 (RLen mod 256);
+      for I in 0 .. PLen - 1 loop ER (5 + I) := GE_C (I); end loop;
+      for I in 0 .. 15 loop ER (5 + PLen + I) := Tag (I); end loop;
+      Send_Bytes (Sock, ER (0 .. 5 + RLen - 1));
+   end Send_Encrypted;
+
+   --  Send our Finished and derive the application traffic keys -> channel open.
+   procedure Complete_Handshake (S : in out Session; Sock : Socket_Type) is
+      No_Ctx : constant Byte_Seq (1 .. 0) := (others => 0);
+      TLen   : constant Natural := TR_Len + HSB_Len;   --  CH .. server Finished
+      M      : Byte_Seq (0 .. N32 (TLen) - 1);
+      TH     : SHA.Digest;
+      TH_BA  : Byte_Array (0 .. 31);
+      CFK    : constant Byte_Seq :=
+        Expand_Label (To_Digest (S.C_HS_Secret), "finished", No_Ctx, 32);
+      CFK_BA : Byte_Array (0 .. 31);
+      VD     : SHA.Digest;
+      Fin    : Byte_Array (0 .. 35);                   --  [20][00 00 20][32]
+      Z32    : constant Byte_Seq (0 .. 31) := (others => 0);
+      Derived2, Master, C_Ap, S_Ap : SHA.Digest;
+      CCS    : constant Byte_Array := (16#14#, 16#03#, 16#03#, 16#00#, 16#01#, 16#01#);
+   begin
+      for I in 0 .. TR_Len - 1 loop M (N32 (I)) := Byte (TR (I)); end loop;
+      for I in 0 .. HSB_Len - 1 loop M (N32 (TR_Len + I)) := Byte (HSB (I)); end loop;
+      TH := SHA.Hash (M);
+      for I in 0 .. 31 loop TH_BA (I) := U8 (TH (Index_32 (I))); end loop;
+
+      --  client Finished
+      for I in 0 .. 31 loop CFK_BA (I) := U8 (CFK (N32 (I))); end loop;
+      VD := HMAC (CFK_BA, TH_BA);
+      Fin (0) := 20;  Fin (1) := 0;  Fin (2) := 0;  Fin (3) := 32;
+      for I in 0 .. 31 loop Fin (4 + I) := U8 (VD (Index_32 (I))); end loop;
+
+      --  Master Secret -> application traffic secrets -> application keys.
+      Derived2 := Derive_Secret (To_Digest (S.HS_Secret), "derived", SHA_Empty);
+      HKDF.Extract (Master, IKM => Z32, Salt => Derived2);
+      C_Ap := Derive_Secret (Master, "c ap traffic", TH);
+      S_Ap := Derive_Secret (Master, "s ap traffic", TH);
+      declare
+         CK : constant Byte_Seq := Expand_Label (C_Ap, "key", No_Ctx, 16);
+         CV : constant Byte_Seq := Expand_Label (C_Ap, "iv",  No_Ctx, 12);
+         SK : constant Byte_Seq := Expand_Label (S_Ap, "key", No_Ctx, 16);
+         SV : constant Byte_Seq := Expand_Label (S_Ap, "iv",  No_Ctx, 12);
+      begin
+         for I in 0 .. 15 loop S.C_App_Key (I) := U8 (CK (N32 (I))); end loop;
+         for I in 0 .. 11 loop S.C_App_IV  (I) := U8 (CV (N32 (I))); end loop;
+         for I in 0 .. 15 loop S.S_App_Key (I) := U8 (SK (N32 (I))); end loop;
+         for I in 0 .. 11 loop S.S_App_IV  (I) := U8 (SV (N32 (I))); end loop;
+      end;
+      S.C_App_Seq := 0;  S.S_App_Seq := 0;
+
+      Send_Bytes (Sock, CCS);                                    --  middlebox-compat
+      Send_Encrypted (Sock, S.Client_Key, S.Client_IV, 0, Fin, 22);  --  our Finished
+      S.Open := True;
+   end Complete_Handshake;
+
+   ---------------------------------------------------------------------------
    --  Drive the opening exchange.
    ---------------------------------------------------------------------------
 
@@ -679,6 +775,9 @@ package body TLS_Client is
                if S.Flight then
                   Verify_Cert_Verify (S);
                   Verify_Finished (S);
+                  if S.Fin_OK then
+                     Complete_Handshake (S, Sock);   --  send our Finished, open channel
+                  end if;
                end if;
             end if;
             return;
@@ -698,5 +797,56 @@ package body TLS_Client is
      (HSB (S.Cert_First .. S.Cert_Last));
    function Server_Finished_OK (S : Session) return Boolean is (S.Fin_OK);
    function Server_Cert_Verify_OK (S : Session) return Boolean is (S.CV_OK);
+   function Ready (S : Session) return Boolean is (S.Open);
+
+   procedure Send (S : in out Session; Sock : Socket_Type; Data : Byte_Array) is
+   begin
+      Send_Encrypted (Sock, S.C_App_Key, S.C_App_IV, S.C_App_Seq, Data, 23);
+      S.C_App_Seq := S.C_App_Seq + 1;
+   end Send;
+
+   procedure Recv (S : in out Session; Sock : Socket_Type; Buf : out Byte_Array;
+                   Last : out Natural; Ok : out Boolean) is
+      Frag  : Byte_Array renames RB;
+      CType : U8;
+      Len   : Natural;
+      RK    : Boolean;
+      ITyp  : U8;
+      OLen  : Natural;
+      DOk   : Boolean;
+   begin
+      Last := (if Buf'First > 0 then Buf'First - 1 else 0);
+      Ok   := False;
+      loop
+         Recv_Record (Sock, CType, Frag, Len, RK);
+         if not RK then
+            return;
+         end if;
+         if CType = CT_Change_Cipher_Spec then
+            null;                                          --  ignore
+         elsif CType = 23 then
+            Decrypt_Record (S.S_App_Key, S.S_App_IV, Frag, Len, S.S_App_Seq,
+                            OLen, ITyp, DOk);
+            if not DOk then
+               return;
+            end if;
+            S.S_App_Seq := S.S_App_Seq + 1;
+            if ITyp = 23 then                              --  application_data
+               declare
+                  N : constant Natural := Natural'Min (OLen, Buf'Length);
+               begin
+                  for I in 0 .. N - 1 loop Buf (Buf'First + I) := GC_P (I); end loop;
+                  Last := Buf'First + N - 1;
+                  Ok   := True;
+                  return;
+               end;
+            elsif ITyp = 21 then                           --  alert
+               return;
+            end if;                                        --  else (e.g. tickets): loop
+         else
+            return;
+         end if;
+      end loop;
+   end Recv;
 
 end TLS_Client;

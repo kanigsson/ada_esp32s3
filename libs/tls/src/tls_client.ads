@@ -52,6 +52,20 @@ package TLS_Client is
    --  certificate's private key (RSA-PSS), proving it holds that key.
    function Server_Cert_Verify_OK (S : Session) return Boolean;
 
+   --  After Hello, the handshake is complete (our Finished sent, application keys
+   --  derived) and the encrypted application channel is open.
+   function Ready (S : Session) return Boolean;
+
+   --  Send application data over the channel (encrypted).
+   procedure Send (S : in out Session; Sock : GNAT.Sockets.Socket_Type;
+                   Data : Byte_Array);
+
+   --  Receive one application-data record and decrypt it.  Last is the index of the
+   --  last byte written to Buf (Buf'First-1 if none); Ok is False on a closed
+   --  connection, an alert, or a bad tag.
+   procedure Recv (S : in out Session; Sock : GNAT.Sockets.Socket_Type;
+                   Buf : out Byte_Array; Last : out Natural; Ok : out Boolean);
+
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
@@ -82,5 +96,16 @@ private
       Flight        : Boolean := False;
       Fin_OK        : Boolean := False;   --  server Finished verified
       CV_OK         : Boolean := False;   --  server CertificateVerify verified
+      --  Client side: handshake + application traffic keys.
+      HS_Secret     : Key32 := (others => 0);   --  Handshake Secret (-> Master)
+      Client_Key    : Byte_Array (0 .. 15) := (others => 0);  --  client handshake key
+      Client_IV     : Byte_Array (0 .. 11) := (others => 0);
+      C_App_Key     : Byte_Array (0 .. 15) := (others => 0);  --  client application key
+      C_App_IV      : Byte_Array (0 .. 11) := (others => 0);
+      S_App_Key     : Byte_Array (0 .. 15) := (others => 0);  --  server application key
+      S_App_IV      : Byte_Array (0 .. 11) := (others => 0);
+      C_App_Seq     : Interfaces.Unsigned_64 := 0;
+      S_App_Seq     : Interfaces.Unsigned_64 := 0;
+      Open          : Boolean := False;
    end record;
 end TLS_Client;
