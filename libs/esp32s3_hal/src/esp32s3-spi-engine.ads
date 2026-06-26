@@ -34,6 +34,12 @@ private package ESP32S3.SPI.Engine is
 
    procedure Enable_Loopback (B : Bus; Pad : ESP32S3.GPIO.Pin_Id);
 
+   --  Enable (Enabled => True) or suppress (False) the peripheral's hardware CS0
+   --  output for this host.  Suppressed when a device drives its own chip select
+   --  via a callback, so the auto-asserted CS0 cannot disturb another device's
+   --  pad sharing the bus (sets MISC.CS0_DIS).
+   procedure Set_Hardware_CS (B : Bus; Enabled : Boolean);
+
    procedure Transfer (B : Bus; Tx, Rx : System.Address; Length : Natural);
 
    procedure Close (B : in out Bus);

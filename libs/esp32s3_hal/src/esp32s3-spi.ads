@@ -28,6 +28,24 @@ package ESP32S3.SPI is
    --  Sentinel for Configure_Pins: leave that line unrouted (= ESP32S3.GPIO.No_Pin).
    No_Pin : constant ESP32S3.GPIO.Pad_Number := ESP32S3.GPIO.No_Pin;
 
+   --  Optional application-driven chip select.  A device may bring its own select
+   --  instead of the host's single hardware CS0 pin, so "chip select" can be a
+   --  plain GPIO, several GPIOs feeding a 3:8 address decoder, an I/O-expander
+   --  line, etc.  Registered at Acquire (see below); the driver calls it with
+   --  Active => True to select the device before its bytes move and False to
+   --  deselect when the transaction ends (see Select_Device).  Ctx is the
+   --  per-device context handed back on every call -- the mapping lives entirely
+   --  in the callback (cf. ESP32S3.Block_Dev's Ctx).
+   --
+   --  Two requirements, both from where it runs:
+   --    * It must be a library-level subprogram with NO captured state -- this
+   --      HAL builds under No_Implicit_Dynamic_Code, so a closure would emit a
+   --      GNAT trampoline that faults on the S3.  Per-device state travels in Ctx.
+   --    * It must be fast, non-blocking, and must not raise: it runs while the
+   --      bus lock is held (and at scope exit during finalization).  Drive the
+   --      line(s) and return -- no delay, no Acquire, no I2C round-trip.
+   type CS_Select is access procedure (Ctx : System.Address; Active : Boolean);
+
    --  An exclusive hold on a host.  Limited (cannot be copied -- two tasks can
    --  never share one) and CONTROLLED: it releases the host automatically when
    --  it goes out of scope, including during exception unwinding, so a fault
@@ -80,7 +98,25 @@ package ESP32S3.SPI is
    --  Take exclusive ownership of a Setup host.  Suspends until no other task
    --  holds it.  Keep it across a whole transaction, then Release / let it go
    --  out of scope.  Raises Not_Initialized if Host was never Setup.
-   procedure Acquire (S : in out Session; Host : SPI_Host);
+   --
+   --  If Select_CB is non-null this device drives its own chip select through
+   --  that callback (Ctx handed back on every call), and the host's hardware CS0
+   --  is suppressed for this hold so it cannot disturb another device sharing the
+   --  bus.  If Select_CB is null (the default) the hardware CS0 routed by
+   --  Configure_Pins is used exactly as before.
+   procedure Acquire (S         : in out Session;
+                      Host      : SPI_Host;
+                      Select_CB : CS_Select      := null;
+                      Ctx       : System.Address  := System.Null_Address);
+
+   --  Assert (On => True) / deassert (On => False) this device's chip select via
+   --  its registered callback.  Bracket a whole device command so CS is held
+   --  across a multi-phase transaction (opcode || address || data) rather than
+   --  dropping between Transfers:
+   --     Select_Device (S, True);  Transfer (..); Transfer (..);  Select_Device (S, False);
+   --  No-op for a hardware-CS Session (Select_CB was null) -- there the peripheral
+   --  toggles CS0 per Transfer.  Raises Not_Owned unless S holds a host.
+   procedure Select_Device (S : in out Session; On : Boolean);
 
    --  Full-duplex DMA transfer of Length bytes (1 .. 4095) on the held host:
    --  shift Tx out on MOSI, capture MISO into Rx.  Blocking.  Buffers in
@@ -93,8 +129,13 @@ package ESP32S3.SPI is
 
 private
    type Session is new Ada.Finalization.Limited_Controlled with record
-      Host   : SPI_Host := SPI2;
-      Active : Boolean  := False;   --  holds Host's guard
+      Host      : SPI_Host       := SPI2;
+      Active    : Boolean        := False;                 --  holds Host's guard
+      Select_CB : CS_Select      := null;                  --  app CS hook, null = hw CS0
+      Ctx       : System.Address := System.Null_Address;   --  per-device context
+      Selected  : Boolean        := False;                 --  callback currently asserted?
    end record;
+   --  Finalize releases the host AND, if Selected, calls Select_CB (Off) first --
+   --  so a fault between select and deselect can never leave a device asserted.
    overriding procedure Finalize (S : in out Session);   --  auto-release on scope exit
 end ESP32S3.SPI;
