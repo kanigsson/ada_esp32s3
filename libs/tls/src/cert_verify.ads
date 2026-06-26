@@ -21,4 +21,15 @@ package Cert_Verify is
    function RSA_PSS_SHA256
      (Message, Signature, Modulus, Exponent : X509.Byte_Array) return Boolean;
 
+   --  Verify an ECDSA/P-256 signature over Message.  Sig_DER is the DER
+   --  ECDSA-Sig-Value SEQUENCE { r INTEGER, s INTEGER } as it appears in a
+   --  certificate or a TLS CertificateVerify; Pub_X, Pub_Y are the 32-byte
+   --  big-endian affine public-key coordinates.  The *_SHA256 / *_SHA384 variants
+   --  hash Message with that digest first (SHA-384 is left-truncated to 256 bits,
+   --  as ECDSA requires).  True iff the signature verifies (pure-Ada P256).
+   function ECDSA_P256_SHA256
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean;
+   function ECDSA_P256_SHA384
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean;
+
 end Cert_Verify;

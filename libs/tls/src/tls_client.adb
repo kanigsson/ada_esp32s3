@@ -16,6 +16,7 @@ package body TLS_Client is
    use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_64;
    use type Interfaces.Integer_32;        --  arithmetic on SPARKNaCl N32 / I32
+   use type X509.Key_Algorithm;
    use GNAT.Sockets;
 
    package SHA renames SPARKNaCl.Hashing.SHA256;
@@ -643,7 +644,8 @@ package body TLS_Client is
    begin
       S.CV_OK := False;
       if CLn <= 0 or else SLn <= 0 or else S.Cert_End = 0
-        or else S.CV_Alg /= 16#0804#               --  only rsa_pss_rsae_sha256 here
+        or else (S.CV_Alg /= 16#0804#               --  rsa_pss_rsae_sha256
+                 and then S.CV_Alg /= 16#0403#)      --  ecdsa_secp256r1_sha256
       then
          return;
       end if;
@@ -668,11 +670,19 @@ package body TLS_Client is
          Signed (64 + Ctx'Length + 1 + I) := U8 (D (Index_32 (I)));
       end loop;
 
-      S.CV_OK := Cert_Verify.RSA_PSS_SHA256
-        (Message   => Signed,
-         Signature => Sig,
-         Modulus   => CertBuf (C.RSA_Modulus.First .. C.RSA_Modulus.Last),
-         Exponent  => CertBuf (C.RSA_Exponent.First .. C.RSA_Exponent.Last));
+      if S.CV_Alg = 16#0804# then
+         S.CV_OK := C.Key_Kind = X509.Key_RSA and then Cert_Verify.RSA_PSS_SHA256
+           (Message   => Signed,
+            Signature => Sig,
+            Modulus   => CertBuf (C.RSA_Modulus.First .. C.RSA_Modulus.Last),
+            Exponent  => CertBuf (C.RSA_Exponent.First .. C.RSA_Exponent.Last));
+      else                                           --  ecdsa_secp256r1_sha256
+         S.CV_OK := C.Key_Kind = X509.Key_EC_P256 and then Cert_Verify.ECDSA_P256_SHA256
+           (Message => Signed,
+            Sig_DER => Sig,
+            Pub_X   => CertBuf (C.EC_X.First .. C.EC_X.Last),
+            Pub_Y   => CertBuf (C.EC_Y.First .. C.EC_Y.Last));
+      end if;
    end Verify_Cert_Verify;
 
    ---------------------------------------------------------------------------

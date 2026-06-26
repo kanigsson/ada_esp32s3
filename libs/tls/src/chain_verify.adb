@@ -2,15 +2,40 @@ with Cert_Verify;
 
 package body Chain_Verify is
 
-   --  Does Child's signature verify under Issuer's RSA public key?
+   use type X509.Sig_Algorithm;
+   use type X509.Key_Algorithm;
+
+   --  Does Child's signature verify under Issuer's public key?  Dispatches on how
+   --  the child was signed (RSA-PKCS1-SHA256, or ECDSA/P-256 with SHA-256/384) and
+   --  requires the issuer to hold a matching key type.
    function Sig_OK (Child_Buf : X509.Byte_Array; Child : X509.Certificate;
                     Iss_Buf : X509.Byte_Array; Iss : X509.Certificate)
-                    return Boolean is
-     (Cert_Verify.RSA_PKCS1_SHA256
-        (TBS       => Child_Buf (Child.TBS.First .. Child.TBS.Last),
-         Signature => Child_Buf (Child.Signature.First .. Child.Signature.Last),
-         Modulus   => Iss_Buf (Iss.RSA_Modulus.First .. Iss.RSA_Modulus.Last),
-         Exponent  => Iss_Buf (Iss.RSA_Exponent.First .. Iss.RSA_Exponent.Last)));
+                    return Boolean
+   is
+      TBS : X509.Byte_Array renames Child_Buf (Child.TBS.First .. Child.TBS.Last);
+      Sig : X509.Byte_Array renames
+              Child_Buf (Child.Signature.First .. Child.Signature.Last);
+   begin
+      case Child.Sig_Kind is
+         when X509.Sig_RSA_SHA256 =>
+            return Iss.Key_Kind = X509.Key_RSA and then Cert_Verify.RSA_PKCS1_SHA256
+              (TBS, Sig,
+               Iss_Buf (Iss.RSA_Modulus.First .. Iss.RSA_Modulus.Last),
+               Iss_Buf (Iss.RSA_Exponent.First .. Iss.RSA_Exponent.Last));
+         when X509.Sig_ECDSA_SHA256 =>
+            return Iss.Key_Kind = X509.Key_EC_P256 and then Cert_Verify.ECDSA_P256_SHA256
+              (TBS, Sig,
+               Iss_Buf (Iss.EC_X.First .. Iss.EC_X.Last),
+               Iss_Buf (Iss.EC_Y.First .. Iss.EC_Y.Last));
+         when X509.Sig_ECDSA_SHA384 =>
+            return Iss.Key_Kind = X509.Key_EC_P256 and then Cert_Verify.ECDSA_P256_SHA384
+              (TBS, Sig,
+               Iss_Buf (Iss.EC_X.First .. Iss.EC_X.Last),
+               Iss_Buf (Iss.EC_Y.First .. Iss.EC_Y.Last));
+         when others =>
+            return False;
+      end case;
+   end Sig_OK;
 
    function Validate
      (Chain, Anchors : Cert_List;

@@ -1,6 +1,8 @@
 with ESP32S3.RSA;
 with SPARKNaCl;
 with SPARKNaCl.Hashing.SHA256;
+with SPARKNaCl.Hashing.SHA384;
+with P256;
 
 package body Cert_Verify is
 
@@ -284,5 +286,94 @@ package body Cert_Verify is
          end;
       end;
    end RSA_PSS_SHA256;
+
+   ---------------------------------------------------------------------------
+   --  ECDSA / P-256
+   ---------------------------------------------------------------------------
+
+   --  SHA-384 of Data, left-truncated to 32 bytes (ECDSA uses the leftmost
+   --  256 bits of the digest with a 256-bit group order).
+   function SHA384_BA_32 (Data : Byte_Array) return Byte_Array is
+      Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
+      Dg  : SPARKNaCl.Hashing.SHA384.Digest;
+      R   : Byte_Array (0 .. 31);
+   begin
+      for I in 0 .. Data'Length - 1 loop
+         Msg (SPARKNaCl.N32 (I)) := SPARKNaCl.Byte (Data (Data'First + I));
+      end loop;
+      Dg := SPARKNaCl.Hashing.SHA384.Hash (Msg);
+      for I in 0 .. 31 loop
+         R (I) := U8 (Dg (SPARKNaCl.Index_32 (I)));
+      end loop;
+      return R;
+   end SHA384_BA_32;
+
+   function To_P256 (B : Byte_Array) return P256.Bytes_32 is
+      R : P256.Bytes_32;
+   begin
+      for I in 0 .. 31 loop
+         R (I) := P256.Byte (B (B'First + I));
+      end loop;
+      return R;
+   end To_P256;
+
+   --  Read a DER INTEGER at Pos (tag 0x02), big-endian, into a 32-byte right-aligned
+   --  value (leading zero sign byte dropped, short values left-padded).  Advances Pos.
+   procedure DER_Int (Buf : Byte_Array; Pos : in out Natural; Last : Natural;
+                      Out32 : out P256.Bytes_32; Ok : in out Boolean) is
+      Len, First, Vlen : Natural;
+   begin
+      Out32 := (others => 0);
+      if not Ok or else Pos + 1 > Last or else Buf (Pos) /= 16#02# then
+         Ok := False;  return;
+      end if;
+      Len := Natural (Buf (Pos + 1));               --  r, s < 128 bytes => short form
+      Pos := Pos + 2;
+      if Len = 0 or else Pos + Len - 1 > Last then
+         Ok := False;  return;
+      end if;
+      First := Pos;  Vlen := Len;
+      while Vlen > 0 and then Buf (First) = 0 loop   --  drop leading zero bytes
+         First := First + 1;  Vlen := Vlen - 1;
+      end loop;
+      if Vlen > 32 then
+         Ok := False;  return;
+      end if;
+      for I in 0 .. Vlen - 1 loop
+         Out32 (32 - Vlen + I) := P256.Byte (Buf (First + I));
+      end loop;
+      Pos := Pos + Len;
+   end DER_Int;
+
+   --  Verify ECDSA(SHA-256/384)/P-256 of Hash32 with signature Sig_DER under
+   --  (Pub_X, Pub_Y).  Sig_DER = SEQUENCE { r INTEGER, s INTEGER }.
+   function ECDSA_Core (Hash32 : Byte_Array; Sig_DER, Pub_X, Pub_Y : Byte_Array)
+                        return Boolean
+   is
+      Pos    : Natural;
+      Ok     : Boolean := True;
+      R32, S32 : P256.Bytes_32;
+   begin
+      if Sig_DER'Length < 8 or else Pub_X'Length /= 32 or else Pub_Y'Length /= 32
+        or else Sig_DER (Sig_DER'First) /= 16#30#
+      then
+         return False;
+      end if;
+      Pos := Sig_DER'First + 2;                      --  past SEQUENCE tag + length
+      DER_Int (Sig_DER, Pos, Sig_DER'Last, R32, Ok);
+      DER_Int (Sig_DER, Pos, Sig_DER'Last, S32, Ok);
+      if not Ok then
+         return False;
+      end if;
+      return P256.Verify (To_P256 (Pub_X), To_P256 (Pub_Y), To_P256 (Hash32), R32, S32);
+   end ECDSA_Core;
+
+   function ECDSA_P256_SHA256
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean is
+     (ECDSA_Core (SHA256_BA (Message), Sig_DER, Pub_X, Pub_Y));
+
+   function ECDSA_P256_SHA384
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean is
+     (ECDSA_Core (SHA384_BA_32 (Message), Sig_DER, Pub_X, Pub_Y));
 
 end Cert_Verify;

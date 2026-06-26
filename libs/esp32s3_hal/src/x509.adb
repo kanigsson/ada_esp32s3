@@ -26,6 +26,35 @@ package body X509 is
       and then Cert (S.First + 1) = 16#1D#
       and then Cert (S.First + 2) = 16#11#);
 
+   --  Known OBJECT IDENTIFIER values (DER content bytes, after tag+length).
+   OID_RSA_Enc      : constant Byte_Array :=          --  1.2.840.113549.1.1.1
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#01#);
+   OID_EC_PubKey    : constant Byte_Array :=          --  1.2.840.10045.2.1
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#02#, 16#01#);
+   OID_P256_Curve   : constant Byte_Array :=          --  1.2.840.10045.3.1.7 prime256v1
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#03#, 16#01#, 16#07#);
+   OID_RSA_SHA256   : constant Byte_Array :=          --  1.2.840.113549.1.1.11
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#0B#);
+   OID_ECDSA_SHA256 : constant Byte_Array :=          --  1.2.840.10045.4.3.2
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#02#);
+   OID_ECDSA_SHA384 : constant Byte_Array :=          --  1.2.840.10045.4.3.3
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#03#);
+
+   --  Do the OID content bytes at Slice S equal OID?
+   function OID_Match (Cert : Byte_Array; S : Slice; OID : Byte_Array) return Boolean
+   is
+   begin
+      if Length (S) /= OID'Length then
+         return False;
+      end if;
+      for I in 0 .. OID'Length - 1 loop
+         if Cert (S.First + I) /= OID (OID'First + I) then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end OID_Match;
+
    --  GeneralNames ::= SEQUENCE OF GeneralName; collect dNSName ([2], tag 0x82).
    procedure Parse_SAN (Cert : Byte_Array; First, Last : Natural;
                         Result : in out Certificate) is
@@ -155,10 +184,36 @@ package body X509 is
             SL    : constant Natural := SPKI.Content.Last;
             AlgId : DER.TLV;
          begin
-            Expect (Cert, SP, SL, 16#30#, AlgId, Ok);     --  algorithm (skip)
+            Expect (Cert, SP, SL, 16#30#, AlgId, Ok);     --  algorithm SEQUENCE
+            --  Classify the key algorithm from the first OID inside it.
+            declare
+               AP   : Natural := AlgId.Content.First;
+               Alg, Curve : DER.TLV;
+            begin
+               Expect (Cert, AP, AlgId.Content.Last, 16#06#, Alg, Ok);
+               if Ok then
+                  if OID_Match (Cert, Alg.Content, OID_RSA_Enc) then
+                     Result.Key_Kind := Key_RSA;
+                  elsif OID_Match (Cert, Alg.Content, OID_EC_PubKey) then
+                     --  EC: the next OID is the named curve; require prime256v1.
+                     AP := Alg.Elem_Last + 1;
+                     Expect (Cert, AP, AlgId.Content.Last, 16#06#, Curve, Ok);
+                     if Ok and then OID_Match (Cert, Curve.Content, OID_P256_Curve) then
+                        Result.Key_Kind := Key_EC_P256;
+                     else
+                        Ok := False;                       --  unsupported curve
+                     end if;
+                  else
+                     Ok := False;                          --  unsupported key type
+                  end if;
+               end if;
+            end;
             SP := AlgId.Elem_Last + 1;
             Expect (Cert, SP, SL, 16#03#, Bits, Ok);      --  subjectPublicKey BIT STRING
-            if Ok and then Length (Bits.Content) >= 2 then
+
+            if Ok and then Result.Key_Kind = Key_RSA
+              and then Length (Bits.Content) >= 2
+            then
                --  Skip the BIT STRING's unused-bits byte; parse RSAPublicKey.
                Expect (Cert, Bits.Content.First + 1, Bits.Content.Last, 16#30#, RSASeq, Ok);
                if Ok then
@@ -174,6 +229,16 @@ package body X509 is
                      Result.RSA_Exponent := Ex.Content;
                   end;
                end if;
+
+            elsif Ok and then Result.Key_Kind = Key_EC_P256
+              and then Length (Bits.Content) >= 66
+              and then Cert (Bits.Content.First + 1) = 16#04#   --  uncompressed point
+            then
+               --  BIT STRING content = unused-bits(1) || 0x04 || X(32) || Y(32).
+               Result.EC_X := (First => Bits.Content.First + 2,
+                               Last  => Bits.Content.First + 33);
+               Result.EC_Y := (First => Bits.Content.First + 34,
+                               Last  => Bits.Content.First + 65);
             else
                Ok := False;
             end if;
@@ -194,6 +259,15 @@ package body X509 is
       Expect (Cert, P, Outer.Content.Last, 16#30#, SigAlg, Ok);
       Expect (Cert, SigAlg.Content.First, SigAlg.Content.Last, 16#06#, OID, Ok);
       Result.Sig_Alg_OID := OID.Content;
+      if Ok then
+         if OID_Match (Cert, OID.Content, OID_RSA_SHA256) then
+            Result.Sig_Kind := Sig_RSA_SHA256;
+         elsif OID_Match (Cert, OID.Content, OID_ECDSA_SHA256) then
+            Result.Sig_Kind := Sig_ECDSA_SHA256;
+         elsif OID_Match (Cert, OID.Content, OID_ECDSA_SHA384) then
+            Result.Sig_Kind := Sig_ECDSA_SHA384;
+         end if;
+      end if;
       P := SigAlg.Elem_Last + 1;
 
       --  signatureValue BIT STRING (drop the leading unused-bits byte).
