@@ -25,6 +25,7 @@ with ESP32S3.GPIO;
 with ESP32S3.Log;            use ESP32S3.Log;
 with ESP32S3.W5500.DHCP;
 with ESP32S3.W5500.Net_Device;
+with ESP32S3.MAC;
 with Net_Devices;
 with Net_Routes;
 with GNAT.Sockets;
@@ -43,9 +44,15 @@ procedure Main is
    Eth0 : constant Net_Devices.Interface_Id := 0;   --  primary (DHCP, cabled)
    Eth1 : constant Net_Devices.Interface_Id := 1;   --  secondary (not cabled)
 
-   --  A second MAC, distinct from the primary's (W5500_Dev uses ...01:02:03).
+   --  A second MAC for the secondary W5500.  The factory block's Ethernet slot is
+   --  already used by the primary, so derive a LOCALLY-administered address (base+4
+   --  with the local bit set) -- distinct and guaranteed not to clash with a real
+   --  one.
+   function To_W5500 (M : ESP32S3.MAC.MAC_Address) return W5500.MAC_Address is
+     (W5500.Byte (M (0)), W5500.Byte (M (1)), W5500.Byte (M (2)),
+      W5500.Byte (M (3)), W5500.Byte (M (4)), W5500.Byte (M (5)));
    MAC1 : constant W5500.MAC_Address :=
-     (16#00#, 16#08#, 16#DC#, 16#04#, 16#05#, 16#06#);
+     To_W5500 (ESP32S3.MAC.Local (ESP32S3.MAC.Derived (4)));
 
    Lease     : ESP32S3.W5500.DHCP.Lease_Info;
    Have_Eth1 : Boolean := False;
