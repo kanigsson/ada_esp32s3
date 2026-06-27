@@ -86,55 +86,10 @@ They are defined once here.
   defaulted discriminants.
 \end{description}
 
-\section{Writing numbers: bases and underscores}
-\label{sec:bases}\index{numeric literals}
-
-Embedded code is full of specific numbers --- addresses, bit masks, clock
-dividers, register fields. Ada lets you write each literal in whatever base makes
-it clearest and group its digits for readability, with no runtime cost: the base
-and the underscores are purely lexical, resolved entirely by the compiler.
-
-\textbf{Base 10 is the default.} A plain numeric literal is decimal:
-
-\begin{lstlisting}
-   Count : constant := 42;
-   Clk   : constant := 240000000;     -- 240 MHz, but hard to read at a glance
-\end{lstlisting}
-
-\textbf{Other bases use \texttt{base\#digits\#}.} The base --- itself written in
-decimal, and any value from 2 to 16 --- precedes a value delimited by \texttt{\#}.
-The four literals below are \emph{the same number}, 42, just written in different
-bases:
-
-\begin{lstlisting}
-   D : constant := 42;            -- base 10 (the default)
-   B : constant := 2#101010#;     -- binary       (also 42)
-   O : constant := 8#52#;         -- octal        (also 42)
-   H : constant := 16#2A#;        -- hexadecimal  (also 42)
-\end{lstlisting}
-
-In a hexadecimal literal the letter digits A--F may be upper- or lower-case
-(\texttt{16\#2a\#} and \texttt{16\#2A\#} are identical).
-
-\textbf{Underscores group digits.} An underscore may appear \emph{between} digits
-(never leading, trailing, doubled, or next to a \texttt{\#}); the compiler ignores
-it completely. It exists only so a human can read --- and proofread --- a long
-literal. Group however suits the base: thousands for decimal, nibbles or bytes for
-hexadecimal and binary.
-
-\begin{lstlisting}
-   Clock_Hz : constant := 240_000_000;             -- 240 MHz, grouped in thousands
-   Base     : constant := 16#6000_4000#;           -- a peripheral base address
-   Mask     : constant := 2#1111_0000_1111_0000#;  -- a bit mask, by nibble
-   All_Ones : constant := 16#FFFF_FFFF#;           -- 32 set bits, by 16-bit halves
-\end{lstlisting}
-
-The grouping is what makes a transcription slip obvious: a missing digit in
-\texttt{16\#6000\_4000\#} throws the nibble columns out of alignment, whereas
-\texttt{16\#6004000\#} hides it. This is why the register and bit-field code
-throughout this book reads the way it does --- addresses are underscore-grouped
-hexadecimal (\texttt{16\#6003\_8000\#}), and masks and field positions are binary
-or \texttt{2 ** n}.
+%  The lexical basics -- numeric bases, underscores, and case insignificance --
+%  are introduced early, with the first program, in \S\ref{sec:bases} (the Anatomy
+%  chapter), so the register code in the intervening chapters reads correctly.
+%  This chapter picks up where that leaves off: the TYPES those numbers take.
 
 \section{Subtypes and modular types}
 \label{sec:subtypes}\index{subtype}

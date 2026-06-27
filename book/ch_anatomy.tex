@@ -98,6 +98,64 @@ end Main;
 \texttt{delay until} is served by the board-support tick; \texttt{ESP32S3.GPIO} is
 the HAL; everything links against the runtime crate.
 
+\section{How to read the Ada in this book: numbers, names, and case}
+\label{sec:bases}\index{numeric literals}\index{case insensitivity}\index{underscore}
+
+That nine-line program already leans on three lexical conventions that recur on
+every page from here on. They are worth pinning down now --- with the reason for
+each --- so that the register and bit-field code in later chapters reads as intended
+rather than as noise.
+
+\textbf{Case is insignificant --- so you pick a convention and the compiler keeps you
+honest.} Ada folds letter case for identifiers and reserved words alike:
+\texttt{Led}, \texttt{led} and \texttt{LED} are one name, and \texttt{LOOP},
+\texttt{Loop} and \texttt{loop} are one keyword. Crucially, the language also forbids
+two names that differ \emph{only} in case --- precisely so a reader never has to
+squint at \texttt{Value} versus \texttt{value} to tell two things apart. The freedom
+is therefore really a discipline: choose a house style and the consistency carries
+meaning. This book uses the conventional Ada style --- \texttt{Mixed\_Case} for
+identifiers and types (\texttt{Pin\_Id}, \texttt{Clock}), lower case for reserved
+words (\texttt{procedure}, \texttt{loop}, \texttt{end}) --- so when you see that shape
+you are reading a choice, not a rule the compiler imposed.
+
+\textbf{Numbers may be written in any base.} A plain literal is decimal (the
+\texttt{2} and \texttt{250} above), but an address or a bit mask is clearer in
+another base, written \texttt{base\#digits\#} --- the base in decimal, from 2 to 16,
+the value between \texttt{\#}s. These are all the number 42:
+
+\begin{lstlisting}
+   D : constant := 42;            -- base 10 (the default)
+   B : constant := 2#101010#;     -- binary
+   O : constant := 8#52#;         -- octal
+   H : constant := 16#2A#;        -- hexadecimal
+\end{lstlisting}
+
+The base is purely \emph{lexical} --- resolved by the compiler, with no runtime cost
+--- so you write each constant in whatever base makes its \emph{meaning} plain: a
+bit mask in binary, a peripheral address in hex. (In a hex literal the digits
+\texttt{A}--\texttt{F} obey the case rule above: \texttt{16\#2a\#} and
+\texttt{16\#2A\#} are identical.)
+
+\textbf{Underscores group digits for the eye.} An underscore may appear
+\emph{between} digits --- never leading, trailing, doubled, or beside a \texttt{\#}
+--- and the compiler ignores it entirely. It exists only so a human can read and
+\emph{proofread} a long literal, grouped to suit the base:
+
+\begin{lstlisting}
+   Clock_Hz : constant := 240_000_000;             -- thousands
+   Base     : constant := 16#6000_4000#;           -- a peripheral base address
+   Mask     : constant := 2#1111_0000_1111_0000#;  -- a bit mask, by nibble
+\end{lstlisting}
+
+The grouping is what makes a transcription slip obvious: a dropped digit in
+\texttt{16\#6000\_4000\#} throws the nibble columns out of alignment, whereas
+\texttt{16\#6004000\#} hides it. The same underscore joins words in a name
+(\texttt{Clock\_Hz}, \texttt{Pin\_Id}), for the same reason --- readability. This is
+why the register code throughout the book looks the way it does: addresses are
+underscore-grouped hexadecimal, and masks and field positions are binary or
+\texttt{2 ** n}. The deeper numeric \emph{types} those literals take on ---
+subtypes, modular types, fixed-point --- come later, in Chapter~\ref{ch:embedded}.
+
 \chapter{The Runtime Profiles}\index{runtime profile}
 \label{ch:profiles}
 
