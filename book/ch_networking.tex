@@ -730,6 +730,44 @@ another W5500, or \texttt{Cell\_Modem.Net\_Device} --- is one more
 raw Ethernet MAC or Wi-Fi part would \emph{not} fit so cleanly: those are packet-level
 and would need a software IP stack beneath this interface.)
 
+\section{Where the MAC addresses come from}
+\label{ch:net:mac}\index{MAC address}\index{eFuse}
+
+A W5500 needs a MAC address, and the examples up to here handed it one by hand ---
+\texttt{00:08:DC:01:02:03} and the like. That works on a closed bench, but a
+hand-picked MAC is not yours to use: it may collide with a real device on the network,
+and it is not registered to anyone. The ESP32-S3 already carries a better answer. Every
+chip is programmed at the factory with a MAC address in its \emph{eFuse}, and Espressif
+allocates each part a \emph{block of four} universally-administered addresses: the eFuse
+base is the Wi-Fi station MAC, and soft-AP, Bluetooth and Ethernet are base $+\,1$,
+$+\,2$ and $+\,3$. \texttt{ESP32S3.MAC} reads them:
+
+\begin{lstlisting}
+W5500.Configure (Dev, MAC => To_W5500 (ESP32S3.MAC.Ethernet), ...);  -- base + 3
+\end{lstlisting}
+
+The read is just that --- a read. The MAC lives in eFuse shadow registers
+(\texttt{RD\_MAC\_SPI\_SYS\_0}/\texttt{\_1}) that the hardware latches at reset, so there
+is no controller to enable and no state to carry; the whole driver is a handful of
+register reads and some shifting, and it compiles in every runtime profile. Handing a
+W5500 \texttt{ESP32S3.MAC.Ethernet} gives it a unique, manufacturer-assigned address
+with no guessing.
+
+A board with \emph{two} W5500s (\S\ref{ch:net:multinic}) raises a wrinkle: the factory
+block has only four slots and the Ethernet one is spoken for. The second NIC therefore
+takes a \emph{locally-administered} address --- \texttt{Local (Derived (4))}, base
+$+\,4$ with the local bit set --- which is guaranteed not to clash with a real
+manufacturer's address. One small seam: \texttt{ESP32S3.MAC}'s address is an array of
+\texttt{Unsigned\_8} and the W5500's is its own byte array, so the hand-off is an
+element-wise conversion (a six-element aggregate, the \texttt{To\_W5500} above) --- kept
+in the application so the MAC reader stays free of any networking dependency.
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_mac} prints all five (base, the
+three derived interface MACs, and a local one); \texttt{esp32s3\_multinic} now seeds its
+two W5500s this way. The proof it reaches the silicon: switching the primary from the
+hand-picked MAC to the eFuse one made the DHCP server hand out a \emph{different} lease
+--- the chip really is using the address from its eFuse.
+
 \section{Modbus TCP: your data, your handlers}
 \label{ch:net:modbus}\index{Modbus}
 
