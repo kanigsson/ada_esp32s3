@@ -15,7 +15,9 @@ project FTP_Host is
       "ftp_test_support.ads",
       "ftp_test_support.adb",
       "ftp_client.ads",
-      "ftp_client.adb");
+      "ftp_client.adb",
+      "ftp_replies.ads",
+      "ftp_replies.adb");
    package Compiler is
       for Default_Switches ("Ada") use ("-g", "-O0", "-gnata", "-gnat2022");
    end Compiler;

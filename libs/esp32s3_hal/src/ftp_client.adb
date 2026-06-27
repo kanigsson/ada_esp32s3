@@ -1,6 +1,10 @@
 with Ada.Streams;   use Ada.Streams;
 with GNAT.Sockets;  use GNAT.Sockets;
+with FTP_Replies;   use FTP_Replies;   --  proved reply / PASV parsers (SPARK)
 
+--  This body drives GNAT.Sockets, whose controlled socket handles are out of the
+--  SPARK subset, so it is not proved.  The pure, attacker-facing parsing it used to
+--  do inline now lives in FTP_Replies (proved AoRTE) -- see proof/ROADMAP-net.md #2.
 package body FTP_Client is
 
    subtype SEA is Stream_Element_Array;
@@ -94,29 +98,8 @@ package body FTP_Client is
    --  FTP replies
    ---------------------------------------------------------------------------
 
-   --  The 3-digit reply code at the start of Line, or -1 if absent.
-   function Code_Of (Line : String; Last : Natural) return Integer is
-      F : constant Natural := Line'First;
-   begin
-      if Last >= 3
-        and then (for all I in F .. F + 2 => Line (I) in '0' .. '9')
-      then
-         return (Character'Pos (Line (F))     - Character'Pos ('0')) * 100
-              + (Character'Pos (Line (F + 1)) - Character'Pos ('0')) * 10
-              + (Character'Pos (Line (F + 2)) - Character'Pos ('0'));
-      else
-         return -1;
-      end if;
-   end Code_Of;
-
-   --  A reply line "NNN-" opens a multi-line reply that ends at the next "NNN "
-   --  with the same code.
-   function Is_Mid_Multiline (Line : String; Last : Natural) return Boolean is
-     (Last >= 4 and then Line (Line'First + 3) = '-');
-
-   function Is_Final_Line (Line : String; Last, Code : Natural) return Boolean is
-     (Code_Of (Line, Last) = Code
-      and then (Last < 4 or else Line (Line'First + 3) = ' '));
+   --  Code_Of / Is_Mid_Multiline / Is_Final_Line now live in FTP_Replies (proved);
+   --  they are used unqualified here via the use clause above.
 
    --  Read a whole reply (consuming any continuation lines); return its code.
    procedure Read_Reply (S : in out Session; Code : out Integer; St : out Status)
@@ -205,9 +188,9 @@ package body FTP_Client is
       Line : String (1 .. 256);
       Last : Natural;
       Code : Integer;
-      Nums : array (1 .. 6) of Natural := (others => 0);
-      Slot : Natural := 1;
-      I    : Natural;
+      Host   : Host_Octets;   --  advertised IP -- intentionally ignored (see below)
+      Port   : Port_16;
+      Parsed : Boolean;
    begin
       Command_Line (S, "PASV", Code, Line, Last, St);
       if St /= OK then return; end if;
@@ -216,29 +199,15 @@ package body FTP_Client is
          return;
       end if;
 
-      --  Parse the six comma-separated numbers inside the parentheses.
-      I := Line'First;
-      while I <= Line'First + Last - 1 and then Line (I) /= '(' loop
-         I := I + 1;
-      end loop;
-      if I > Line'First + Last - 1 then St := Protocol_Error; return; end if;
-      I := I + 1;
-      while I <= Line'First + Last - 1 and then Slot <= 6 loop
-         exit when Line (I) = ')';
-         if Line (I) in '0' .. '9' then
-            Nums (Slot) := Nums (Slot) * 10
-                           + (Character'Pos (Line (I)) - Character'Pos ('0'));
-         elsif Line (I) = ',' then
-            Slot := Slot + 1;
-         end if;
-         I := I + 1;
-      end loop;
-      if Slot < 6 then St := Protocol_Error; return; end if;
+      --  Parse the six comma-separated numbers inside the parentheses (proved
+      --  parser: no overflow / out-of-range on a hostile 227 reply).
+      Parse_Pasv (Line, Last, Host, Port, Parsed);
+      if not Parsed then St := Protocol_Error; return; end if;
 
       declare
          Addr : constant Sock_Addr_Type :=
            (Family => Family_Inet, Addr => S.Host,
-            Port   => Port_Type (Nums (5) * 256 + Nums (6)));
+            Port   => Port_Type (Port));
       begin
          Create_Socket (Data, Family_Inet, Socket_Stream);
          if S.Timeout > 0.0 then

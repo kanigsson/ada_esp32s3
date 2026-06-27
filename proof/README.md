@@ -42,6 +42,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | `chain_verify_proof.gpr` | `Chain_Verify` (chain walk, null-safe derefs) | **proved** (63/63 VCs) |
 | `aes_gcm_proof.gpr` | `AES.GCM` GHASH authenticator (`GF_Mul`/`GHASH`) | **proved** (17/17 VCs) |
 | `net_routes_proof.gpr` | `Net_Routes` (IPv4 longest-prefix routing table) | **proved** (54/54 VCs, 0 justified) — AoRTE **+ `Resolve` functional postcondition**; see `ROADMAP-net.md` #1 |
+| `ftp_replies_proof.gpr` | `FTP_Replies` (FTP reply parsers + PASV `Parse_Pasv`) | **proved** (56/56 VCs, 0 justified) — AoRTE on the attacker-facing parse; found/fixed a PASV overflow bug; see `ROADMAP-net.md` #2 |
 
 Tier-A AoRTE is complete across all five attacker-facing units. The reusable
 proof patterns and the deferred optional functional properties are recorded in

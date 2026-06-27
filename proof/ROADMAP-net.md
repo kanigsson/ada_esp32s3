@@ -23,8 +23,8 @@ in-buffer-predicate / workhorse-lemma patterns, the hardware boundary) are all i
 | # | Target | Tier | State |
 |--:|--------|------|-------|
 | 1 | `Net_Routes` (whole package) | A-profile (AoRTE **+ functional**) | ✅ **proved** — AoRTE + `Resolve` functional postcondition, 54/54 VCs, 0 justified |
-| 2 | FTP client reply parsers (`ftp_client.adb` pure helpers) | A-profile (AoRTE) | ⬜ not started — needs a factoring refactor — **start here** |
-| 3 | FTP server path resolution (`Abs_Path` / `Resolve_Path`) | A-profile (AoRTE) | ⬜ not started — needs a bounded-buffer refactor |
+| 2 | FTP client reply parsers (now `FTP_Replies`) | A-profile (AoRTE) | ✅ **proved** — factored out + AoRTE, 56/56 VCs, 0 justified; found & fixed a PASV overflow bug |
+| 3 | FTP server path resolution (`Abs_Path` / `Resolve_Path`) | A-profile (AoRTE) | ⬜ not started — needs a bounded-buffer refactor — **start here** |
 | — | TLV2556 + SPI/`*-engine` / `w25q` / `w5500` / `sd_spi` churn | B (register drivers) | ⬜ folds into the existing Tier-B bucket |
 | — | Socket-coupled FTP flow, `gnat-sockets`, `ext4-vfs` | C (`SPARK_Mode Off`) | n/a — controlled handles, out of subset |
 
@@ -89,7 +89,33 @@ the proof refactor is behaviour-preserving. What it took, all minor:
 
 ---
 
-## 2. FTP client reply parsers — the attacker-facing parse
+## 2. FTP client reply parsers — the attacker-facing parse ✅ PROVED
+
+**Result (2026-06-28).** Factored the pure parsing out of `ftp_client.adb` into a
+new standalone `FTP_Replies` (`ftp_replies.{ads,adb}`, depends only on `Interfaces`)
+and proved it: `proof/ftp_replies_proof.gpr` at `--level=2`, **56/56 VCs, 0 unproved,
+0 justified**. The `FTP_Client` body now `with`s it (`Open_Passive` calls
+`Parse_Pasv`); the FTP host test still passes 12/12 against a live Python server, so
+the refactor is behaviour-preserving.
+
+- **AoRTE on the reply-line helpers** (`Code_Of`, `Is_Mid_Multiline`,
+  `Is_Final_Line`) — shared `Pre => Last <= Line'Length`; index values held in the
+  index base type (`Integer`), per the "empty-array `'First`" pattern.
+- **`Parse_Pasv` (the security-relevant one) — and a real bug it found.** The inline
+  parse accumulated each field as `Nums (Slot) := Nums (Slot) * 10 + digit` with **no
+  bound**, and then built `Port_Type (Nums (5) * 256 + Nums (6))`. A hostile/buggy
+  `227` reply with a long digit run **overflows** `Natural` (and the `Port_Type`
+  conversion) → `Constraint_Error` on the board. The proved parser caps each field
+  (`<= 255` guard, so a field tops out at 2559 — no overflow) and **fails closed**
+  (`Ok := False`) on any field `> 255`, a missing field, or no parenthesised group;
+  the port is then provably `<= 65535` and every index provably in range. Postcondition
+  also pins the failure shape (`not Ok` ⇒ `Host`/`Port` zeroed).
+
+**Refactor done:** `Parse_Pasv (Line, Last; Host, Port, Ok)` is now a pure
+`SPARK_Mode On` procedure in `FTP_Replies`; the socket-opening `Open_Passive` stays
+in the (unproved, socket-coupled) `FTP_Client` body and just calls it.
+
+The original triage notes are kept below for reference.
 
 `libs/esp32s3_hal/src/ftp_client.adb`. The socket-driving outer layer
 (`Connect` / `Retrieve` / `Store`, the `Session` over `GNAT.Sockets.Socket_Type`)
@@ -151,7 +177,7 @@ win, so it trails #1 and #2.
 1. ✅ **`Net_Routes`** — AoRTE + the `Resolve` functional postcondition, done
    (54/54 VCs, 0 justified). Cleanest, smallest, and the only new unit with a
    realistic functional spec.
-2. **FTP client PASV / reply parsers** — factor `Parse_Pasv` out and prove the
-   attacker-facing parse. ← **next**
+2. ✅ **FTP client PASV / reply parsers** — factored into `FTP_Replies` and proved
+   (56/56 VCs, 0 justified); found & fixed a PASV integer-overflow bug.
 3. **FTP server path resolution** — bounded-buffer refactor, then prove no
-   mount escape.
+   mount escape. ← **next**
