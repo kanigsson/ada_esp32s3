@@ -497,3 +497,85 @@ a property of \emph{real hardware under real load} --- a small buffer that actua
 fills, a close you actually have to drive. The portable layer let the protocol be
 written and tested in minutes on a laptop; the silicon is what proved it. On bare
 metal, the board is the test.
+
+\section{An FTP server, and an accessibility check that earned its keep}
+\label{ch:net:ftpd}\index{FTP!server}\index{accessibility check}
+
+The other half of FTP is the server, and it joins the two halves of this book: it
+serves the \emph{ext4-on-flash} filesystem of Chapter~\ref{ch:storage} over the
+network. \texttt{FTP\_Server.Run} takes a mounted \texttt{ESP32S3.Ext4.FS.Mount}
+and runs the accept loop --- one client at a time, a control connection plus one
+passive data connection per transfer:
+
+\begin{lstlisting}
+procedure Run (FS          : not null access ESP32S3.Ext4.FS.Mount;
+               Local_IP    : String;                       -- advertised in PASV
+               Server_Name : String := "Ada ESP32-S3";     -- the 220 greeting
+               Port        : Port_Type := 21;
+               Data_Port   : Port_Type := 50_000;
+               Read_Only   : Boolean := False);
+\end{lstlisting}
+
+The server side of the socket API is \texttt{Bind\_Socket} / \texttt{Listen\_%
+Socket} / \texttt{Accept\_Socket} (the echo example, \S\ref{ch:net:examples}); each
+FTP command then maps onto an ext4 operation --- \texttt{LIST} onto
+\texttt{Iterate} (plus \texttt{Stat} for the \texttt{ls -l} columns),
+\texttt{RETR} onto the offset \texttt{Read\_File}, \texttt{STOR} onto
+\texttt{Create\_File} + \texttt{Append} + \texttt{Commit}, \texttt{DELE} /
+\texttt{MKD} / \texttt{RMD} onto \texttt{Unlink} / \texttt{Mkdir} / \texttt{Rmdir}.
+The filesystem's \texttt{Ada.IO\_Exceptions} are caught and turned into FTP
+\texttt{550} replies, so a bad request never takes the server down; \texttt{Read\_%
+Only} refuses the mutating commands. A desktop client --- \texttt{ftp}, FileZilla,
+a browser, Python \texttt{ftplib} --- can then browse, download, upload and manage
+the board's flash.
+
+\textbf{The board faulted on the first run --- and that was the language working.}
+Flashed and booted, the server printed its greeting and then died:
+
+\begin{lstlisting}[style=sh]
+[ftpd] serving on 192.168.1.229:21  (anonymous, read-write)
+Unhandled Ada Exception: PROGRAM_ERROR
+Message: ftp_server.adb:539 accessibility check failed
+\end{lstlisting}
+
+Two things are worth drawing out. First, the \emph{diagnosis}: from the host the
+board still answered \texttt{ping}, yet port 21 refused connections. That
+combination is a tell --- the W5500 answers ARP and ICMP \emph{in silicon} once its
+address is configured, so a board that pings but refuses every port has a
+\emph{halted CPU}, not a missing listener. The chip was up; the program was not.
+
+Second, the fault itself. Line 539 was the server stashing the mount for its
+handlers to reach:
+
+\begin{lstlisting}
+Mnt := FS;   -- Mnt is library-level; FS points at the caller's Mount
+\end{lstlisting}
+
+The example had declared the \texttt{Mount} as a local variable of \texttt{Main}.
+Storing an access to it in a library-level variable --- one that outlives
+\texttt{Main}'s frame --- is exactly the use-after-scope that Ada's
+\emph{accessibility rules} forbid, and the one case the compiler cannot prove
+statically it checks at run time. The check fired the instant the assignment ran,
+turning a latent dangling pointer into a located exception with a line number. The
+fix is to give the filesystem objects the lifetime the server assumes --- declare
+them at library level:
+
+\begin{lstlisting}
+package Flash_FS is                       -- library level: lives for the program
+   Raw : aliased ESP32S3.Block_Dev.W25Q_Source.Source;
+   Vol : aliased ESP32S3.Block_Dev.WL.Volume;
+   Dev : ESP32S3.Block_Dev.Device;
+   M   : aliased ESP32S3.Ext4.FS.Mount;
+end Flash_FS;
+\end{lstlisting}
+
+In C the same mistake is a silent use-after-scope that corrupts something later, far
+from the cause. Here it was a clean exception at the assignment that made it. The
+two FTP halves bracket the lesson nicely: the client's bugs were properties of the
+hardware that no amount of reading the source could reveal; the server's was a
+property of the \emph{program} that the language caught before it could do harm.
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_ftp\_server} --- formats a
+fresh ext4 on the W25Q flash, then serves it; HW-verified against \texttt{ftplib}
+(login, \texttt{LIST}, \texttt{RETR}/\texttt{SIZE}, \texttt{STOR} with a byte-exact
+read-back, \texttt{MKD}, \texttt{DELE}).
