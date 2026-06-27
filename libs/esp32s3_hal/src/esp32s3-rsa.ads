@@ -21,9 +21,13 @@ package ESP32S3.RSA is
    procedure Mod_Exp (X, Y, M, R2 : Word_Array;
                       Z  : out Word_Array;
                       Ok : out Boolean)
-     with Pre => M'Length in 1 .. 128
-                 and then X'Length = M'Length and then Y'Length = M'Length
-                 and then R2'Length = M'Length and then Z'Length = M'Length;
+     with Pre  => M'Length in 1 .. 128
+                  and then X'Length = M'Length and then Y'Length = M'Length
+                  and then R2'Length = M'Length and then Z'Length = M'Length,
+          --  Result *shape* only: Z is fully written and modulus-sized.  The
+          --  numeric correctness of the exponentiation is silicon (the body is
+          --  SPARK_Mode => Off), so it is not -- and cannot be -- proved here.
+          Post => Z'Length = M'Length;
 
    --  As above, but compute the Montgomery constant R^2 mod M in software
    --  (shift / compare / subtract -- no multiply, the hardware does that), so it
@@ -32,8 +36,10 @@ package ESP32S3.RSA is
    procedure Mod_Exp (X, Y, M : Word_Array;
                       Z  : out Word_Array;
                       Ok : out Boolean)
-     with Pre => M'Length in 1 .. 128
-                 and then X'Length = M'Length and then Y'Length = M'Length
-                 and then Z'Length = M'Length;
+     with Pre  => M'Length in 1 .. 128
+                  and then X'Length = M'Length and then Y'Length = M'Length
+                  and then Z'Length = M'Length,
+          --  Result *shape* only (see the R2 overload above).
+          Post => Z'Length = M'Length;
 
 end ESP32S3.RSA;
