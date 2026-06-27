@@ -52,15 +52,17 @@ This is the **direct** mapping with **no wear leveling** — a hot 4 KB block is
 erased in place on every rewrite. The Option B wear-leveling FTL layers on top of
 this next.
 
-## Two devices on one bus — the application chip select
+## Two devices on one bus — the per-device chip select
 
 The flash shares **SPI2** with the W5500 Ethernet chip. The W5500 uses the
 host's single hardware `CS0` (on IO39); the flash brings its **own** select on
-**IO21**, driven through the SPI driver's application chip-select callback
-(`ESP32S3.SPI.CS_Select`). The driver suppresses the peripheral's hardware `CS0`
-while a callback device holds the bus, so the two never collide. For the common
-single-GPIO case the driver ships a ready-made callback (`W25Q.GPIO_Select` +
-`Pin_Cell`); a decoder or I/O-expander select can supply its own.
+**IO21**. For the common single-GPIO case you just name the pin —
+`Flash := (Host => SPI2, CS_Pin => 21, others => <>)` — and the SPI driver owns
+that GPIO, driving it active-low and holding it asserted across the whole command
+(so the streamed read keeps `CS` low across every transfer). The driver suppresses
+the peripheral's hardware `CS0` while such a device holds the bus, so the two never
+collide. A select that is not one plain GPIO (a 3:8 decoder, an I/O-expander line)
+supplies a `CS_CB` callback (`ESP32S3.SPI.CS_Select`) instead.
 
 ## Why the standard opcodes in 4-byte mode (not `0x12`/`0x21`)
 

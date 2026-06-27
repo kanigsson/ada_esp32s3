@@ -1,8 +1,25 @@
 with ESP32S3.SPI.Engine;
+with ESP32S3.GPIO;
 
 package body ESP32S3.SPI is
 
    package E renames ESP32S3.SPI.Engine;
+   use type ESP32S3.GPIO.Pad_Number;
+
+   --  Drive a Session's chip select.  A built-in CS_Pin is an active-low GPIO
+   --  the driver owns; otherwise the device's own callback (if any) is invoked.
+   procedure Drive_CS (S : Session; On : Boolean) is
+   begin
+      if S.CS_Pin /= No_Pin then
+         if On then
+            ESP32S3.GPIO.Clear (ESP32S3.GPIO.Pin_Id (S.CS_Pin));
+         else
+            ESP32S3.GPIO.Set (ESP32S3.GPIO.Pin_Id (S.CS_Pin));
+         end if;
+      elsif S.Select_CB /= null then
+         S.Select_CB (S.Ctx, On);
+      end if;
+   end Drive_CS;
 
    --  One protected guard per host -- arbitrates exclusive ownership.  The
    --  guarded section is tiny (flip a flag); the actual transfer runs outside.
@@ -135,6 +152,7 @@ package body ESP32S3.SPI is
 
    procedure Acquire (S         : in out Session;
                       Host      : SPI_Host;
+                      CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       Select_CB : CS_Select      := null;
                       Ctx       : System.Address  := System.Null_Address) is
    begin
@@ -144,12 +162,23 @@ package body ESP32S3.SPI is
       Guards (Host).Acquire;          --  suspends here until the host is free
       S.Host      := Host;
       S.Active    := True;
+      S.CS_Pin    := CS_Pin;
       S.Select_CB := Select_CB;
       S.Ctx       := Ctx;
       S.Selected  := False;
-      --  A callback device drives its own select, so suppress the hardware CS0
-      --  for this hold; a hardware-CS device (null callback) re-enables it.
-      State.Set_Hardware_CS (Host, Enabled => Select_CB = null);
+      --  A built-in software CS pin is ours to drive: park it as a deselected
+      --  (high) output before the first Select_Device.
+      if CS_Pin /= No_Pin then
+         ESP32S3.GPIO.Configure (ESP32S3.GPIO.Pin_Id (CS_Pin),
+                                 Mode  => ESP32S3.GPIO.Output,
+                                 Drive => ESP32S3.GPIO.Drive_Strong);
+         ESP32S3.GPIO.Set (ESP32S3.GPIO.Pin_Id (CS_Pin));
+      end if;
+      --  A device that drives its own select (software CS pin or callback)
+      --  suppresses the hardware CS0 for this hold so it cannot disturb another
+      --  device on the bus; a plain hardware-CS device re-enables it.
+      State.Set_Hardware_CS
+        (Host, Enabled => CS_Pin = No_Pin and then Select_CB = null);
    end Acquire;
 
    --------------------
@@ -162,8 +191,8 @@ package body ESP32S3.SPI is
          raise Not_Owned
            with "SPI Select_Device without holding the host -- Acquire first";
       end if;
-      if S.Select_CB /= null then     --  no-op for a hardware-CS Session
-         S.Select_CB (S.Ctx, On);
+      if S.CS_Pin /= No_Pin or else S.Select_CB /= null then  --  no-op for hw CS0
+         Drive_CS (S, On);
          S.Selected := On;
       end if;
    end Select_Device;
@@ -185,10 +214,10 @@ package body ESP32S3.SPI is
    procedure Release (S : in out Session) is
    begin
       if S.Active then
-         --  Deassert a still-selected callback device before releasing the bus,
-         --  so an early exit / exception can't strand a device asserted.
-         if S.Selected and then S.Select_CB /= null then
-            S.Select_CB (S.Ctx, False);
+         --  Deassert a still-selected device before releasing the bus, so an
+         --  early exit / exception can't strand a device asserted.
+         if S.Selected then
+            Drive_CS (S, False);
             S.Selected := False;
          end if;
          S.Active := False;

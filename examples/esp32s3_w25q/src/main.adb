@@ -69,13 +69,9 @@ procedure Main is
    --  dedicated chip holds no filesystem yet).
    Scratch : constant W25Q.Address := 16#10_0000#;
 
-   --  The flash device: SPI2 + the single-GPIO chip-select callback bound to
-   --  IO21 (per-device pad lives in CS_Cell, handed to the callback via Ctx).
-   CS_Cell : aliased W25Q.Pin_Cell := (Pin => CS_Pin);
-   Dev     : W25Q.Flash :=
-     (Host => SPI.SPI2,
-      CS   => W25Q.GPIO_Select'Access,
-      Ctx  => CS_Cell'Address);
+   --  The flash device: SPI2 with its chip select on IO21.  The SPI driver owns
+   --  and drives that GPIO (active-low, held across each command) -- no callback.
+   Dev     : W25Q.Flash := (Host => SPI.SPI2, CS_Pin => CS_Pin, others => <>);
 
    ID        : W25Q.JEDEC_ID;
    Mode_OK   : Boolean;
@@ -118,7 +114,6 @@ begin
    SPI.Setup (SPI.SPI2, Mode => 0, Clock_Hz => Clock_Hz);
    SPI.Configure_Pins (SPI.SPI2, Sclk => SCLK_Pin, Mosi => MOSI_Pin,
                        Miso => MISO_Pin, Cs => SPI.No_Pin);
-   W25Q.Init_Pin (CS_Cell);
 
    W25Q.Read_Identification (Dev, ID);
    Log.Put ("[w25q] JEDEC ID:");

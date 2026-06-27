@@ -213,11 +213,13 @@ $\le$400\,kHz, then switches to several MHz). \texttt{Configure\_Pins} routes
 one pad for a self-test. The single transfer primitive is a blocking,
 full-duplex DMA \texttt{Transfer} of 1\,..\,4095 bytes between two SRAM buffers,
 addressed by \texttt{System.Address}. A device that brings its own chip-select ---
-to share the bus, or behind a 3:8 decoder or an I/O-expander --- registers a
-library-level \texttt{CS\_Select} callback at \texttt{Acquire} and brackets its
-transaction with \texttt{Select\_Device}; the driver then suppresses the hardware
-\texttt{CS0} for that session. The controlled \texttt{Session} auto-releases on
-scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
+to share the bus --- names its select pin as \texttt{CS\_Pin} at \texttt{Acquire}
+(the driver owns the GPIO, active-low, held across the transaction) and brackets
+its transaction with \texttt{Select\_Device}; the driver then suppresses the
+hardware \texttt{CS0} for that session. A select that is not one plain GPIO (behind
+a 3:8 decoder or an I/O-expander) passes a library-level \texttt{CS\_Select}
+callback instead. The controlled \texttt{Session} auto-releases on scope exit, so
+this driver targets \texttt{embedded}/\texttt{full}.
 
 \begin{lstlisting}
 package ESP32S3.SPI is
@@ -237,6 +239,7 @@ package ESP32S3.SPI is
                              Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
    procedure Acquire  (S : in out Session; Host : SPI_Host;
+                       CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                        Select_CB : CS_Select := null;
                        Ctx : System.Address := System.Null_Address);
    procedure Select_Device (S : in out Session; On : Boolean);

@@ -99,23 +99,32 @@ package ESP32S3.SPI is
    --  holds it.  Keep it across a whole transaction, then Release / let it go
    --  out of scope.  Raises Not_Initialized if Host was never Setup.
    --
-   --  If Select_CB is non-null this device drives its own chip select through
-   --  that callback (Ctx handed back on every call), and the host's hardware CS0
-   --  is suppressed for this hold so it cannot disturb another device sharing the
-   --  bus.  If Select_CB is null (the default) the hardware CS0 routed by
-   --  Configure_Pins is used exactly as before.
+   --  Chip select, in order of preference:
+   --    * CS_Pin set (the common case): the driver drives that GPIO itself as an
+   --      active-low software chip select -- it configures the pad as an output,
+   --      parks it deselected, and Select_Device holds it low across the whole
+   --      transaction.  No callback, no extra setup.
+   --    * Select_CB set: the device drives its OWN select through that callback
+   --      (Ctx handed back on every call) -- for a select that is not one plain
+   --      GPIO, e.g. several GPIOs into a 3:8 decoder or an I/O-expander line.
+   --    * neither (both defaulted): the host's single hardware CS0, routed by
+   --      Configure_Pins, is used exactly as before (it toggles per Transfer).
+   --  With CS_Pin or Select_CB, the hardware CS0 is suppressed for this hold so it
+   --  cannot disturb another device sharing the bus.
    procedure Acquire (S         : in out Session;
                       Host      : SPI_Host;
+                      CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       Select_CB : CS_Select      := null;
                       Ctx       : System.Address  := System.Null_Address);
 
-   --  Assert (On => True) / deassert (On => False) this device's chip select via
-   --  its registered callback.  Bracket a whole device command so CS is held
-   --  across a multi-phase transaction (opcode || address || data) rather than
-   --  dropping between Transfers:
+   --  Assert (On => True) / deassert (On => False) this device's chip select --
+   --  its CS_Pin or its callback, whichever was given at Acquire.  Bracket a
+   --  whole device command so CS is held across a multi-phase transaction
+   --  (opcode || address || data) rather than dropping between Transfers:
    --     Select_Device (S, True);  Transfer (..); Transfer (..);  Select_Device (S, False);
-   --  No-op for a hardware-CS Session (Select_CB was null) -- there the peripheral
-   --  toggles CS0 per Transfer.  Raises Not_Owned unless S holds a host.
+   --  No-op for a hardware-CS Session (neither CS_Pin nor Select_CB given) --
+   --  there the peripheral toggles CS0 per Transfer.  Raises Not_Owned unless S
+   --  holds a host.
    procedure Select_Device (S : in out Session; On : Boolean);
 
    --  Full-duplex DMA transfer of Length bytes (1 .. 4095) on the held host:
@@ -131,9 +140,10 @@ private
    type Session is new Ada.Finalization.Limited_Controlled with record
       Host      : SPI_Host       := SPI2;
       Active    : Boolean        := False;                 --  holds Host's guard
+      CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;     --  driver-driven sw CS
       Select_CB : CS_Select      := null;                  --  app CS hook, null = hw CS0
       Ctx       : System.Address := System.Null_Address;   --  per-device context
-      Selected  : Boolean        := False;                 --  callback currently asserted?
+      Selected  : Boolean        := False;                 --  CS currently asserted?
    end record;
    --  Finalize releases the host AND, if Selected, calls Select_CB (Off) first --
    --  so a fault between select and deselect can never leave a device asserted.

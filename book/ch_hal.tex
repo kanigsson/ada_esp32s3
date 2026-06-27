@@ -230,7 +230,8 @@ procedure Setup (Host : SPI_Host; Mode : SPI_Mode := 0;
 procedure Configure_Pins (Host : SPI_Host; Sclk, Mosi, Miso : Optional_Pin;
                           Cs : Optional_Pin := No_Pin);
 procedure Acquire  (S : in out Session; Host : SPI_Host;
-                    Select_CB : CS_Select    := null;       --  app chip select
+                    CS_Pin    : Optional_Pin := No_Pin;      --  built-in sw select
+                    Select_CB : CS_Select    := null;        --  or app chip select
                     Ctx : System.Address := System.Null_Address);
 procedure Select_Device (S : in out Session; On : Boolean);
 procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
@@ -246,11 +247,14 @@ procedure Release  (S : in out Session);
   roughly 80\,kHz\,..\,80\,MHz.
 \item[\texttt{Sclk}, \texttt{Mosi}, \texttt{Miso}, \texttt{Cs}] the four lines as
   \texttt{Optional\_Pin}; \texttt{Cs} is the host's single hardware chip-select and
-  defaults to \texttt{No\_Pin} --- with more than one device on the bus, register a
-  \texttt{CS\_Select} callback at \texttt{Acquire} instead (below).
-\item[\texttt{Select\_CB}, \texttt{Ctx}] an optional application chip-select
-  callback and its opaque context (below); leave them out for the hardware
-  \texttt{CS0}.
+  defaults to \texttt{No\_Pin} --- with more than one device on the bus, give each
+  device its own select via \texttt{CS\_Pin} at \texttt{Acquire} instead (below).
+\item[\texttt{CS\_Pin}] a built-in software chip-select: name one GPIO and the
+  driver owns it, driving it active-low and holding it asserted across the whole
+  transaction. The common case for a shared bus; defaults to \texttt{No\_Pin}.
+\item[\texttt{Select\_CB}, \texttt{Ctx}] an application chip-select callback and its
+  opaque context, for a select that is \emph{not} one plain GPIO (a decoder, an
+  I/O-expander line); leave all three out for the hardware \texttt{CS0}.
 \item[\texttt{Tx}, \texttt{Rx}, \texttt{Length}] transmit/receive buffer
   \texttt{'Address}es and a byte count, \texttt{1\,..\,4095}; full-duplex, so both
   move \texttt{Length} bytes together.
@@ -291,18 +295,35 @@ begin
 end SPI_Loopback;
 \end{lstlisting}
 
-\textbf{Application-driven chip select.}\index{chip-select callback}\index{shared SPI bus}
+\textbf{Per-device chip select.}\index{chip-select}\index{shared SPI bus}
 The host has one hardware chip-select (\texttt{CS0}); to put several devices on one
-bus, a device can bring its \emph{own} select instead. Pass a \texttt{CS\_Select}
-callback --- and an opaque \texttt{Ctx} --- to \texttt{Acquire}: the driver then
-suppresses the hardware \texttt{CS0} for that session, and \texttt{Select\_Device}
-calls back to assert and deassert the line around the transaction. The select can
-be a plain GPIO, several GPIOs into a 3:8 decoder, or an I/O-expander pin --- the
-mapping lives entirely in the callback, keyed by \texttt{Ctx}. The callback must be
-\emph{library-level and closure-free} (this HAL builds under
+bus, each device brings its \emph{own} select instead. The simple case is one
+GPIO: pass its pin as \texttt{CS\_Pin} to \texttt{Acquire} and the driver owns it
+--- it suppresses the hardware \texttt{CS0} for that session, parks the GPIO high,
+and \texttt{Select\_Device} drives it low to assert and high to release. Crucially
+the line is toggled only at \texttt{Select\_Device}, never per \texttt{Transfer}, so
+it stays asserted across a whole multi-transfer transaction (a streamed flash read
+keeps \texttt{CS} low the entire time) --- which the hardware \texttt{CS0}, pulsed
+once per transfer, cannot do. This is how the W25Q flash shares the SPI2 bus with
+the W5500 in Chapter~\ref{ch:storage}.
+
+\begin{lstlisting}
+   Setup (SPI2, Clock_Hz => 8_000_000);
+   Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);  --  no hardware Cs
+   Acquire (S, SPI2, CS_Pin => 10);    --  driver drives IO10 active-low
+   Select_Device (S, On => True);      --  assert IO10
+   Transfer (S, Tx'Address, Rx'Address, 2);
+   Select_Device (S, On => False);     --  deassert IO10
+\end{lstlisting}
+
+\textbf{When the select is not one GPIO.} A select behind a 3:8 decoder or an
+I/O-expander cannot be expressed as a single pin. For those, leave
+\texttt{CS\_Pin} at \texttt{No\_Pin} and pass a \texttt{CS\_Select} callback (with
+an opaque \texttt{Ctx}) instead; \texttt{Select\_Device} then calls back to assert
+and deassert, with exactly the same held-across-the-transaction semantics. The
+callback must be \emph{library-level and closure-free} (this HAL builds under
 \texttt{No\_Implicit\_Dynamic\_Code}, so a nested closure would emit a faulting
-trampoline; per-device state travels in \texttt{Ctx}). This is how the W25Q flash
-shares the SPI2 bus with the W5500 in Chapter~\ref{ch:storage}.
+trampoline; per-device state travels in \texttt{Ctx}).
 
 \begin{lstlisting}
 --  Library-level, closure-free: drive IO10 low to select, high to release.
@@ -311,12 +332,7 @@ begin
    if Active then ESP32S3.GPIO.Clear (10); else ESP32S3.GPIO.Set (10); end if;
 end CS_IO10;
 
-   Setup (SPI2, Clock_Hz => 8_000_000);
-   Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);  --  no hardware Cs
    Acquire (S, SPI2, Select_CB => CS_IO10'Access);   --  bring our own select
-   Select_Device (S, On => True);                    --  assert IO10
-   Transfer (S, Tx'Address, Rx'Address, 2);
-   Select_Device (S, On => False);                   --  deassert IO10
 \end{lstlisting}
 
 \section{I2C --- master}\index{I2C driver}

@@ -123,6 +123,7 @@ on-card test left to the user.
 | `SHA` | FIPS-180 SHA-1/224/256 vectors (`esp32s3_crypto`) |
 | `AES` | FIPS-197 AES-128/256 vectors (`esp32s3_crypto`) |
 | `W25Q` | W25Q256FV JEDEC ID + erase/program/read-back round-trip (`esp32s3_w25q`) |
+| `TLV2556` | TI 12-bit SPI ADC: self-test voltages 0/2048/4095 + channel read (`esp32s3_tlv2556`) |
 
 **🟡 Needs on-card testing** (compile-verified + no-card smoke run only — boots,
 runs the init path on silicon, reports `No_Card` cleanly; the on-card read/write

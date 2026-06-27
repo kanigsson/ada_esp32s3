@@ -48,40 +48,18 @@ package ESP32S3.W25Q is
       Capacity     : Unsigned_8;
    end record;
 
-   --  A flash device: which SPI host it lives on, and how to drive its chip
-   --  select.  CS / Ctx are passed straight to ESP32S3.SPI.Acquire on every
-   --  operation (see that package for the callback's library-level / closure-
-   --  free / non-raising contract).  For the common "select is one active-low
-   --  GPIO" case use GPIO_Select below; for a decoder or expander supply your
-   --  own CS callback and point Ctx at its state.
+   --  A flash device: which SPI host it lives on, and how its chip select is
+   --  driven.  For the common case set CS_Pin to the select GPIO -- the SPI
+   --  driver drives it (active-low, held across each command), no setup needed.
+   --  For a select that is not one plain GPIO (a 3:8 decoder, an I/O-expander
+   --  line), leave CS_Pin = No_Pin and supply CS_CB + Ctx instead.  All three go
+   --  straight to ESP32S3.SPI.Acquire (which see for the callback contract).
    type Flash is record
-      Host : ESP32S3.SPI.SPI_Host;
-      CS   : ESP32S3.SPI.CS_Select  := null;
-      Ctx  : System.Address         := System.Null_Address;
+      Host   : ESP32S3.SPI.SPI_Host;
+      CS_Pin : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
+      CS_CB  : ESP32S3.SPI.CS_Select     := null;
+      Ctx    : System.Address            := System.Null_Address;
    end record;
-
-   ----------------------------------------------------------------------------
-   --  Ready-made single-GPIO chip select (the common case)
-   --
-   --  When the flash's select is a single active-low GPIO, point the Flash's Ctx
-   --  at an aliased Pin_Cell holding the pad and use GPIO_Select as the CS
-   --  callback.  Call Init_Pin once at startup to configure the pad as an output
-   --  and leave it deselected (high) before the first transfer.
-   ----------------------------------------------------------------------------
-
-   --  Per-device state for GPIO_Select: just the select pad.  Declare one
-   --  aliased Pin_Cell per flash and hand its 'Address to Flash.Ctx.
-   type Pin_Cell is record
-      Pin : ESP32S3.GPIO.Pin_Id;
-   end record;
-
-   --  Configure the select pad as a strong output and drive it high (deselected).
-   procedure Init_Pin (Cell : Pin_Cell);
-
-   --  CS callback for a single active-low GPIO: Active drives the pad low
-   --  (selected), not-Active drives it high.  Library-level and non-raising, as
-   --  the SPI driver requires.  Ctx must point at a Pin_Cell.
-   procedure GPIO_Select (Ctx : System.Address; Active : Boolean);
 
    ----------------------------------------------------------------------------
    --  Operations
