@@ -1,15 +1,14 @@
 --  What it demonstrates
 --  ---------------------
 --  A REAL-WORLD FTP client run over the W5500: it logs in anonymously to the
---  public Tele2 speedtest FTP server (speedtest.tele2.net, vsftpd), prints a test
---  file's SIZE, downloads it (RETR, counting bytes -- it's a binary .zip),
---  uploads a small file to /upload (auto-deleted by the server), lists the root,
---  and quits.  The FTP analogue of esp32s3_tls_weather: same static-IP + DNS
---  bring-up, but plain FTP instead of HTTPS.  Passive mode, binary.
+--  public GNU FTP server (ftp.gnu.org), prints a file's SIZE, downloads it (RETR,
+--  counting bytes and comparing to SIZE), lists the root (NLST), and quits.  The
+--  FTP analogue of esp32s3_tls_weather: same DNS bring-up, plain FTP instead of
+--  HTTPS.  Passive mode, binary, read-only (anonymous FTP can't upload).
 --
 --  Build & run
 --  -----------
---    ./x run esp32s3_ftp_tele2
+--    ./x run esp32s3_ftp_inet
 --  build.sh sets the embedded runtime profile (ESP32S3_RTS_PROFILE=embedded).
 --
 --  Network
@@ -21,17 +20,17 @@
 --
 --  Expected output (abridged)
 --  --------------------------
---    [ftp] real-world FTP client -> speedtest.tele2.net (anonymous)
+--    [ftp] real-world FTP client -> ftp.gnu.org (anonymous)
 --    [w5500] link up; DHCP IP 192.168.1.50 gw 192.168.1.1 dns 192.168.1.1
---    [ftp] resolving speedtest.tele2.net via 192.168.1.1 ...
---    [ftp] speedtest.tele2.net = 90.130.70.73
+--    [ftp] resolving ftp.gnu.org via 192.168.1.1 ...
+--    [ftp] ftp.gnu.org = 209.51.188.20
 --    [ftp] logged in.
---    [ftp] SIZE /1KB.zip = 1024 bytes
---    [ftp] RETR /1KB.zip: 1024 bytes received, result OK
---    [ftp] STOR /upload/esp32s3_ftp_test.bin (256 bytes): OK
+--    [ftp] SIZE /README = 2814 bytes
+--    [ftp] RETR /README: 2814 bytes received, result OK
 --    [ftp] --- NLST / ---
---    1KB.zip
---    1MB.zip
+--    /README
+--    /gnu
+--    /pub
 --    ...
 --    [ftp] done.
 with Ada.Real_Time; use Ada.Real_Time;
@@ -62,12 +61,11 @@ procedure Main is
    --       DNS     => ESP32S3.W5500.IPv4 (8, 8, 8, 8));
    Net_Config : constant W5500_Dev.IP_Settings := W5500_Dev.DHCP_Config;
 
-   Host       : constant String         := "speedtest.tele2.net";
+   Host       : constant String         := "ftp.gnu.org";
    FTP_Port   : constant Port_Type       := 21;
    User       : constant String          := "anonymous";
    Pass       : constant String          := "esp32s3@example.com";
-   Get_Path   : constant String          := "/1KB.zip";
-   Put_Path   : constant String          := "/upload/esp32s3_ftp_test.bin";
+   Get_Path   : constant String          := "/README";
 
    Lookup_Timeout : constant Duration := 5.0;
    Op_Timeout     : constant Duration := 15.0;
@@ -118,7 +116,7 @@ begin
    end if;
    Put_Line ("[ftp] logged in.");
 
-   --  SIZE + download a small binary test file (count bytes; it is a .zip).
+   --  SIZE + download a file, counting bytes (compare to SIZE for a sanity check).
    FTP_Client.File_Size (S, Get_Path, Sz, St);
    if St = FTP_Client.OK then
       Put ("[ftp] SIZE " & Get_Path & " = ");
@@ -134,16 +132,7 @@ begin
    Put (" bytes received, result ");
    Put_Line (St'Image);
 
-   --  Upload a small test file to /upload (the server auto-deletes it).
-   FTP_Sinks.Reset_Source;
-   FTP_Client.Store
-     (S, Put_Path, FTP_Sinks.Test_Source'Access, System.Null_Address, St);
-   Put ("[ftp] STOR " & Put_Path & " (");
-   Put (FTP_Sinks.Upload_Bytes);
-   Put (" bytes): ");
-   Put_Line (St'Image);
-
-   --  List the root directory (the test files).
+   --  List the root directory.
    Put_Line ("[ftp] --- NLST / ---");
    FTP_Client.List
      (S, FTP_Sinks.Put_Chunk'Access, System.Null_Address, St, Path => "/");
