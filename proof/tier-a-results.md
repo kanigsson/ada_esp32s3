@@ -122,7 +122,72 @@ Full HAL and `libs/tls` still build (embedded, `-gnata`); `chain_verify` calls
 `Valid_At`/`Host_Matches` only after `Parse` + a validity check, so their new
 preconditions hold at runtime too.
 
-## Phases 3–5 — pending
+## Phase 3 — `Cert_Verify` (RSA PKCS#1 v1.5 / PSS)  ✅ complete
 
-See `ROADMAP-tier-a.md`: `Cert_Verify` (RSA PKCS#1/PSS AoRTE), `Chain_Verify`,
-`AES.GCM` GHASH.
+`Cert_Verify` (spec + body) is `SPARK_Mode => On` and **fully proved** — AoRTE
+across the whole PKCS#1 v1.5 and PSS verification path (the big-endian ⇄ word
+conversions, the `PS_Len` / `EmLen` / `DBLen` / `LeadBits` index arithmetic, the
+MGF1 mask loop, and the constant-time compares).
+
+Run with `./proof/prove.sh -P proof/cert_verify_proof.gpr -j0 --level=2
+--no-subprojects --report=all -u cert_verify.adb`. `cert_verify` discharges with
+**0 unproved, 0 warnings**:
+
+```
+Check category                  Proved
+range check                         72
+overflow check                      55
+index check                         42
+division check                      19
+precondition                        14
+length check                         6
+loop invariant (init + preserv.)     6
+assertion                            3
+postcondition                        2
+loop variant                         1
+------------------------------------------
+total checks                       255   (0 unproved)
+```
+
+(`--no-subprojects` consumes the withed SPARKNaCl by contract only; its library
+VCs are proved separately in `sparknacl_proof.gpr` and are out of phase-3 scope.)
+
+### The dependency boundaries (contract-only)
+
+- **`ESP32S3.RSA.Mod_Exp`** — `esp32s3-rsa.ads` is included (spec), the register
+  body excluded. The spec carries a `Pre` (modulus-sized, odd, equal lengths) and
+  a *shape-only* `Post` (`Z'Length = M'Length`); `Cert_Verify` proves the `Mod_Exp`
+  precondition at each call and relies only on the `Post` shape to feed
+  `Words_To_BE`. Numeric correctness of the exponentiation is silicon — not proved.
+- **`SPARKNaCl.Hashing.SHA256`** — consumed through its (already-proven) contract.
+- **`X509`** — only the spec (`Byte_Array` / `U8` types) is needed.
+
+### Bugs / AoRTE findings the proof forced
+
+1. **Empty-modulus negative `'First`.** `M_First : Natural := Modulus'First;`
+   failed (`Modulus'First = -1, Modulus'Last = -2` for a null array — gnatprove
+   models null-array bounds in the index base type). Added an explicit
+   `if Modulus'Length = 0 then return False;` up front (a zero-length modulus can
+   never verify), after which `'First` is a provably non-negative index. Done in
+   both `RSA_PKCS1_SHA256` and `RSA_PSS_SHA256`.
+2. **Signed limb arithmetic in `BE_To_Words`.** The original LSB-walking offset
+   `P : Integer := Integer (B'Last) - 4*Idx` could not be proved overflow-free.
+   Recast as an unsigned `Base := 4*Idx` from the LSB end (`Idx <= 127` via a loop
+   invariant) with guard `Base + k < B'Length` and index `B'Last - Base - k` — all
+   `Natural`, provably in `B'Range`. Added `B'Last < Natural'Last - 1` to the Pre.
+3. **`Cnt + 1` overflow in the MGF1 loop.** Added the lock-step loop invariant
+   `Pos = 32 * Cnt`, which (with `Pos <= Mask_Len + 31`, `Mask_Len <= 4096`) bounds
+   `Cnt <= 128` so the block counter cannot overflow.
+
+### Regression / compatibility
+
+- Full `libs/tls/tls.gpr` builds (embedded, `-O2`) — `cert_verify`, `chain_verify`
+  and `tls_client` compile unchanged against the new `cert_verify` body. The
+  `esp32s3-rsa.ads` `Post` addition leaves the real RSA build green.
+- All changes are behaviour-preserving: the empty-modulus early-out reproduces the
+  pre-existing `K = 0 ⇒ return False` outcome, and `BE_To_Words` computes the
+  identical little-endian words.
+
+## Phases 4–5 — pending
+
+See `ROADMAP-tier-a.md`: `Chain_Verify`, `AES.GCM` GHASH.

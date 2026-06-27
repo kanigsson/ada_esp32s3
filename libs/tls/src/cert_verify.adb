@@ -20,20 +20,27 @@ package body Cert_Verify with SPARK_Mode => On is
    --  128 words (the RSA accelerator's ceiling) keeps the index arithmetic in
    --  range.  Iterating over W'Range makes the full initialization of W obvious.
    procedure BE_To_Words (B : Byte_Array; W : out ESP32S3.RSA.Word_Array)
-     with Pre => W'Length <= 128
+     with Pre => W'Length <= 128 and then B'Last < Natural'Last - 1
    is
       use ESP32S3.RSA;
+      Len : constant Natural := B'Length;
    begin
       for J in W'Range loop
+         --  W'Length <= 128, so the 0-based word index stays <= 127; this lets
+         --  the prover bound Base = 4 * Idx and the Base + k byte offsets below.
+         pragma Loop_Invariant (J - W'First <= 127);
          declare
-            Idx : constant Natural := J - W'First;            --  0-based word #
-            P   : constant Integer := Integer (B'Last) - 4 * Idx;   --  LSB byte
-            Acc : Word := 0;
+            Idx  : constant Natural := J - W'First;       --  0-based word #, <= 127
+            Base : constant Natural := 4 * Idx;           --  LSB byte offset, <= 508
+            Acc  : Word := 0;
          begin
-            if P     >= Integer (B'First) then Acc := Acc + Word (B (P)); end if;
-            if P - 1 >= Integer (B'First) then Acc := Acc + Word (B (P - 1)) * 16#100#; end if;
-            if P - 2 >= Integer (B'First) then Acc := Acc + Word (B (P - 2)) * 16#1_0000#; end if;
-            if P - 3 >= Integer (B'First) then Acc := Acc + Word (B (P - 3)) * 16#100_0000#; end if;
+            --  Word Idx covers the bytes Base .. Base + 3 counted back from the
+            --  LSB end of B (which is B'Last).  All arithmetic stays in Natural:
+            --  Base + k < Len guarantees B'Last - Base - k >= B'First.
+            if Base     < Len then Acc := Acc + Word (B (B'Last - Base)); end if;
+            if Base + 1 < Len then Acc := Acc + Word (B (B'Last - Base - 1)) * 16#100#; end if;
+            if Base + 2 < Len then Acc := Acc + Word (B (B'Last - Base - 2)) * 16#1_0000#; end if;
+            if Base + 3 < Len then Acc := Acc + Word (B (B'Last - Base - 3)) * 16#100_0000#; end if;
             W (J) := Acc;
          end;
       end loop;
@@ -65,10 +72,17 @@ package body Cert_Verify with SPARK_Mode => On is
    function RSA_PKCS1_SHA256 (TBS, Signature, Modulus, Exponent : Byte_Array)
       return Boolean
    is
-      M_First : Natural := Modulus'First;
+      M_First : Natural;
    begin
+      --  A zero-length modulus can never carry a signature; reject it up front so
+      --  that Modulus'First below is a valid (non-negative) index -- for an empty
+      --  array the prover only knows the bounds in the index base type.
+      if Modulus'Length = 0 then
+         return False;
+      end if;
       --  Drop a single leading 0x00 (DER positive-sign byte) from the modulus.
-      if Modulus'Length >= 1 and then Modulus (Modulus'First) = 0 then
+      M_First := Modulus'First;
+      if Modulus (Modulus'First) = 0 then
          M_First := Modulus'First + 1;
       end if;
 
@@ -178,6 +192,9 @@ package body Cert_Verify with SPARK_Mode => On is
    begin
       while Pos < Mask_Len loop
          pragma Loop_Invariant (Pos <= Mask_Len + 31);
+         --  Pos and Cnt advance in lock-step (Pos += 32, Cnt += 1 each block),
+         --  so Cnt = Pos / 32 stays small (<= 128) -- Cnt + 1 cannot overflow.
+         pragma Loop_Invariant (Pos = 32 * Cnt);
          pragma Loop_Variant (Increases => Pos);
          declare
             In_Buf : Byte_Array (0 .. Seed'Length + 3) := (others => 0);
@@ -204,9 +221,15 @@ package body Cert_Verify with SPARK_Mode => On is
    function RSA_PSS_SHA256 (Message, Signature, Modulus, Exponent : Byte_Array)
       return Boolean
    is
-      M_First : Natural := Modulus'First;
+      M_First : Natural;
    begin
-      if Modulus'Length >= 1 and then Modulus (Modulus'First) = 0 then
+      --  Reject a zero-length modulus up front (see RSA_PKCS1_SHA256): it makes
+      --  Modulus'First below a valid non-negative index.
+      if Modulus'Length = 0 then
+         return False;
+      end if;
+      M_First := Modulus'First;
+      if Modulus (Modulus'First) = 0 then
          M_First := Modulus'First + 1;
       end if;
       declare

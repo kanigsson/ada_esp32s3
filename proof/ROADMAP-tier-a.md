@@ -18,17 +18,21 @@ place — see `README.md`.
 |------:|------|-------|
 | 1 | `X509.DER` | ✅ **proved** (AoRTE + `Read` lemma) |
 | 2 | `X509` body (`Parse`/`Valid_At`/`Host_Matches`) | ✅ **proved** (AoRTE + `Well_Formed`) |
-| 3 | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | ⬜ **next — start here** |
-| 4 | `Chain_Verify` | ⬜ pending |
+| 3 | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | ✅ **proved** (AoRTE across PKCS#1/PSS index arithmetic) |
+| 4 | `Chain_Verify` | ⬜ **next — start here** |
 | 5 | `AES.GCM` `GF_Mul`/`GHASH` | ⬜ pending (independent, easy) |
 
-`proof/x509_proof.gpr` proves at **226/226 VCs, `--level=2`, no justifications**
-(full results + per-phase tables in `tier-a-results.md`).
+`proof/x509_proof.gpr` proves at **226/226 VCs, `--level=2`, no justifications**;
+`proof/cert_verify_proof.gpr` proves `Cert_Verify` with **0 unproved, 0 warnings**
+at `--level=2` (full results + per-phase tables in `tier-a-results.md`).
 
 **How to run** (toolchain/env is all handled by the script):
 ```sh
 ./proof/prove.sh -P proof/x509_proof.gpr -j0 --report=fail   # all proved => silent
 ./proof/prove.sh -P proof/x509_proof.gpr -j0 --report=all -u <unit>.adb   # per-unit detail
+# Cert_Verify withs SPARKNaCl, so pass --no-subprojects to consume it by contract
+# only (not re-prove the whole library, which would time out):
+./proof/prove.sh -P proof/cert_verify_proof.gpr -j0 --no-subprojects --report=all -u cert_verify.adb
 ```
 Bump `--level=3`/`4` while iterating; the committed proof holds at the gpr default
 `--level=2`. Don't hand-set `PATH`/`target.atp` — `prove.sh` does it.
@@ -73,6 +77,19 @@ Bump `--level=3`/`4` while iterating; the committed proof holds at the gpr defau
   in the subset — make it a procedure (cost me a refactor of `Parse_Time`).
 - **Total accessors:** make digit/byte readers total (return 0 for out-of-domain)
   to kill underflow VCs instead of threading value preconditions everywhere.
+- **Empty-array `'First` can be negative (phase 3).** For an unconstrained
+  `array (Natural range <>)` formal `B`, gnatprove only knows `B'First`/`B'Last`
+  lie in the index *base* type for the **null** case, so `M_First : Natural :=
+  B'First;` fails with a counterexample `B'First = -1, B'Last = -2`. Guard with an
+  explicit `if B'Length = 0 then return …` before reading `'First` (this is how
+  `X509.Parse` is already safe — its `Cert'Length < 2` early-out). Indexing/slicing
+  `B (B'First)` proves regardless (it uses `B'Range`, which is tautological); only
+  *storing* a bound into a `Natural` needs the non-empty guard.
+- **Keep big-int limb arithmetic in `Natural`, not signed `Integer` (phase 3).**
+  `BE_To_Words`' `P := Integer (B'Last) - 4*Idx` (a byte offset that walks off the
+  low end) defeated the overflow prover even with `Idx <= 127`. Recast as an
+  unsigned offset `Base := 4*Idx` from the LSB end with guard `Base + k < B'Length`
+  and index `B'Last - Base - k`: every subtraction is then provably `>= B'First`.
 
 ---
 
@@ -225,9 +242,12 @@ Bottom-up, each phase green before the next:
    the `Well_Formed`/`Slice_In`/`Indexable`/`SAN_OK` contract layer; refactored
    `Parse_Time` out of the non-subset "function with `out` parameter" shape.
 
-3. **`Cert_Verify`** — wire the contract-only RSA/SHA deps; prove AoRTE across
-   the PKCS#1 / PSS index arithmetic (the `PS_Len`, `EmLen`, `DBLen`, `2 **
-   (8-LeadBits)` computations). Add the RSA spec `Post` (shape only).
+3. **`Cert_Verify`** ✅ **DONE** (see `tier-a-results.md`) — both
+   `SPARK_Mode => On`, AoRTE proved across the PKCS#1 / PSS index arithmetic
+   (`PS_Len`, `EmLen`, `DBLen`, `2 ** (8-LeadBits)`, the `BE_To_Words` /
+   `Words_To_BE` loops). Added the RSA spec `Post` (shape only) and proved the
+   `Mod_Exp` precondition. 0 unproved, 0 warnings. Withed SPARKNaCl is consumed by
+   contract via `--no-subprojects` (not re-proved here).
 4. **`Chain_Verify`** — prove the chain walk terminates and re-establishes
    `Well_Formed` per link; AoRTE.
 5. **`AES.GCM` `GF_Mul`/`GHASH`** — independent; AoRTE is trivial (fixed 16-byte
@@ -259,8 +279,11 @@ spec, sometimes infeasible):
   `Length`, `Pack_Time`); all discharged by contracts, no `pragma Assume`. The
   two `pragma Assert`s in `Parse` (TBS span) are themselves proved.
 - ✅ `proof/tier-a-results.md` captures the per-phase VC summary tables.
-- ⬜ Remaining for Tier A done: phase 3 `Cert_Verify`, phase 4 `Chain_Verify`,
-  phase 5 `AES.GCM` GHASH (each its own proof GPR + `tier-a-results.md` section).
+- ✅ `proof/cert_verify_proof.gpr` proves `Cert_Verify` (RSA PKCS#1 v1.5 / PSS)
+  with 0 unproved, 0 warnings at `--level=2 --no-subprojects`. RSA `Mod_Exp` is
+  consumed by its (spec-only) contract; SPARKNaCl SHA-256 by contract.
+- ⬜ Remaining for Tier A done: phase 4 `Chain_Verify`, phase 5 `AES.GCM` GHASH
+  (each its own proof GPR + `tier-a-results.md` section).
 
 ## Effort estimate
 
@@ -269,8 +292,8 @@ spec, sometimes infeasible):
 | Harness GPR + SPARKNaCl replay | 0.5 day | ✅ done |
 | `X509.DER` (+ finding #1) | 0.5 day | ✅ done |
 | `X509` (predicate design + AoRTE + `Parse` post) | 1.5–2 days | ✅ done |
-| `Cert_Verify` AoRTE | 1–1.5 days | ⬜ next |
-| `Chain_Verify` | 0.5 day | ⬜ |
+| `Cert_Verify` AoRTE | 1–1.5 days | ✅ done |
+| `Chain_Verify` | 0.5 day | ⬜ next |
 | `GF_Mul`/`GHASH` AoRTE | 0.25 day | ⬜ |
 | `Host_Matches` functional (optional) | +1 day | ⬜ optional |
 
