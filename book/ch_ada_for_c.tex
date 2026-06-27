@@ -189,6 +189,50 @@ or with \texttt{others} for the rest:
 That \texttt{=>} is the same one as in a named call: it ties a value to the
 component it fills.
 
+\section{Objects: tagged types and dispatching}
+\index{tagged type}\index{dispatching}\index{interface}
+
+Ada's object orientation is built on the \emph{tagged} record -- a record you are
+allowed to extend. A C++ programmer can read the next few lines as classes and
+virtual methods; the words differ, the machinery does not.
+
+\begin{lstlisting}
+   type Server is tagged record               -- a base "class"
+      ...
+   end record;
+   procedure Handle (Self : in out Server; ...);   -- a "primitive operation"
+
+   type My_Server is new Server with record    -- a derived "class"
+      Data : Word_Array (0 .. 63);             -- adds its own fields
+   end record;
+   overriding procedure Handle (Self : in out My_Server; ...);  -- overrides it
+\end{lstlisting}
+
+A subprogram that takes the type as its first parameter is a \emph{primitive
+operation} -- a method -- and a derived type inherits the primitives it does not
+\texttt{override}. The keyword \texttt{overriding} is optional but wise: written, it
+makes the compiler confirm you really are replacing an inherited operation and not
+quietly adding a new one through a typo.
+
+\emph{Dispatching} is virtual-call behaviour, and it turns on the class-wide type
+\texttt{T'Class} -- ``\texttt{Server} or anything derived from it.'' A call through a
+\texttt{Server'Class} value runs the \emph{actual} object's version:
+
+\begin{lstlisting}
+   procedure Drive (S : in out Server'Class) is
+   begin
+      Handle (S, ...);   -- dispatches: runs My_Server.Handle if S is a My_Server
+   end Drive;
+\end{lstlisting}
+
+An \emph{interface} is the limiting case: a tagged type with operations but no data,
+all of them to be supplied by whoever implements it -- C++'s pure-abstract class.
+This is exactly the shape of the book's pluggable backends. \texttt{Net\_Devices.%
+Device} is an interface every network chip implements; \texttt{Modbus.Slave.Server}
+is a tagged base you derive from, overriding only the request handlers your device
+supports while the framework calls them by dispatch. You meet that pattern in
+Part~IV; this is the machinery under it.
+
 \section{A C-to-Ada cheat sheet}
 
 \begin{table}[ht]
