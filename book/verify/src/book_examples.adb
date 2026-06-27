@@ -339,7 +339,7 @@ package body Book_Examples is
       C : Channel;
    begin
       Claim (C, 0);
-      Configure (C, Pin => 7, Prescale => 80);
+      Configure (C, Pin => 7, Carrier_Hz => 1_000_000);
       Set_Density (C, 25.0);
    end SDM_Density;
 
@@ -360,22 +360,30 @@ package body Book_Examples is
       S : Session;
    begin
       Setup (Mode => Normal, Bit_Rate => 500_000);
-      Acquire (S);
+      Acquire (S);                          --  own the controller, then route pins
       Configure_Pins (S, Tx => 4, Rx => 5);
-      Send (S, (Id => 16#123#, Length => 2, Data => (16#DE#, 16#AD#, others => 0)));
+      Send (S, Standard_Frame'(Id => 16#123#, Remote => False, Length => 2,
+                               Data => (16#DE#, 16#AD#, others => 0)));
+      Send (S, Extended_Frame'(Id => 16#14AB_CDE#, Remote => False, Length => 1,
+                               Data => (0 => 16#42#, others => 0)));  -- type picks Send
+      Send (S, Standard_Frame'(Id => 16#7A5#, Remote => True,        -- RTR: request
+                               Length => 8, Data => (others => 0)));  -- 8 bytes, none sent
    end TWAI_Send;
 
    procedure TWAI_Selftest is
       use ESP32S3.TWAI;
       S   : Session;
-      F   : Frame;
-      Got : Boolean;
+      RE  : Extended_Frame;
+      Got : Boolean := False;
    begin
       Setup (Mode => Self_Test);
       Acquire (S);
       Enable_Loopback (S, Pad => 4);
-      Send (S, (Id => 16#123#, Length => 1, Data => (0 => 16#42#, others => 0)));
-      Receive (S, F, Got);
+      Send (S, Extended_Frame'(Id => 16#14AB_CDE#, Remote => False, Length => 1,
+                               Data => (0 => 16#42#, others => 0)));
+      if Available (S) and then Is_Extended (S) then
+         Receive (S, RE, Got);   --  Got, RE.Id = 16#14AB_CDE#, RE.Remote = False
+      end if;
    end TWAI_Selftest;
 
    procedure Timer_Measure is
