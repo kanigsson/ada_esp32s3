@@ -262,9 +262,10 @@ procedure Maintain (Dev : Sockets.Device_Access; MAC : MAC_Address;
 \section{The examples}
 \label{ch:net:examples}
 
-Six examples in \texttt{examples/} exercise the stack from the bottom up. Each
+Several examples in \texttt{examples/} exercise the stack from the bottom up. Each
 shares a tiny \texttt{W5500\_Dev} bring-up package (SPI + reset + a static address,
-then \texttt{Register\_Default}); the DHCP example configures itself instead.
+then \texttt{Register\_Default}); the DHCP example configures itself instead. (FTP,
+the most demanding client, gets its own section below.)
 
 \subsection{\texttt{esp32s3\_w5500} --- TCP echo server}\index{TCP}
 
@@ -398,3 +399,101 @@ transport to the SPI master --- with a receive timeout guarding the wait, and th
 W5500's silicon doing the TCP/IP. The application code, though, is just sockets:
 the same program, pointed at a desktop \texttt{GNAT.Sockets}, would fetch the same
 forecast.
+
+\section{An FTP client --- and the two bugs only the board found}
+\label{ch:net:ftp}\index{FTP}\index{flow control}
+
+FTP (RFC 959) is the most demanding client in this chapter, and the most
+instructive. It is the first to hold \emph{two} TCP connections at once --- a
+persistent \emph{control} connection for commands and replies, and a fresh
+\emph{data} connection for each transfer --- and the first to move bulk data in
+both directions. \texttt{FTP\_Client} is written, like \texttt{DNS\_Client},
+entirely against \texttt{GNAT.Sockets}, so the same source runs on a desktop.
+
+\textbf{Passive mode, always.} An embedded client should only ever make
+\emph{outbound} connections, so every transfer uses \texttt{PASV}: the client asks
+the server to listen and connects out to it --- no listening socket, friendly to
+NAT and firewalls. Two of the W5500's eight sockets are busy during a transfer.
+
+\textbf{Streaming through callbacks.} A file is never buffered whole: downloads
+push their bytes to a sink, uploads pull from a source. By the rule from
+Chapter~\ref{ch:hal}, both must be library-level and closure-free
+(\texttt{No\_Implicit\_Dynamic\_Code}); per-call state travels in a \texttt{Ctx}:
+
+\begin{lstlisting}
+type Data_Sink   is access procedure (Ctx : System.Address; Chunk : Byte_Array);
+type Data_Source is access procedure
+  (Ctx : System.Address; Buf : out Byte_Array; Last : out Natural);
+
+procedure Retrieve (S : in out Session; Path : String;
+                    Sink : Data_Sink; Ctx : System.Address; Result : out Status);
+procedure Store    (S : in out Session; Path : String;
+                    Source : Data_Source; Ctx : System.Address; Result : out Status);
+\end{lstlisting}
+
+Errors are a \texttt{Status} (\texttt{Connect\_Failed}, \texttt{Auth\_Failed},
+\texttt{Timed\_Out}, \dots); a failure that could leave the control stream out of
+sync tears the session down, so \texttt{Is\_Open} stays honest. Two examples drive
+it: \texttt{esp32s3\_ftp\_inet} downloads from the public \texttt{ftp.gnu.org}, and
+\texttt{esp32s3\_ftp} does an upload round-trip against a local server.
+
+\textbf{The host says it works.} The client is exercised on the build machine
+against two real servers --- \texttt{pyftpdlib} and the live \texttt{ftp.gnu.org}
+--- doing login, \texttt{SIZE}, \texttt{RETR}, \texttt{STOR} and listings, all
+byte-exact. Green across the board.
+
+\textbf{The board disagrees.} Flashed onto the ESP32-S3, the download path worked
+first try --- a real \texttt{RETR} from \texttt{ftp.gnu.org} over the W5500. But
+uploading a 1\,MiB file failed: the server received 64\,--\,104\,KB --- it varied
+between runs --- and then the transfer died. Two bugs were hiding in the W5500 send
+path, and \emph{neither could be reproduced on the host}, for the same underlying
+reason: a desktop's kernel socket buffers are megabytes deep and its TCP close is
+graceful. The W5500's per-socket buffer is \textbf{2\,KB}, and you drive the close
+yourself.
+
+\textbf{Bug one: send flow control.} The engine's \texttt{Send} read the free
+space in the 2\,KB transmit buffer and, finding it full, returned
+\texttt{No\_Space} --- whereupon the upper layer gave up. On a desktop the buffer
+never fills (the kernel swallows a megabyte); on the W5500 it fills within the
+first hundred kilobytes, the instant the application outruns the wire. The fix is
+what TCP flow control is meant to do --- \emph{wait} for the peer to drain the
+buffer, rather than abandon the transfer:
+
+\begin{lstlisting}
+--  before:  if Free = 0 then Sent := 0; Result := No_Space; return; end if; -- caller quits
+--  after:
+loop
+   Free := R16_Stable (S, Sn_TX_FSR);     --  free space in the TX buffer
+   exit when Free > 0;                     --  room now: write and SEND
+   if not Connected (S) or else Clock >= Deadline then
+      Sent := 0; Result := Timed_Out; return;
+   end if;
+   Wait_Event (S);                         --  let the peer drain it (it ACKs)
+end loop;
+\end{lstlisting}
+
+\textbf{Bug two: the missing FIN.} With data now flowing the full megabyte
+arrived --- and the transfer \emph{still} hung at the end. After the last byte the
+client closes the data connection to signal end-of-file; the server reads to EOF,
+then replies \texttt{226 Transfer complete}. But \texttt{Close} was issuing the
+W5500's abrupt \texttt{CLOSE} command, which discards the socket without sending a
+\texttt{FIN}. The server never saw end-of-stream, never sent its \texttt{226}, and
+the client timed out waiting. On a desktop the OS sends the \texttt{FIN} for you;
+here you must ask for it --- an active close (\texttt{DISCON}, which sends
+\texttt{FIN} and waits for the handshake) before the socket is freed.
+
+With both fixes the upload completes, and the example reads the file back and
+checks it byte-for-byte:
+
+\begin{lstlisting}[style=sh]
+[ftp] STOR /from_board.bin (1048576 bytes): OK
+[ftp] read-back 1048576 bytes: round-trip VERIFIED
+\end{lstlisting}
+
+\textbf{The lesson.} Both bugs lived in code that had passed every host test and a
+careful reading --- including an analysis that ``proved,'' from the source, that
+the transfer would sustain. Neither was a logic error visible on the page: each was
+a property of \emph{real hardware under real load} --- a small buffer that actually
+fills, a close you actually have to drive. The portable layer let the protocol be
+written and tested in minutes on a laptop; the silicon is what proved it. On bare
+metal, the board is the test.
