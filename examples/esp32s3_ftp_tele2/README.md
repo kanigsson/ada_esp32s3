@@ -2,8 +2,8 @@
 
 A real-world `FTP_Client` run against the public **Tele2 speedtest** FTP server
 (`speedtest.tele2.net`, anonymous **vsftpd**). It's the FTP analogue of
-`esp32s3_tls_weather`: same static-IP + public-DNS bring-up, plain FTP instead of
-HTTPS.
+`esp32s3_tls_weather`, but brings the link up with **DHCP** — the router supplies
+the IP, gateway *and* DNS, so there's nothing to hand-configure for your LAN.
 
 It:
 1. resolves `speedtest.tele2.net` via public DNS (8.8.8.8),
@@ -22,17 +22,17 @@ connections).
 ./x run esp32s3_ftp_tele2
 ```
 
-The board takes static IP **192.168.1.50** (/24); **edit the gateway in
-`w5500_dev.adb`** to your LAN's internet gateway, and make sure outbound FTP
-(port 21, passive data) is permitted on your network — some networks/firewalls
-block FTP.
+Plug the W5500 into a LAN with a **DHCP server** and internet access — the board
+gets its IP, gateway and DNS from the router (no editing needed). Make sure
+outbound FTP (port 21, passive data) is permitted on your network — some
+networks/firewalls block FTP.
 
 ## Expected output (abridged)
 
 ```
 [ftp] real-world FTP client -> speedtest.tele2.net (anonymous)
-[w5500] link up, IP 192.168.1.50
-[ftp] resolving speedtest.tele2.net ...
+[w5500] link up; DHCP IP 192.168.1.50 gw 192.168.1.1 dns 192.168.1.1
+[ftp] resolving speedtest.tele2.net via 192.168.1.1 ...
 [ftp] speedtest.tele2.net = 90.130.70.73
 [ftp] logged in.
 [ftp] SIZE /1KB.zip = 1024 bytes

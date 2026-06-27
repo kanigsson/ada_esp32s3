@@ -14,16 +14,16 @@
 --
 --  Network
 --  -------
---  The board takes the static IP 192.168.1.50 (/24); set the gateway in
---  w5500_dev.adb to YOUR LAN's internet gateway, and make sure outbound FTP
---  (port 21, passive) is permitted on your network.  Host name resolution uses
---  public DNS (8.8.8.8).
+--  DHCP: the board gets its IP, subnet, GATEWAY and DNS server from your router
+--  (nothing to hand-configure).  Plug the W5500 into a LAN that has a DHCP server
+--  and internet access, with outbound FTP (port 21, passive) permitted.  Host
+--  name resolution uses the DHCP-provided DNS (falling back to 8.8.8.8).
 --
 --  Expected output (abridged)
 --  --------------------------
 --    [ftp] real-world FTP client -> speedtest.tele2.net (anonymous)
---    [w5500] link up, IP 192.168.1.50
---    [ftp] resolving speedtest.tele2.net ...
+--    [w5500] link up; DHCP IP 192.168.1.50 gw 192.168.1.1 dns 192.168.1.1
+--    [ftp] resolving speedtest.tele2.net via 192.168.1.1 ...
 --    [ftp] speedtest.tele2.net = 90.130.70.73
 --    [ftp] logged in.
 --    [ftp] SIZE /1KB.zip = 1024 bytes
@@ -37,6 +37,8 @@
 with Ada.Real_Time; use Ada.Real_Time;
 with GNAT.Sockets;  use GNAT.Sockets;
 with ESP32S3.Log;   use ESP32S3.Log;
+with ESP32S3.W5500;
+with ESP32S3.W5500.DHCP;
 with W5500_Dev;
 with DNS_Client;
 with FTP_Client;
@@ -48,9 +50,9 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
    use type FTP_Client.Status;
+   use type ESP32S3.W5500.IPv4_Address;
 
    Host       : constant String         := "speedtest.tele2.net";
-   DNS_Server : constant Inet_Addr_Type  := Inet_Addr ("8.8.8.8");   --  public DNS
    FTP_Port   : constant Port_Type       := 21;
    User       : constant String          := "anonymous";
    Pass       : constant String          := "esp32s3@example.com";
@@ -61,21 +63,30 @@ procedure Main is
    Op_Timeout     : constant Duration := 15.0;
    Park           : constant Time_Span := Seconds (3600);
 
-   Server_IP : Inet_Addr_Type;
-   S         : FTP_Client.Session;
-   St        : FTP_Client.Status;
-   Sz        : Natural;
+   No_Address : constant ESP32S3.W5500.IPv4_Address := (0, 0, 0, 0);
+
+   Lease      : ESP32S3.W5500.DHCP.Lease_Info;
+   DNS_Server : Inet_Addr_Type;
+   Server_IP  : Inet_Addr_Type;
+   S          : FTP_Client.Session;
+   St         : FTP_Client.Status;
+   Sz         : Natural;
 begin
    delay until Clock + Milliseconds (200);
    Put_Line ("[ftp] real-world FTP client -> " & Host & " (anonymous)");
 
-   if not W5500_Dev.Bring_Up then
+   --  DHCP brings up the link AND supplies the gateway + DNS (no static config).
+   if not W5500_Dev.Bring_Up (Lease) then
       loop
          delay until Clock + Park;
       end loop;
    end if;
 
-   Put_Line ("[ftp] resolving " & Host & " ...");
+   --  Use the DHCP-provided resolver; fall back to public DNS if none was given.
+   DNS_Server := (if Lease.DNS = No_Address then Inet_Addr ("8.8.8.8")
+                  else Inet_Addr (W5500_Dev.Image (Lease.DNS)));
+
+   Put_Line ("[ftp] resolving " & Host & " via " & Image (DNS_Server) & " ...");
    if not DNS_Client.Resolve (DNS_Server, Host, Server_IP, Timeout => Lookup_Timeout)
    then
       Put_Line ("[ftp] DNS resolution failed");
