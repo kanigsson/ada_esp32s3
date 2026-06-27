@@ -15,6 +15,7 @@ with open(os.path.join(ROOT, "hello.txt"), "wb") as f:
 
 
 def handle(conn):
+    conn.settimeout(120)            # so a board reset mid-session frees the thread
     conn.sendall(b"220 host test ready\r\n")
     rest = b""
     cwd = "/"
@@ -93,6 +94,7 @@ def handle(conn):
                 reply("425 use PASV first"); continue
             reply("150 opening data connection")
             data, _ = pasv_sock.accept()
+            data.settimeout(120)
             if cmd == "RETR":
                 try:
                     with open(localpath(arg), "rb") as f:
@@ -102,11 +104,14 @@ def handle(conn):
                     ok = False
             elif cmd == "STOR":
                 with open(localpath(arg), "wb") as f:
-                    while True:
-                        b = data.recv(4096)
-                        if not b:
-                            break
-                        f.write(b)
+                    try:
+                        while True:
+                            b = data.recv(4096)
+                            if not b:
+                                break
+                            f.write(b)
+                    except ConnectionResetError:
+                        pass    # some clients (W5500) RST the data socket on close
                 ok = True
             else:  # NLST
                 names = "".join(n + "\r\n" for n in sorted(os.listdir(ROOT)))
@@ -135,10 +140,21 @@ def main():
     srv.bind((host, port))
     srv.listen(1)
     print(srv.getsockname()[1], flush=True)   # first line: the control port
-    try:
-        while True:                            # serve sessions until killed
-            conn, _ = srv.accept()
+    def serve_one(conn):                       # one session, isolated from others
+        try:
             handle(conn)
+        except Exception as e:
+            sys.stderr.write("session error: %r\n" % e)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    try:
+        while True:                            # a thread per session, so a stuck
+            conn, _ = srv.accept()             # (board-reset) session never blocks
+            threading.Thread(target=serve_one, args=(conn,), daemon=True).start()
     finally:
         srv.close()
 
