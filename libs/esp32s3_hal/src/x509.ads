@@ -81,20 +81,64 @@ package X509 with SPARK_Mode => On is
       EKU_Client     : Boolean := False;  --  id-kp-clientAuth (or anyExtendedKeyUsage)
    end record;
 
+   --  A certificate buffer that leaves headroom for the one-past-the-end indices
+   --  the parser forms (dropping a BIT STRING's unused-bits byte, the wildcard
+   --  "*." skip, ...).  Real DER certs are a few KiB, nowhere near this bound.
+   function Indexable (Cert : Byte_Array) return Boolean is
+     (Cert'Last < Natural'Last - 1)
+   with Ghost;
+
+   --  A slice is "in" Cert if it is empty or its index range lies within Cert.
+   --  (Empty slices carry no position, so they are always in-buffer.)
+   function Slice_In (Cert : Byte_Array; S : Slice) return Boolean is
+     (Length (S) = 0
+      or else (S.First >= Cert'First and then S.Last <= Cert'Last))
+   with Ghost;
+
+   --  Every slice a valid Certificate carries lies within Cert, and SAN_Count is
+   --  in range.  This is the contract glue of Tier A: Parse establishes it, and
+   --  the consumers (Valid_At, Host_Matches, Cert_Verify via Chain_Verify) require
+   --  it so that indexing Cert over those slices is provably in-bounds.  It covers
+   --  every public-key slice the chain validator may dispatch to (RSA, P-256, Ed).
+   function Well_Formed (Cert : Byte_Array; C : Certificate) return Boolean is
+     (C.SAN_Count <= Max_SAN
+      and then Slice_In (Cert, C.TBS)
+      and then Slice_In (Cert, C.Serial)
+      and then Slice_In (Cert, C.Not_Before)
+      and then Slice_In (Cert, C.Not_After)
+      and then Slice_In (Cert, C.Sig_Alg_OID)
+      and then Slice_In (Cert, C.Signature)
+      and then Slice_In (Cert, C.RSA_Modulus)
+      and then Slice_In (Cert, C.RSA_Exponent)
+      and then Slice_In (Cert, C.EC_X)
+      and then Slice_In (Cert, C.EC_Y)
+      and then Slice_In (Cert, C.Ed_Pub)
+      and then (for all I in 1 .. C.SAN_Count => Slice_In (Cert, C.SAN (I))))
+   with Ghost;
+
    --  Parse a DER-encoded certificate.  On success Result.Valid is True and the
    --  slices are filled; on any structural problem Result.Valid is False.
-   procedure Parse (Cert : Byte_Array; Result : out Certificate);
+   --
+   --  The Well_Formed postcondition is the contract Chain_Verify / Cert_Verify
+   --  build on.  X509's body is still SPARK_Mode (Off), so this postcondition is
+   --  ASSUMED here (the parser body is proved to establish it in a later phase);
+   --  the consuming proofs are sound relative to that assumption.
+   procedure Parse (Cert : Byte_Array; Result : out Certificate)
+     with Pre  => Indexable (Cert),
+          Post => (if Result.Valid then Well_Formed (Cert, Result));
 
    --  notBefore <= Now <= notAfter, with Now a Pack_Time value (e.g. derived from
    --  the NTP clock).  False if either validity time fails to parse.
    function Valid_At (Cert : Byte_Array; C : Certificate; Now : Time_64)
-                      return Boolean;
+                      return Boolean
+     with Pre => Well_Formed (Cert, C);
 
    --  Does any subjectAltName dNSName match Host?  Case-insensitive (ASCII), with a
    --  single leftmost "*" wildcard label (RFC 6125: "*.a.b" matches one label and
    --  only where the remainder has at least two labels).  Host carries no trailing
    --  dot.  (The deprecated subject-CN fallback is intentionally not used.)
    function Host_Matches (Cert : Byte_Array; C : Certificate; Host : String)
-                          return Boolean;
+                          return Boolean
+     with Pre => Indexable (Cert) and then Well_Formed (Cert, C);
 
 end X509;
