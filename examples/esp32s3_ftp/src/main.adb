@@ -47,11 +47,12 @@ procedure Main is
 
    --  The FTP server to talk to (same /24 as the board's static IP).  Edit for
    --  your LAN; credentials match the bundled test server (any user/pass there).
-   Server_IP   : constant String    := "192.168.1.100";
-   Server_Port : constant Port_Type  := 21;
+   Server_IP   : constant String    := "192.168.1.100";   --  the LAN host running the server
+   Server_Port : constant Port_Type  := 2121;              --  matches ftp_server.py 2121 (21 for a real daemon)
    User        : constant String     := "demo";
    Pass        : constant String     := "password";
    Get_Path    : constant String     := "/hello.txt";
+   Put_Path    : constant String     := "/from_board.bin";   --  STOR target
 
    Startup_Settle : constant Time_Span := Milliseconds (200);
    Park_Interval  : constant Time_Span := Seconds (3600);
@@ -103,6 +104,34 @@ begin
         (S, FTP_Print.Put_Chunk'Access, System.Null_Address, St);
       Put ("[ftp] list result: ");
       Put_Line (St'Image);
+
+      --  Test SENDING: upload a generated file (STOR), then read it back (RETR)
+      --  and verify it byte-exact -- a full upload round-trip from the board.
+      Put_Line ("[ftp] --- STOR + read-back round-trip ---");
+      FTP_Print.Reset_Source;
+      FTP_Client.Store
+        (S, Put_Path, FTP_Print.Test_Source'Access, System.Null_Address, St);
+      Put ("[ftp] STOR " & Put_Path & " (");
+      Put (FTP_Print.Upload_Bytes);
+      Put (" bytes): ");
+      Put_Line (St'Image);
+
+      if St = FTP_Client.OK then
+         FTP_Print.Reset_Verify;
+         FTP_Client.Retrieve
+           (S, Put_Path, FTP_Print.Verify_Chunk'Access, System.Null_Address, St);
+         Put ("[ftp] read-back ");
+         Put (FTP_Print.Verify_Count);
+         Put (" bytes: ");
+         if St = FTP_Client.OK
+           and then FTP_Print.Verify_OK
+           and then FTP_Print.Verify_Count = FTP_Print.Upload_Bytes
+         then
+            Put_Line ("round-trip VERIFIED");
+         else
+            Put_Line ("MISMATCH (" & St'Image & ")");
+         end if;
+      end if;
 
       FTP_Client.Quit (S);
       Put_Line ("[ftp] done.");

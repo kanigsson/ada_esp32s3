@@ -77,11 +77,17 @@ def handle(conn):
             except OSError:
                 reply("550 no such file")
         elif cmd == "PASV":
+            # Advertise / bind the data listener on the control connection's local
+            # IP -- 127.0.0.1 for the host harness, or the LAN IP when a board
+            # connects -- so the data connection is reachable either way.
+            local_ip = conn.getsockname()[0]
             pasv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            pasv_sock.bind(("127.0.0.1", 0))
+            pasv_sock.bind((local_ip, 0))
             pasv_sock.listen(1)
             p = pasv_sock.getsockname()[1]
-            reply("227 Entering Passive Mode (127,0,0,1,%d,%d)" % (p >> 8, p & 0xFF))
+            h = local_ip.split(".")
+            reply("227 Entering Passive Mode (%s,%s,%s,%s,%d,%d)"
+                  % (h[0], h[1], h[2], h[3], p >> 8, p & 0xFF))
         elif cmd in ("RETR", "STOR", "NLST"):
             if pasv_sock is None:
                 reply("425 use PASV first"); continue
@@ -118,15 +124,23 @@ def handle(conn):
 
 
 def main():
+    # Args: [port] [bind-host].  Default: random port on all interfaces.  The host
+    # harness passes no args (random port, read from stdout); for a BOARD send
+    # test run e.g.  python3 ftp_server.py 2121  and point the example at this
+    # machine's LAN IP : 2121.
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    host = sys.argv[2] if len(sys.argv) > 2 else "0.0.0.0"
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", 0))
+    srv.bind((host, port))
     srv.listen(1)
     print(srv.getsockname()[1], flush=True)   # first line: the control port
-    # Serve a bounded number of sessions, then exit (test runs one).
-    conn, _ = srv.accept()
-    handle(conn)
-    srv.close()
+    try:
+        while True:                            # serve sessions until killed
+            conn, _ = srv.accept()
+            handle(conn)
+    finally:
+        srv.close()
 
 
 if __name__ == "__main__":

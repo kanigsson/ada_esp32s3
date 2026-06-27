@@ -4,10 +4,13 @@ An **FTP client** over the WIZnet W5500, driven through the portable
 `FTP_Client` package (itself written against the `GNAT.Sockets` facade, so the
 same code runs on desktop GNAT.Sockets and on the bare-metal W5500 alike).
 
-It logs in, prints a file's `SIZE`, downloads it (`RETR`) to the console, lists
-the directory (`NLST`), and quits — **passive mode, binary**, the
-embedded-friendly profile (only outbound connections, so it needs no listening
-socket and works behind NAT).
+It logs in, prints a file's `SIZE`, downloads it (`RETR`), lists the directory
+(`NLST`), then **tests sending**: it uploads a generated 512-byte file (`STOR`),
+reads it back (`RETR`) and verifies it byte-exact — a full upload round-trip from
+the board. **Passive mode, binary** (only outbound connections, so it needs no
+listening socket and works behind NAT). This is the example to use for a
+**board send test**, since it writes to a local server you control (unlike
+`esp32s3_ftp_inet`, which targets an anonymous read-only public server).
 
 ## Run
 
@@ -16,27 +19,32 @@ socket and works behind NAT).
 ```
 
 The board takes the static IP **192.168.1.50** (/24, gateway .254 — set in
-`w5500_dev.adb`). Put it and an FTP server on the same subnet and point
-`Server_IP` (top of `main.adb`) at the server. A zero-dependency local server:
+`w5500_dev.adb`). Run the bundled upload-capable server on a host on that subnet,
+and point `Server_IP` / `Server_Port` (top of `main.adb`) at it:
 
 ```
-python3 libs/esp32s3_hal/test/ftp_host/ftp_server.py     # prints its port
+python3 libs/esp32s3_hal/test/ftp_host/ftp_server.py 2121     # serves on :2121, all interfaces
 ```
 
-…or any FTP daemon on port 21 with the configured credentials.
+It binds all interfaces, accepts any user/password, and accepts uploads — so the
+board's `STOR` round-trip works against it. (Any FTP daemon that allows the
+configured login to write would also do.)
 
 ## Expected output
 
 ```
 [ftp] W5500 FTP client (FTP_Client over GNAT.Sockets)
 [w5500] link up, IP 192.168.1.50
-[ftp] connecting to 192.168.1.100:21 ...
+[ftp] connecting to 192.168.1.100:2121 ...
 [ftp] logged in.
 [ftp] SIZE /hello.txt = 30
 [ftp] --- RETR /hello.txt ---
 hello from the ftp host test
 [ftp] --- NLST ---
 hello.txt
+[ftp] --- STOR + read-back round-trip ---
+[ftp] STOR /from_board.bin (512 bytes): OK
+[ftp] read-back 512 bytes: round-trip VERIFIED
 [ftp] done.
 ```
 
