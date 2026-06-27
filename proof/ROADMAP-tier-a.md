@@ -151,8 +151,13 @@ Bottom-up, each phase green before the next:
    length overflow (finding #1), plus three more the proof surfaced: an empty-
    content `P+1` overflow, and `Length`/`Pack_Time` overflows in the `X509` spec.
    The `X509` spec is now `SPARK_Mode On` (body Off until phase 2).
-2. **`X509`** — add `Slice_In` / `Well_Formed`, the `Parse` postcondition,
-   consumer preconditions; prove AoRTE. Address findings #2–#4.
+
+2. **`X509`** ✅ **DONE** (see `tier-a-results.md`) — whole body `SPARK_Mode On`,
+   AoRTE + `Well_Formed` postcondition on `Parse`, preconditions on `Valid_At`/
+   `Host_Matches`. The full `x509_proof.gpr` project proves at 226/226 VCs. Built
+   the `Well_Formed`/`Slice_In`/`Indexable`/`SAN_OK` contract layer; refactored
+   `Parse_Time` out of the non-subset "function with `out` parameter" shape.
+
 3. **`Cert_Verify`** — wire the contract-only RSA/SHA deps; prove AoRTE across
    the PKCS#1 / PSS index arithmetic (the `PS_Len`, `EmLen`, `DBLen`, `2 **
    (8-LeadBits)` computations). Add the RSA spec `Post` (shape only).

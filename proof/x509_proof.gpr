@@ -15,7 +15,7 @@ project X509_Proof is
 
    for Source_Dirs use ("../libs/esp32s3_hal/src");
    for Source_Files use
-     ("x509.ads",          --  parent spec: U8, Byte_Array, Slice, Length, ...
+     ("x509.ads", "x509.adb",     --  parser, validity dates, hostname matching
       "x509-der.ads", "x509-der.adb");
    for Object_Dir use "obj-x509";
 

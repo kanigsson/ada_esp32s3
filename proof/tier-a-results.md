@@ -76,7 +76,53 @@ whole address space) lets the body prove the bounded-index assignments; phase 2'
 - The `Slice` index-type change is source-compatible: full HAL and `libs/tls`
   (`cert_verify`, `chain_verify`, `tls_client`) build unchanged.
 
-## Phases 2–5 — pending
+## Phase 2 — `X509` body (`Parse` / `Valid_At` / `Host_Matches`)  ✅ complete
 
-See `ROADMAP-tier-a.md`: `X509` body (`Parse`/`Valid_At`/`Host_Matches` with the
-`Well_Formed` predicate), `Cert_Verify`, `Chain_Verify`, `AES.GCM` GHASH.
+The whole parser, validity-date check and hostname matcher are `SPARK_Mode => On`
+and **fully proved** — AoRTE plus the `Well_Formed` postcondition on `Parse`.
+
+```
+SPARK Analysis results        Total        Flow                             Provers   Unproved
+Initialization                   45          45                                   .          .
+Non-Aliasing                      1           1                                   .          .
+Run-time Checks                  96           .    96 (CVC5 93%, Z3 6%, altergo 1%)          .
+Assertions                        6           .                            6 (CVC5)          .
+Functional Contracts             61           .    61 (CVC5 86%, Trivial 5%, Z3 9%)          .
+Termination                      17          17                                   .          .
+Total                           226    63 (28%)                           163 (72%)          .
+```
+
+**226 / 226 VCs discharged** (whole `x509_proof.gpr` project: DER + X509), at the
+project's default `--level=2`. No justifications; two guiding `pragma Assert`s in
+`Parse` (the `TBS` span) that are themselves proved.
+
+### The contract layer
+
+- **`Well_Formed (Cert, C)`** (ghost): every slice a valid `Certificate` carries
+  lies within `Cert`, and `SAN_Count <= Max_SAN`. `Parse`'s postcondition; the
+  precondition of `Valid_At`, `Host_Matches`, and (phase 3) `Cert_Verify`.
+- **`Slice_In`**, **`Indexable`** (ghost) — building blocks: a slice within the
+  buffer; a buffer with headroom for one-past-end indices.
+- **`Expect`** (the DER-read wrapper) carries a valid/invalid case split and
+  `Ok`-monotonicity (`if Ok then Ok'Old`), so a stored slice is provably in-buffer
+  whenever the parse ultimately succeeds.
+- **`SAN_OK`** invariant + `Loop_Invariant`s drive the SAN-collection loops;
+  `Parse_SAN`/`Parse_Extensions` take only the SAN array + count (least privilege),
+  so the prover knows the rest of the `Certificate` is preserved.
+
+### SPARK-subset refactors (behaviour-preserving)
+
+- `Parse_Time` was a `Boolean` function with an `out` parameter (not in the SPARK
+  subset) → now a procedure with an `Ok` out parameter; `Valid_At` updated.
+- The digit reader `D` is made total (a non-digit byte yields 0 instead of
+  underflowing `Natural`); nested time-field readers carry `Off < L` bounds.
+- `Has_Dot` became a quantified expression function.
+
+Full HAL and `libs/tls` still build (embedded, `-gnata`); `chain_verify` calls
+`Valid_At`/`Host_Matches` only after `Parse` + a validity check, so their new
+preconditions hold at runtime too.
+
+## Phases 3–5 — pending
+
+See `ROADMAP-tier-a.md`: `Cert_Verify` (RSA PKCS#1/PSS AoRTE), `Chain_Verify`,
+`AES.GCM` GHASH.

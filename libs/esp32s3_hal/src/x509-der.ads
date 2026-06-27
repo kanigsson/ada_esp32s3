@@ -23,12 +23,18 @@ package X509.DER with SPARK_Mode => On is
    procedure Read (Buf : Byte_Array; Pos, Limit : Natural; E : out TLV)
      with Pre  => Buf'Last < Natural'Last,   --  a real cert buffer, not the whole heap
           Post =>
-       (if E.Valid then
-          E.Elem_Last <= Limit
-          and then E.Elem_Last <= Buf'Last
-          and then E.Content.Last <= E.Elem_Last
-          and then (if Length (E.Content) > 0 then
-                      E.Content.First >= Buf'First
-                      and then E.Content.Last <= Buf'Last));
+            (if E.Valid then
+               --  A valid element's whole encoding lies within [Pos .. Limit] subset
+               --  Buf; Pos <= Elem_Last (it spans >= the tag+length bytes), so a slice
+               --  from a child's start to this element's end is non-empty.
+               Pos <= E.Elem_Last
+               and then E.Elem_Last <= Limit
+               and then E.Elem_Last <= Buf'Last
+               and then E.Content.Last <= E.Elem_Last
+               and then (if Length (E.Content) > 0 then E.Content.First >= Buf'First)
+             else
+               --  On any malformation: empty, zero-positioned -- so callers may still
+               --  step past by Elem_Last + 1 (= 1) without overflow.
+               E.Elem_Last = 0 and then Length (E.Content) = 0);
 
 end X509.DER;

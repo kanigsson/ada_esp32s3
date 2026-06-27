@@ -1,18 +1,35 @@
 with X509.DER;
 
---  Body proof is Tier-A phase 2 (see proof/ROADMAP-tier-a.md); until then the
---  spec is SPARK_Mode On (so X509.DER and other clients are in-subset) but the
---  body stays Off so it is not yet pulled into proof.
-package body X509 with SPARK_Mode => Off is
+package body X509 with SPARK_Mode => On is
 
    use type Interfaces.Unsigned_8;
 
+   --  In-buffer facts of a freshly-read element, as a reusable contract piece.
+   function TLV_In (Buf : Byte_Array; E : DER.TLV) return Boolean is
+     (E.Elem_Last <= Buf'Last
+      and then E.Content.Last <= E.Elem_Last
+      and then (if Length (E.Content) > 0 then
+                  E.Content.First >= Buf'First
+                  and then E.Content.Last <= Buf'Last))
+   with Ghost;
+
    --  Read the element at P within [.. Limit]; require Valid and (if Want /= 0) a
    --  matching tag.  Clears Ok on failure and short-circuits once Ok is False.
+   --  On success (Ok stays True) the element's slices lie within Buf -- the hook
+   --  every stored Result slice relies on; and Ok is monotone (never re-raised).
    procedure Expect (Buf : Byte_Array; P, Limit : Natural; Want : U8;
-                     E : out DER.TLV; Ok : in out Boolean) is
+                     E : out DER.TLV; Ok : in out Boolean)
+     with Pre  => Buf'Last < Natural'Last,
+          Post => (if E.Valid
+                     then TLV_In (Buf, E)
+                          and then P <= E.Elem_Last      --  element spans >= [P ..]
+                          and then E.Elem_Last <= Limit
+                     else E.Elem_Last = 0)               --  malformed: empty, zeroed
+                  and then (if Ok then E.Valid)
+                  and then (if Ok then Ok'Old)
+   is
    begin
-      E := (Valid => False, others => <>);
+      E := (Tag => 0, Content => (1, 0), Elem_Last => 0, Valid => False);
       if not Ok then
          return;
       end if;
@@ -22,16 +39,29 @@ package body X509 with SPARK_Mode => Off is
       end if;
    end Expect;
 
+   --  The SAN store invariant: a well-formed, in-buffer set of dNSName slices.
+   --  Parse_SAN / Parse_Extensions take only the SAN array + count (least
+   --  privilege), so the prover knows the rest of the Certificate is untouched.
+   function SAN_OK (Cert : Byte_Array; SAN : Slice_Array; Count : Natural)
+                    return Boolean is
+     (Count <= Max_SAN
+      and then (for all I in 1 .. Count => Slice_In (Cert, SAN (I))))
+   with Ghost;
+
    --  subjectAltName extension OID is 2.5.29.17  (DER content 55 1D 11).
    function Is_SAN_OID (Cert : Byte_Array; S : Slice) return Boolean is
      (Length (S) = 3
       and then Cert (S.First) = 16#55#
       and then Cert (S.First + 1) = 16#1D#
-      and then Cert (S.First + 2) = 16#11#);
+      and then Cert (S.First + 2) = 16#11#)
+   with Pre => Slice_In (Cert, S);
 
    --  GeneralNames ::= SEQUENCE OF GeneralName; collect dNSName ([2], tag 0x82).
    procedure Parse_SAN (Cert : Byte_Array; First, Last : Natural;
-                        Result : in out Certificate) is
+                        SAN : in out Slice_Array; Count : in out Natural)
+     with Pre  => Indexable (Cert) and then SAN_OK (Cert, SAN, Count),
+          Post => SAN_OK (Cert, SAN, Count)
+   is
       Seq, Name : DER.TLV;
       P : Natural;
    begin
@@ -41,11 +71,12 @@ package body X509 with SPARK_Mode => Off is
       end if;
       P := Seq.Content.First;
       while P <= Seq.Content.Last loop
+         pragma Loop_Invariant (SAN_OK (Cert, SAN, Count));
          DER.Read (Cert, P, Seq.Content.Last, Name);
          exit when not Name.Valid;
-         if Name.Tag = 16#82# and then Result.SAN_Count < Max_SAN then
-            Result.SAN_Count := Result.SAN_Count + 1;
-            Result.SAN (Result.SAN_Count) := Name.Content;
+         if Name.Tag = 16#82# and then Count < Max_SAN then
+            Count := Count + 1;
+            SAN (Count) := Name.Content;
          end if;
          P := Name.Elem_Last + 1;
       end loop;
@@ -53,7 +84,10 @@ package body X509 with SPARK_Mode => Off is
 
    --  Extensions ::= SEQUENCE OF Extension { extnID OID, [critical], extnValue }.
    procedure Parse_Extensions (Cert : Byte_Array; First, Last : Natural;
-                               Result : in out Certificate) is
+                               SAN : in out Slice_Array; Count : in out Natural)
+     with Pre  => Indexable (Cert) and then SAN_OK (Cert, SAN, Count),
+          Post => SAN_OK (Cert, SAN, Count)
+   is
       Seq, Ext, OID, Val : DER.TLV;
       P, EP : Natural;
    begin
@@ -63,6 +97,7 @@ package body X509 with SPARK_Mode => Off is
       end if;
       P := Seq.Content.First;
       while P <= Seq.Content.Last loop
+         pragma Loop_Invariant (SAN_OK (Cert, SAN, Count));
          DER.Read (Cert, P, Seq.Content.Last, Ext);
          exit when not Ext.Valid or else Ext.Tag /= 16#30#;
          EP := Ext.Content.First;
@@ -77,7 +112,7 @@ package body X509 with SPARK_Mode => Off is
                DER.Read (Cert, EP, Ext.Content.Last, Val);
             end if;
             if Val.Valid and then Val.Tag = 16#04# then    --  extnValue OCTET STRING
-               Parse_SAN (Cert, Val.Content.First, Val.Content.Last, Result);
+               Parse_SAN (Cert, Val.Content.First, Val.Content.Last, SAN, Count);
             end if;
          end if;
          P := Ext.Elem_Last + 1;
@@ -106,6 +141,13 @@ package body X509 with SPARK_Mode => Off is
          return;
       end if;
       Result.TBS := (First => Outer.Content.First, Last => Tbs.Elem_Last);
+      --  TBS spans the tbsCertificate: from the outer SEQUENCE's content start to
+      --  the end of tbs.  Ok is True here, so both reads succeeded: Outer's content
+      --  is non-empty (it holds tbs) and within Cert, and tbs ends within Cert, so
+      --  TBS lies within Cert.  Asserting it unconditionally pins it to the end (TBS
+      --  is never reassigned), discharging the Well_Formed TBS clause.
+      pragma Assert (Outer.Content.First <= Tbs.Elem_Last);
+      pragma Assert (Slice_In (Cert, Result.TBS));
 
       P := Tbs.Content.First;
       L := Tbs.Content.Last;
@@ -188,7 +230,9 @@ package body X509 with SPARK_Mode => Off is
          P := SPKI.Elem_Last + 1;
          DER.Read (Cert, P, L, E);
          if E.Valid and then E.Tag = 16#A3# then
-            Parse_Extensions (Cert, E.Content.First, E.Content.Last, Result);
+            Parse_Extensions
+              (Cert, E.Content.First, E.Content.Last,
+               Result.SAN, Result.SAN_Count);
          end if;
       end if;
 
@@ -215,9 +259,14 @@ package body X509 with SPARK_Mode => Off is
    ---------------------------------------------------------------------------
 
    --  Parse an ASN.1 Time (UTCTime YYMMDDHHMMSSZ or GeneralizedTime
-   --  YYYYMMDDHHMMSSZ) at slice S into a packed Time_64.  False if malformed.
-   function Parse_Time (Cert : Byte_Array; S : Slice; Tag : U8; T : out Time_64)
-                        return Boolean
+   --  YYYYMMDDHHMMSSZ) at slice S into a packed Time_64.  Ok is False if malformed.
+   --  (A SPARK procedure -- a Boolean function with an `out` parameter is not in
+   --  the subset.)  The nested readers carry Off < L so every Cert access is in
+   --  bounds (S lies within Cert, and Off < L = Length means S.First + Off <=
+   --  S.Last); D is total so a non-digit byte can never underflow.
+   procedure Parse_Time (Cert : Byte_Array; S : Slice; Tag : U8;
+                         T : out Time_64; Ok : out Boolean)
+     with Pre => Slice_In (Cert, S)
    is
       F    : constant Natural := S.First;
       L    : constant Natural := Length (S);
@@ -225,52 +274,60 @@ package body X509 with SPARK_Mode => Off is
       Year, Mon, Day, Hr, Mi, Sc : Natural;
 
       function Is_Digit (Off : Natural) return Boolean is
-        (Cert (F + Off) in 16#30# .. 16#39#);
+        (Cert (F + Off) in 16#30# .. 16#39#)
+      with Pre => Off < L and then Slice_In (Cert, S);
       function D (Off : Natural) return Natural is
-        (Natural (Cert (F + Off)) - 16#30#);
-      function Two (Off : Natural) return Natural is (D (Off) * 10 + D (Off + 1));
+        (if Cert (F + Off) in 16#30# .. 16#39#
+         then Natural (Cert (F + Off)) - 16#30# else 0)
+      with Pre => Off < L and then Slice_In (Cert, S),
+           Post => D'Result <= 9;
+      function Two (Off : Natural) return Natural is (D (Off) * 10 + D (Off + 1))
+      with Pre => L >= 2 and then Off <= L - 2 and then Slice_In (Cert, S),
+           Post => Two'Result <= 99;
    begin
-      T := 0;
+      T  := 0;
+      Ok := False;
       if Tag = 16#17# then                        --  UTCTime (13: YYMMDDHHMMSSZ)
          if L /= 13 or else Cert (F + 12) /= 16#5A# then
-            return False;
+            return;
          end if;
          for K in 0 .. 11 loop
-            if not Is_Digit (K) then return False; end if;
+            if not Is_Digit (K) then return; end if;
          end loop;
          Year := (if Two (0) < 50 then 2000 + Two (0) else 1900 + Two (0));
          Base := 2;
       elsif Tag = 16#18# then                      --  GeneralizedTime (15)
          if L /= 15 or else Cert (F + 14) /= 16#5A# then
-            return False;
+            return;
          end if;
          for K in 0 .. 13 loop
-            if not Is_Digit (K) then return False; end if;
+            if not Is_Digit (K) then return; end if;
          end loop;
          Year := D (0) * 1000 + D (1) * 100 + D (2) * 10 + D (3);
          Base := 4;
       else
-         return False;
+         return;
       end if;
       Mon := Two (Base);      Day := Two (Base + 2);
       Hr  := Two (Base + 4);  Mi  := Two (Base + 6);  Sc := Two (Base + 8);
       if Mon not in 1 .. 12 or else Day not in 1 .. 31
         or else Hr > 23 or else Mi > 59 or else Sc > 60
       then
-         return False;
+         return;
       end if;
-      T := Pack_Time (Year, Mon, Day, Hr, Mi, Sc);
-      return True;
+      T  := Pack_Time (Year, Mon, Day, Hr, Mi, Sc);
+      Ok := True;
    end Parse_Time;
 
    function Valid_At (Cert : Byte_Array; C : Certificate; Now : Time_64)
                       return Boolean
    is
-      NB, NA : Time_64;
+      NB, NA       : Time_64;
+      NB_Ok, NA_Ok : Boolean;
    begin
-      if not Parse_Time (Cert, C.Not_Before, C.NB_Tag, NB)
-        or else not Parse_Time (Cert, C.Not_After, C.NA_Tag, NA)
-      then
+      Parse_Time (Cert, C.Not_Before, C.NB_Tag, NB, NB_Ok);
+      Parse_Time (Cert, C.Not_After,  C.NA_Tag, NA, NA_Ok);
+      if not NB_Ok or else not NA_Ok then
          return False;
       end if;
       return Now >= NB and then Now <= NA;
@@ -284,8 +341,13 @@ package body X509 with SPARK_Mode => Off is
      (if B in 16#41# .. 16#5A# then B + 16#20# else B);
 
    --  Case-insensitive equality of Cert[BF..BL] (ASCII bytes) and Host[HF..HL].
+   --  Indexing happens only when both ranges are non-empty, so the bounds are
+   --  required only then.
    function Eq_CI (Cert : Byte_Array; BF, BL : Natural;
-                   Host : String; HF, HL : Natural) return Boolean is
+                   Host : String; HF, HL : Natural) return Boolean
+     with Pre => (if BL >= BF then BF >= Cert'First and then BL <= Cert'Last)
+                 and then (if HL >= HF then HF >= Host'First and then HL <= Host'Last)
+   is
    begin
       if BL < BF or else HL < HF or else BL - BF /= HL - HF then
          return False;
@@ -300,14 +362,11 @@ package body X509 with SPARK_Mode => Off is
 
    function Name_Matches (Cert : Byte_Array; S : Slice; Host : String)
                           return Boolean
+     with Pre => Indexable (Cert) and then Slice_In (Cert, S)
    is
       function Has_Dot (From, To : Natural) return Boolean is
-      begin
-         for I in From .. To loop
-            if Cert (I) = 16#2E# then return True; end if;
-         end loop;
-         return False;
-      end Has_Dot;
+        (for some I in From .. To => Cert (I) = 16#2E#)
+      with Pre => (if From <= To then From >= Cert'First and then To <= Cert'Last);
    begin
       if Length (S) = 0 or else Host'Length = 0 then
          return False;
