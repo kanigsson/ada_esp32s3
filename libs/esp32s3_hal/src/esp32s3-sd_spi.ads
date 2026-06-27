@@ -86,6 +86,7 @@ private
       Cs     : ESP32S3.GPIO.Pin_Id  := 0;
       Kind   : Card_Kind            := Unknown;
       Block_Addressed : Boolean     := False;   --  True for SDHC/SDXC
-      Data_Hz : Positive            := 8_000_000;
+      Init_Hz : Positive            := 400_000;    --  init handshake clock
+      Data_Hz : Positive            := 8_000_000;  --  post-init data clock
    end record;
 end ESP32S3.SD_SPI;

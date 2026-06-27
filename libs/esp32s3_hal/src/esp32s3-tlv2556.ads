@@ -44,14 +44,15 @@ package ESP32S3.TLV2556 is
    --  plain GPIO (a decoder / I/O-expander), leave CS_Pin = No_Pin and supply
    --  CS_CB + Ctx (see ESP32S3.SPI.CS_Select for the callback contract).
    type Device is record
-      Host   : ESP32S3.SPI.SPI_Host;
-      CS_Pin : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
-      CS_CB  : ESP32S3.SPI.CS_Select     := null;
-      Ctx    : System.Address            := System.Null_Address;
+      Host     : ESP32S3.SPI.SPI_Host;
+      Clock_Hz : Positive                  := 8_000_000;   --  TLV2556 I/O <=10 MHz
+      CS_Pin   : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
+      CS_CB    : ESP32S3.SPI.CS_Select     := null;
+      Ctx      : System.Address            := System.Null_Address;
    end record;
 
    --  Program configuration register 2 (reference source, pin-19 = EOC, normal
-   --  mode).  Call once, after the SPI host's Setup / Configure_Pins, before any
+   --  mode).  Call once, after the SPI host's Setup, before any
    --  Read.  The first conversion after power-up is discarded internally.
    procedure Initialize (Dev : Device; Ref : Reference := External);
 

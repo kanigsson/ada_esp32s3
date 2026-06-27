@@ -390,18 +390,21 @@ Two design points stand out. The chip size is \emph{detected}, not hard-coded: t
 JEDEC density byte is a power of two, so \texttt{Capacity\_Bytes} turns
 \texttt{EF\,40\,19} into 32\,MB, and because each layer above sizes itself from the
 one below, fitting a different W25Q part (8/16/32/64\,MB) needs no code change.
-And the chip-select is \emph{its own GPIO}, not the SPI host's single hardware
+And the device record \emph{describes itself}: its host, its own bit clock, and its
+chip select. The select is its own GPIO, not the SPI host's single hardware
 \texttt{CS0}: the flash names its select pin and the SPI driver drives it
 active-low, held across the whole command (so a streamed read can keep \texttt{CS}
 asserted across many transfers) --- which is what lets the flash share the bus
-with another device on \texttt{CS0}. Setting \texttt{CS\_Pin} is all it takes; a
-select that is not one plain GPIO (a 3:8 decoder, an I/O-expander line) instead
-supplies a \texttt{CS\_CB} callback.
+with another device on \texttt{CS0}, each clocked its own way. Setting
+\texttt{Clock\_Hz} and \texttt{CS\_Pin} is all it takes; a select that is not one
+plain GPIO (a 3:8 decoder, an I/O-expander line) instead supplies a \texttt{CS\_CB}
+callback. The host itself is brought up once with \texttt{ESP32S3.SPI.Setup} +
+\texttt{Configure\_Pins} (the shared \texttt{Sclk}/\texttt{Mosi}/\texttt{Miso}).
 
 \begin{lstlisting}
 with ESP32S3.W25Q; use ESP32S3.W25Q;
---  Flash : ESP32S3.W25Q.Flash :=
---    (Host => ESP32S3.SPI.SPI2, CS_Pin => 21, others => <>);  --  CS on IO21
+--  Flash : ESP32S3.W25Q.Flash := (Host => ESP32S3.SPI.SPI2,
+--    Clock_Hz => 8_000_000, CS_Pin => 21, others => <>);  --  8 MHz, CS on IO21
    ID      : JEDEC_ID;
    Mode_OK : Boolean;
 begin

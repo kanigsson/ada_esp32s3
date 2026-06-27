@@ -25,7 +25,7 @@ package ESP32S3.SPI is
    --  SPI clock polarity/phase mode (0 .. 3).
    subtype SPI_Mode is Natural range 0 .. 3;
 
-   --  Sentinel for Configure_Pins: leave that line unrouted (= ESP32S3.GPIO.No_Pin).
+   --  Sentinel: leave that line unrouted / inherit the host default (= No_Pin).
    No_Pin : constant ESP32S3.GPIO.Pad_Number := ESP32S3.GPIO.No_Pin;
 
    --  Optional application-driven chip select.  A device may bring its own select
@@ -59,28 +59,31 @@ package ESP32S3.SPI is
    --  task contends for it (single-threaded).
    ----------------------------------------------------------------------------
 
-   --  Bring Host up as a full-duplex master at the given mode and bit clock
-   --  (Hz, clamped to ~80 kHz .. 80 MHz) and Claim its GDMA channel.
-   procedure Setup (Host     : SPI_Host;
-                    Mode     : SPI_Mode := 0;
-                    Clock_Hz : Positive := 1_000_000);
+   --  Bring Host up as a full-duplex master and Claim its GDMA channel.  Mode
+   --  and bit clock are NOT set here -- they are a per-device property applied at
+   --  Acquire, so two devices on one host can run different modes/clocks.
+   procedure Setup (Host : SPI_Host);
 
-   --  Change just the bit clock of a Setup host (Hz, same clamp as Setup), with
-   --  no GDMA re-Claim.  Lets a driver init a device slowly then run it fast
-   --  (e.g. an SD card: <=400 kHz to initialise, then several MHz for data).
-   procedure Set_Clock (Host : SPI_Host; Hz : Positive);
-
-   --  Internal MOSI->MISO loopback through one GPIO pad (self-test; no wiring).
-   procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
-
-   --  Route the host's signals to physical pads for an external device.  Each
-   --  line is a validated GPIO pin (reserved/absent pads are caught at compile
-   --  or run time); pass No_Pin to leave a line unrouted.
+   --  Route the host's SHARED bus lines to physical pads -- the wires every
+   --  device on the host uses (Sclk/Mosi/Miso), plus an optional hardware CS0
+   --  pad.  Each line is a validated GPIO pin (reserved/absent pads are caught at
+   --  compile or run time); pass No_Pin to leave it unrouted.  Call once after
+   --  Setup.  A device wired to a DIFFERENT set of pads on the same controller
+   --  overrides these per-hold via Acquire's Sclk/Mosi/Miso (the rare case).
    procedure Configure_Pins (Host : SPI_Host;
                              Sclk : ESP32S3.GPIO.Optional_Pin;
                              Mosi : ESP32S3.GPIO.Optional_Pin;
                              Miso : ESP32S3.GPIO.Optional_Pin;
                              Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
+
+   --  Change just the bit clock of a Setup host (Hz, clamped to ~80 kHz .. 80
+   --  MHz) mid-hold, with no GDMA re-Claim.  Acquire already applies each
+   --  device's clock; this is for a device that changes speed WITHIN one hold
+   --  (e.g. an SD card raising its clock after the init handshake).
+   procedure Set_Clock (Host : SPI_Host; Hz : Positive);
+
+   --  Internal MOSI->MISO loopback through one GPIO pad (self-test; no wiring).
+   procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
 
    ----------------------------------------------------------------------------
    --  Concurrent, mutually-exclusive use.
@@ -95,9 +98,20 @@ package ESP32S3.SPI is
    --  in the body, so "transfer without holding the host" fails loudly.
    Not_Owned : exception;
 
-   --  Take exclusive ownership of a Setup host.  Suspends until no other task
-   --  holds it.  Keep it across a whole transaction, then Release / let it go
-   --  out of scope.  Raises Not_Initialized if Host was never Setup.
+   --  Take exclusive ownership of a Setup host and apply THIS device's bus
+   --  configuration.  Suspends until no other task holds it.  Keep it across a
+   --  whole transaction, then Release / let it go out of scope.  Raises
+   --  Not_Initialized if Host was never Setup.
+   --
+   --  Applied under the exclusive hold (so reprogramming can't collide with
+   --  another device's transfer):
+   --    * Mode, Clock_Hz: this device's SPI mode and bit clock -- a per-device
+   --      property, so a flash at mode 0 / 8 MHz and a display at mode 3 / 40 MHz
+   --      can share one host.
+   --    * Sclk, Mosi, Miso: usually No_Pin = keep the host's Setup routing (the
+   --      common shared-bus case).  Set them only for a device wired to a
+   --      DIFFERENT set of pads on the same controller -- the GPIO matrix is then
+   --      re-routed to this device's pins for the hold.
    --
    --  Chip select, in order of preference:
    --    * CS_Pin set (the common case): the driver drives that GPIO itself as an
@@ -113,6 +127,11 @@ package ESP32S3.SPI is
    --  cannot disturb another device sharing the bus.
    procedure Acquire (S         : in out Session;
                       Host      : SPI_Host;
+                      Mode      : SPI_Mode := 0;
+                      Clock_Hz  : Positive := 1_000_000;
+                      Sclk      : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                      Mosi      : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                      Miso      : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       Select_CB : CS_Select      := null;
                       Ctx       : System.Address  := System.Null_Address);

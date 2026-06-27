@@ -58,9 +58,10 @@ procedure Main is
    CS_Pin   : constant ESP32S3.GPIO.Pin_Id := 21;
    Clock_Hz : constant := 8_000_000;
 
-   --  Flash device + its single-GPIO chip select on IO21 (driven by the SPI
-   --  driver, active-low, held across each command).
-   Flash   : W25Q.Flash := (Host => SPI.SPI2, CS_Pin => CS_Pin, others => <>);
+   --  Flash device + its own bit clock + single-GPIO chip select on IO21 (the
+   --  SPI driver applies the clock and drives CS active-low, held per command).
+   Flash   : W25Q.Flash :=
+     (Host => SPI.SPI2, Clock_Hz => Clock_Hz, CS_Pin => CS_Pin, others => <>);
 
    ID       : W25Q.JEDEC_ID;
    Mode_OK  : Boolean;
@@ -103,9 +104,9 @@ begin
    delay until Clock + Milliseconds (200);
    Log.Put_Line ("[wl] dynamic wear-leveling FTL over W25Q SPI NOR (SPI2, CS=IO21)");
 
-   SPI.Setup (SPI.SPI2, Mode => 0, Clock_Hz => Clock_Hz);
+   SPI.Setup (SPI.SPI2);
    SPI.Configure_Pins (SPI.SPI2, Sclk => SCLK_Pin, Mosi => MOSI_Pin,
-                       Miso => MISO_Pin, Cs => SPI.No_Pin);
+                       Miso => MISO_Pin);
 
    W25Q.Read_Identification (Flash, ID);
    W25Q.Initialize (Flash, Mode_OK);

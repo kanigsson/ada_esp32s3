@@ -221,15 +221,19 @@ end Temp_Centi;
 \section{SPI --- full-duplex master}\index{SPI driver}
 
 \texttt{ESP32S3.SPI} drives either general-purpose host (\texttt{SPI2}/\texttt{SPI3})
-over GDMA. Configure the host once, then \texttt{Acquire} a \texttt{Session} for a
-transaction. \texttt{Transfer} shifts \texttt{Tx} out while capturing \texttt{Rx}.
+over GDMA. Bring the host up and route its shared wires once, then \texttt{Acquire}
+a \texttt{Session} per transaction --- which is where each device's own SPI mode and
+bit clock are applied, so two devices on one host can differ. \texttt{Transfer}
+shifts \texttt{Tx} out while capturing \texttt{Rx}.
 
 \begin{lstlisting}
-procedure Setup (Host : SPI_Host; Mode : SPI_Mode := 0;
-                 Clock_Hz : Positive := 1_000_000);
+procedure Setup (Host : SPI_Host);                          --  controller + GDMA
 procedure Configure_Pins (Host : SPI_Host; Sclk, Mosi, Miso : Optional_Pin;
-                          Cs : Optional_Pin := No_Pin);
+                          Cs : Optional_Pin := No_Pin);      --  shared wiring
 procedure Acquire  (S : in out Session; Host : SPI_Host;
+                    Mode      : SPI_Mode := 0;               --  per-device
+                    Clock_Hz  : Positive := 1_000_000;       --  per-device
+                    Sclk, Mosi, Miso : Optional_Pin := No_Pin; --  pin override
                     CS_Pin    : Optional_Pin := No_Pin;      --  built-in sw select
                     Select_CB : CS_Select    := null;        --  or app chip select
                     Ctx : System.Address := System.Null_Address);
@@ -238,17 +242,27 @@ procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
 procedure Release  (S : in out Session);
 \end{lstlisting}
 
+The three host calls split by lifetime and scope, the same shape as the other
+buses: \texttt{Setup} (once, controller + GDMA), \texttt{Configure\_Pins} (once,
+the shared \texttt{Sclk}/\texttt{Mosi}/\texttt{Miso} every device uses), and
+\texttt{Acquire} (per transaction, this device's mode/clock/select). SPI's
+\texttt{Setup} carries no mode or clock --- unlike, say, \texttt{I2C.Setup} ---
+precisely because on SPI those are per-\emph{device}, not per-host.
+
 \textbf{Parameters.}
 \begin{description}[style=nextline]
 \item[\texttt{Host}] which general-purpose host: \texttt{SPI2} or \texttt{SPI3}.
-\item[\texttt{Mode}] SPI clock mode \texttt{0\,..\,3} (the CPOL/CPHA combinations);
-  default \texttt{0}.
-\item[\texttt{Clock\_Hz}] bit clock in Hz; default \texttt{1\_000\_000}, clamped to
-  roughly 80\,kHz\,..\,80\,MHz.
-\item[\texttt{Sclk}, \texttt{Mosi}, \texttt{Miso}, \texttt{Cs}] the four lines as
-  \texttt{Optional\_Pin}; \texttt{Cs} is the host's single hardware chip-select and
-  defaults to \texttt{No\_Pin} --- with more than one device on the bus, give each
-  device its own select via \texttt{CS\_Pin} at \texttt{Acquire} instead (below).
+\item[\texttt{Sclk}, \texttt{Mosi}, \texttt{Miso}, \texttt{Cs}] (\texttt{Configure\_Pins})
+  the shared bus lines as \texttt{Optional\_Pin}; \texttt{Cs} is the host's single
+  hardware chip-select and defaults to \texttt{No\_Pin} --- with more than one device
+  on the bus, give each its own select via \texttt{CS\_Pin} at \texttt{Acquire}.
+\item[\texttt{Mode}] (\texttt{Acquire}) this device's SPI clock mode \texttt{0\,..\,3}
+  (the CPOL/CPHA combinations); default \texttt{0}, applied under the hold.
+\item[\texttt{Clock\_Hz}] (\texttt{Acquire}) this device's bit clock in Hz; default
+  \texttt{1\_000\_000}, clamped to roughly 80\,kHz\,..\,80\,MHz.
+\item[\texttt{Sclk}, \texttt{Mosi}, \texttt{Miso}] (\texttt{Acquire}) usually
+  \texttt{No\_Pin} = keep the \texttt{Configure\_Pins} routing; set them only for a
+  device wired to a \emph{different} set of pads on the same controller (rare).
 \item[\texttt{CS\_Pin}] a built-in software chip-select: name one GPIO and the
   driver owns it, driving it active-low and holding it asserted across the whole
   transaction. The common case for a shared bus; defaults to \texttt{No\_Pin}.
@@ -271,9 +285,9 @@ procedure SPI_Write is
    Tx : aliased array (0 .. 2) of Interfaces.Unsigned_8 := (16#9F#, 0, 0);
    Rx : aliased array (0 .. 2) of Interfaces.Unsigned_8;
 begin
-   Setup (SPI2, Mode => 0, Clock_Hz => 8_000_000);
+   Setup (SPI2);
    Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
-   Acquire (S, SPI2);
+   Acquire (S, SPI2, Mode => 0, Clock_Hz => 8_000_000);  --  this device's mode/clock
    Transfer (S, Tx'Address, Rx'Address, 3);   --  Rx now holds the response
 end SPI_Write;                                 --  S releases the host here
 \end{lstlisting}
@@ -308,9 +322,9 @@ once per transfer, cannot do. This is how the W25Q flash shares the SPI2 bus wit
 the W5500 in Chapter~\ref{ch:storage}.
 
 \begin{lstlisting}
-   Setup (SPI2, Clock_Hz => 8_000_000);
+   Setup (SPI2);
    Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);  --  no hardware Cs
-   Acquire (S, SPI2, CS_Pin => 10);    --  driver drives IO10 active-low
+   Acquire (S, SPI2, Clock_Hz => 8_000_000, CS_Pin => 10);  --  drive IO10 active-low
    Select_Device (S, On => True);      --  assert IO10
    Transfer (S, Tx'Address, Rx'Address, 2);
    Select_Device (S, On => False);     --  deassert IO10
@@ -334,6 +348,28 @@ end CS_IO10;
 
    Acquire (S, SPI2, Select_CB => CS_IO10'Access);   --  bring our own select
 \end{lstlisting}
+
+\textbf{Per-device mode and clock.}\index{SPI!per-device clock} Because
+\texttt{Acquire} sets the mode and clock under the exclusive hold --- a few register
+writes while no transfer is in flight --- two devices on one host need not agree on
+them. A flash and a display can share \texttt{SPI2}, each clocked its own way:
+
+\begin{lstlisting}
+   Setup (SPI2);
+   Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);  --  shared wires
+   --  ... later, in the flash driver:
+   Acquire (S, SPI2, Mode => 0, Clock_Hz =>  8_000_000, CS_Pin => 21);
+   --  ... and in the display driver, on the same host:
+   Acquire (S, SPI2, Mode => 3, Clock_Hz => 40_000_000, CS_Pin => 10);
+\end{lstlisting}
+
+\noindent Each \texttt{Acquire} reprograms the controller for its caller, so the
+flash always sees mode 0 at 8\,MHz and the display mode 3 at 40\,MHz --- the SD-card
+driver uses exactly this to run its init handshake at 400\,kHz and switch to several
+MHz for data. A device wired to \emph{different} pads on the same controller can
+likewise pass \texttt{Sclk}/\texttt{Mosi}/\texttt{Miso} to \texttt{Acquire}, which
+re-routes the GPIO matrix for the hold; left at \texttt{No\_Pin} they keep the shared
+\texttt{Configure\_Pins} routing.
 
 \section{I2C --- master}\index{I2C driver}
 

@@ -32,8 +32,8 @@ package body ESP32S3.TLV2556 is
    --  custom callback).
    procedure Acquire (S : in out SPI.Session; Dev : Device) is
    begin
-      SPI.Acquire (S, Dev.Host, CS_Pin => Dev.CS_Pin,
-                   Select_CB => Dev.CS_CB, Ctx => Dev.Ctx);
+      SPI.Acquire (S, Dev.Host, Mode => 0, Clock_Hz => Dev.Clock_Hz,
+                   CS_Pin => Dev.CS_Pin, Select_CB => Dev.CS_CB, Ctx => Dev.Ctx);
    end Acquire;
 
    ----------------------------------------------------------------------------

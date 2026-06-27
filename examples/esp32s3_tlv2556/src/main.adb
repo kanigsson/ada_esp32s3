@@ -53,9 +53,11 @@ procedure Main is
    --  The TLV2556 runs its I/O clock to 10 MHz at 3.3 V; 8 MHz is comfortable.
    Clock_Hz : constant := 8_000_000;
 
-   --  The ADC device: SPI2 with its chip select on IO12.  The SPI driver owns
-   --  and drives that GPIO (active-low, held across each conversion) -- no callback.
-   Dev     : ADC.Device := (Host => SPI.SPI2, CS_Pin => CS_Pin, others => <>);
+   --  The ADC device: SPI2, its own bit clock, and its chip select on IO12.  The
+   --  SPI driver applies the clock and drives the CS GPIO (active-low, held across
+   --  each conversion) at Acquire -- no callback.
+   Dev     : ADC.Device :=
+     (Host => SPI.SPI2, Clock_Hz => Clock_Hz, CS_Pin => CS_Pin, others => <>);
 
    Zero, Half, Full, A0 : ADC.Sample;
 
@@ -66,9 +68,9 @@ begin
    delay until Clock + Milliseconds (200);
    Log.Put_Line ("[tlv2556] TI TLV2556 12-bit ADC bring-up (SPI2, CS=IO12)");
 
-   SPI.Setup (SPI.SPI2, Mode => 0, Clock_Hz => Clock_Hz);
+   SPI.Setup (SPI.SPI2);
    SPI.Configure_Pins (SPI.SPI2, Sclk => SCLK_Pin, Mosi => MOSI_Pin,
-                       Miso => MISO_Pin, Cs => SPI.No_Pin);
+                       Miso => MISO_Pin);
 
    ADC.Initialize (Dev, Ref => ADC.External);
 

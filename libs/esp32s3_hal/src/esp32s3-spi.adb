@@ -59,6 +59,7 @@ package body ESP32S3.SPI is
    package State is
       procedure Open (Host : SPI_Host; Mode : SPI_Mode; Clock_Hz : Positive);
       procedure Set_Clock (Host : SPI_Host; Hz : Positive);
+      procedure Set_Mode (Host : SPI_Host; Mode : SPI_Mode);
       procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
       procedure Configure_Pins (Host : SPI_Host;
                                 Sclk : ESP32S3.GPIO.Optional_Pin;
@@ -84,6 +85,11 @@ package body ESP32S3.SPI is
       begin
          E.Set_Clock (Buses (Host), Hz);
       end Set_Clock;
+
+      procedure Set_Mode (Host : SPI_Host; Mode : SPI_Mode) is
+      begin
+         E.Set_Mode (Buses (Host), Mode);
+      end Set_Mode;
 
       procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id) is
       begin
@@ -120,12 +126,21 @@ package body ESP32S3.SPI is
    -- Setup --
    -----------
 
-   procedure Setup (Host     : SPI_Host;
-                    Mode     : SPI_Mode := 0;
-                    Clock_Hz : Positive := 1_000_000) is
+   procedure Setup (Host : SPI_Host) is
    begin
-      State.Open (Host, Mode, Clock_Hz);
+      --  Open with placeholder mode/clock just to bring the controller and GDMA
+      --  up; each device's real mode and clock are applied at Acquire.
+      State.Open (Host, Mode => 0, Clock_Hz => 1_000_000);
    end Setup;
+
+   procedure Configure_Pins (Host : SPI_Host;
+                             Sclk : ESP32S3.GPIO.Optional_Pin;
+                             Mosi : ESP32S3.GPIO.Optional_Pin;
+                             Miso : ESP32S3.GPIO.Optional_Pin;
+                             Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin) is
+   begin
+      State.Configure_Pins (Host, Sclk, Mosi, Miso, Cs);
+   end Configure_Pins;
 
    procedure Set_Clock (Host : SPI_Host; Hz : Positive) is
    begin
@@ -137,21 +152,17 @@ package body ESP32S3.SPI is
       State.Enable_Loopback (Host, Pad);
    end Enable_Loopback;
 
-   procedure Configure_Pins (Host : SPI_Host;
-                             Sclk : ESP32S3.GPIO.Optional_Pin;
-                             Mosi : ESP32S3.GPIO.Optional_Pin;
-                             Miso : ESP32S3.GPIO.Optional_Pin;
-                             Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin) is
-   begin
-      State.Configure_Pins (Host, Sclk, Mosi, Miso, Cs);
-   end Configure_Pins;
-
    -------------
    -- Acquire --
    -------------
 
    procedure Acquire (S         : in out Session;
                       Host      : SPI_Host;
+                      Mode      : SPI_Mode := 0;
+                      Clock_Hz  : Positive := 1_000_000;
+                      Sclk      : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                      Mosi      : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                      Miso      : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                       Select_CB : CS_Select      := null;
                       Ctx       : System.Address  := System.Null_Address) is
@@ -166,6 +177,14 @@ package body ESP32S3.SPI is
       S.Select_CB := Select_CB;
       S.Ctx       := Ctx;
       S.Selected  := False;
+      --  Apply this device's mode and clock under the exclusive hold.
+      State.Set_Mode  (Host, Mode);
+      State.Set_Clock (Host, Clock_Hz);
+      --  Re-route the GPIO matrix only for a device that overrides the shared bus
+      --  pins; No_Pin lines keep the host's Setup routing.
+      if Sclk /= No_Pin or else Mosi /= No_Pin or else Miso /= No_Pin then
+         State.Configure_Pins (Host, Sclk, Mosi, Miso, Cs => No_Pin);
+      end if;
       --  A built-in software CS pin is ours to drive: park it as a deselected
       --  (high) output before the first Select_Device.
       if CS_Pin /= No_Pin then

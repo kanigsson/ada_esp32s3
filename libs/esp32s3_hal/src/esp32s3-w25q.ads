@@ -48,17 +48,21 @@ package ESP32S3.W25Q is
       Capacity     : Unsigned_8;
    end record;
 
-   --  A flash device: which SPI host it lives on, and how its chip select is
-   --  driven.  For the common case set CS_Pin to the select GPIO -- the SPI
-   --  driver drives it (active-low, held across each command), no setup needed.
-   --  For a select that is not one plain GPIO (a 3:8 decoder, an I/O-expander
-   --  line), leave CS_Pin = No_Pin and supply CS_CB + Ctx instead.  All three go
-   --  straight to ESP32S3.SPI.Acquire (which see for the callback contract).
+   --  A flash device: which SPI host it lives on, its bit clock, and how its chip
+   --  select is driven.  Clock_Hz is this device's own clock (applied at Acquire,
+   --  so the flash can run faster/slower than others on the same host).  For the
+   --  common CS case set CS_Pin to the select GPIO -- the SPI driver drives it
+   --  (active-low, held across each command), no setup needed.  For a select that
+   --  is not one plain GPIO (a 3:8 decoder, an I/O-expander line), leave CS_Pin =
+   --  No_Pin and supply CS_CB + Ctx instead.  All go straight to
+   --  ESP32S3.SPI.Acquire (which see for the callback contract).  The flash is
+   --  always SPI mode 0.
    type Flash is record
-      Host   : ESP32S3.SPI.SPI_Host;
-      CS_Pin : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
-      CS_CB  : ESP32S3.SPI.CS_Select     := null;
-      Ctx    : System.Address            := System.Null_Address;
+      Host     : ESP32S3.SPI.SPI_Host;
+      Clock_Hz : Positive                  := 8_000_000;   --  W25Q256FV: <=133 MHz
+      CS_Pin   : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
+      CS_CB    : ESP32S3.SPI.CS_Select     := null;
+      Ctx      : System.Address            := System.Null_Address;
    end record;
 
    ----------------------------------------------------------------------------

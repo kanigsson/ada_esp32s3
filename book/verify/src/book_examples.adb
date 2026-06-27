@@ -100,9 +100,9 @@ package body Book_Examples is
       Tx : aliased array (0 .. 2) of Interfaces.Unsigned_8 := (16#9F#, 0, 0);
       Rx : aliased array (0 .. 2) of Interfaces.Unsigned_8;
    begin
-      Setup (SPI2, Mode => 0, Clock_Hz => 8_000_000);
+      Setup (SPI2);
       Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
-      Acquire (S, SPI2);
+      Acquire (S, SPI2, Mode => 0, Clock_Hz => 8_000_000);   --  per-device
       Transfer (S, Tx'Address, Rx'Address, 3);
    end SPI_Write_Dev;
 
@@ -135,9 +135,10 @@ package body Book_Examples is
       Tx : aliased array (0 .. 1) of Interfaces.Unsigned_8 := (16#9F#, 0);
       Rx : aliased array (0 .. 1) of Interfaces.Unsigned_8;
    begin
-      Setup (SPI2, Clock_Hz => 8_000_000);
+      Setup (SPI2);
       Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);
-      Acquire (S, SPI2, Select_CB => CS_IO10'Access);   --  bring our own select
+      Acquire (S, SPI2, Clock_Hz => 8_000_000,
+               Select_CB => CS_IO10'Access);             --  bring our own select
       Select_Device (S, On => True);
       Transfer (S, Tx'Address, Rx'Address, 2);
       Select_Device (S, On => False);

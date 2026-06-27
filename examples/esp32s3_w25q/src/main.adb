@@ -69,9 +69,11 @@ procedure Main is
    --  dedicated chip holds no filesystem yet).
    Scratch : constant W25Q.Address := 16#10_0000#;
 
-   --  The flash device: SPI2 with its chip select on IO21.  The SPI driver owns
-   --  and drives that GPIO (active-low, held across each command) -- no callback.
-   Dev     : W25Q.Flash := (Host => SPI.SPI2, CS_Pin => CS_Pin, others => <>);
+   --  The flash device fully describes itself: SPI2, its own bit clock, and its
+   --  chip select on IO21.  The SPI driver applies the clock and drives the CS
+   --  GPIO (active-low, held across each command) at Acquire -- no callback.
+   Dev     : W25Q.Flash :=
+     (Host => SPI.SPI2, Clock_Hz => Clock_Hz, CS_Pin => CS_Pin, others => <>);
 
    ID        : W25Q.JEDEC_ID;
    Mode_OK   : Boolean;
@@ -111,9 +113,9 @@ begin
    delay until Clock + Milliseconds (200);
    Log.Put_Line ("[w25q] bare-metal Winbond SPI-NOR bring-up (SPI2, CS=IO21)");
 
-   SPI.Setup (SPI.SPI2, Mode => 0, Clock_Hz => Clock_Hz);
+   SPI.Setup (SPI.SPI2);
    SPI.Configure_Pins (SPI.SPI2, Sclk => SCLK_Pin, Mosi => MOSI_Pin,
-                       Miso => MISO_Pin, Cs => SPI.No_Pin);
+                       Miso => MISO_Pin);
 
    W25Q.Read_Identification (Dev, ID);
    Log.Put ("[w25q] JEDEC ID:");
