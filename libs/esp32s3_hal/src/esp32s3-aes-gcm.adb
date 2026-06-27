@@ -1,12 +1,19 @@
-package body ESP32S3.AES.GCM is
+package body ESP32S3.AES.GCM with SPARK_Mode => On is
 
    use type Interfaces.Unsigned_8;
    use type Interfaces.Unsigned_64;
 
    subtype Blk is ESP32S3.AES.Block;            --  16-byte block
 
+   --  The single-block cipher is the AES accelerator (silicon): out of Tier-A's
+   --  proof scope, so this wrapper -- and everything below that drives it (Inc32,
+   --  CTR, Setup, Encrypt, Decrypt) -- is SPARK_Mode (Off).  Only the GHASH
+   --  authenticator (GF_Mul / GHASH_*) is proved.
    function AES_E (Key : Key_Bytes; B : Blk) return Blk is
-     (ESP32S3.AES.Encrypt_ECB (Key, B));
+      pragma SPARK_Mode (Off);
+   begin
+      return ESP32S3.AES.Encrypt_ECB (Key, B);
+   end AES_E;
 
    ---------------------------------------------------------------------------
    --  GHASH: multiplication in GF(2^128), reduction poly x^128+x^7+x^2+x+1
@@ -49,7 +56,11 @@ package body ESP32S3.AES.GCM is
    end GHASH_Block;
 
    --  Fold Data into Y in 16-byte blocks, zero-padding any final partial block.
-   procedure GHASH_Bytes (Y : in out Blk; Data : Byte_Array; H : Blk) is
+   --  The headroom bound (Data ends well below Natural'Last) lets the block cursor
+   --  Off + 16 advance without overflow; real AEAD payloads are a few KiB.
+   procedure GHASH_Bytes (Y : in out Blk; Data : Byte_Array; H : Blk)
+     with Pre => Data'Last < Natural'Last - 16
+   is
       Off : Natural := 0;
       B   : Blk;
    begin
@@ -82,6 +93,7 @@ package body ESP32S3.AES.GCM is
 
    --  Increment the low 32 bits (bytes 12..15, big-endian) of a counter block.
    procedure Inc32 (CB : in out Blk) is
+      pragma SPARK_Mode (Off);                  --  counter-mode glue (out of scope)
    begin
       for J in reverse 12 .. 15 loop
          CB (J) := CB (J) + 1;
@@ -91,6 +103,7 @@ package body ESP32S3.AES.GCM is
 
    --  Cipher := Plain xor AES-CTR keystream starting at inc32 (J0).
    procedure CTR (Key : Key_Bytes; J0 : Blk; Src : Byte_Array; Dst : out Byte_Array) is
+      pragma SPARK_Mode (Off);                  --  drives the AES block (silicon)
       CB  : Blk := J0;
       KS  : Blk;
       Off : Natural := 0;
@@ -107,6 +120,7 @@ package body ESP32S3.AES.GCM is
 
    --  Build the GCM hash subkey H and pre-counter J0 (96-bit IV => IV||0^31||1).
    procedure Setup (Key : Key_Bytes; IV : Nonce; H, J0, E_J0 : out Blk) is
+      pragma SPARK_Mode (Off);                  --  drives the AES block (silicon)
    begin
       H  := AES_E (Key, Blk'(others => 0));
       J0 := (others => 0);
@@ -128,6 +142,7 @@ package body ESP32S3.AES.GCM is
                       Cipher : out Byte_Array;
                       Tag    : out Auth_Tag)
    is
+      pragma SPARK_Mode (Off);                  --  AEAD glue over the AES block
       H, J0, E_J0 : Blk;
       Y : Blk := (others => 0);
    begin
@@ -149,6 +164,7 @@ package body ESP32S3.AES.GCM is
                       Plain  : out Byte_Array;
                       Ok     : out Boolean)
    is
+      pragma SPARK_Mode (Off);                  --  AEAD glue over the AES block
       H, J0, E_J0 : Blk;
       Y    : Blk := (others => 0);
       Diff : U8  := 0;

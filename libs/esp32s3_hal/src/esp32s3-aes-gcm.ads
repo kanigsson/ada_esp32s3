@@ -5,7 +5,7 @@ with Interfaces;
 --  the hash subkey), while CTR-XOR and the GHASH GF(2^128) authenticator are done
 --  here in software.  AES-128 and AES-256 (16- or 32-byte keys), a 12-byte nonce
 --  and a 16-byte tag -- the shapes TLS uses.  Lock-free / ZFP-safe.
-package ESP32S3.AES.GCM is
+package ESP32S3.AES.GCM with SPARK_Mode => On is
 
    subtype U8 is Interfaces.Unsigned_8;
    type Byte_Array is array (Natural range <>) of U8;

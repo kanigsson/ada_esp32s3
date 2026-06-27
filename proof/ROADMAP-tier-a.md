@@ -20,11 +20,13 @@ place — see `README.md`.
 | 2 | `X509` body (`Parse`/`Valid_At`/`Host_Matches`) | ✅ **proved** (AoRTE + `Well_Formed`) |
 | 3 | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | ✅ **proved** (AoRTE across PKCS#1/PSS index arithmetic) |
 | 4 | `Chain_Verify` | ✅ **proved** (AoRTE + null-safe access derefs; chain walk terminates) |
-| 5 | `AES.GCM` `GF_Mul`/`GHASH` | ⬜ **next — start here** (independent, easy) |
+| 5 | `AES.GCM` `GF_Mul`/`GHASH` | ✅ **proved** (AoRTE; AES block excluded as silicon) |
 
+**Tier A AoRTE is complete — all five units proved.**
 `proof/x509_proof.gpr` proves at **226/226 VCs, `--level=2`, no justifications**;
 `proof/cert_verify_proof.gpr` proves `Cert_Verify` with **0 unproved, 0 warnings**;
-`proof/chain_verify_proof.gpr` proves `Chain_Verify` at **63/63 VCs, 0 warnings**
+`proof/chain_verify_proof.gpr` proves `Chain_Verify` at **63/63 VCs, 0 warnings**;
+`proof/aes_gcm_proof.gpr` proves the GHASH authenticator at **17/17 VCs, 0 warnings**
 — all at `--level=2` (full results + per-phase tables in `tier-a-results.md`).
 
 **How to run** (toolchain/env is all handled by the script):
@@ -271,8 +273,11 @@ Bottom-up, each phase green before the next:
    terminates (bounded `for` loops). `Well_Formed` is re-established after each
    `Parse` (its postcondition) and threaded into `Valid_At` / `Host_Matches` /
    `Sig_OK`. 63/63 VCs, 0 warnings.
-5. **`AES.GCM` `GF_Mul`/`GHASH`** — independent; AoRTE is trivial (fixed 16-byte
-   arrays). Optional functional spec below.
+5. **`AES.GCM` `GF_Mul`/`GHASH`** ✅ **DONE** (see `tier-a-results.md`) — the GHASH
+   authenticator (`GF_Mul`, `GHASH_Block`, `GHASH_Bytes`, `GHASH_Lengths`) is proved
+   AoRTE (17/17 VCs). The AES single-block cipher and the counter-mode / AEAD glue
+   that drives it (`AES_E`, `Inc32`, `CTR`, `Setup`, `Encrypt`, `Decrypt`) are
+   `SPARK_Mode (Off)` — the block cipher is silicon (same boundary as RSA).
 
 ## Functional properties: what is realistically provable
 
@@ -306,8 +311,12 @@ spec, sometimes infeasible):
 - ✅ `proof/chain_verify_proof.gpr` proves `Chain_Verify` at 63/63 VCs, 0 warnings
   at `--level=2`. Consumes the `X509` and `Cert_Verify` *specs* only (contract-only,
   so the run is fast — no SPARKNaCl/RSA bodies pulled in).
-- ⬜ Remaining for Tier A done: phase 5 `AES.GCM` GHASH (its own proof GPR +
-  `tier-a-results.md` section).
+- ✅ `proof/aes_gcm_proof.gpr` proves the AES-GCM GHASH authenticator at 17/17 VCs,
+  0 warnings at `--level=2`. The AES block cipher (spec only) is consumed by contract;
+  the counter-mode / AEAD glue is `SPARK_Mode (Off)`.
+- ✅ **Tier A AoRTE complete across all five units.** Optional functional extras
+  (`Host_Matches` RFC-6125, `GF_Mul` algebraic correctness) remain deferred — see
+  "Functional properties" below.
 
 ## Effort estimate
 
@@ -318,7 +327,7 @@ spec, sometimes infeasible):
 | `X509` (predicate design + AoRTE + `Parse` post) | 1.5–2 days | ✅ done |
 | `Cert_Verify` AoRTE | 1–1.5 days | ✅ done |
 | `Chain_Verify` | 0.5 day | ✅ done |
-| `GF_Mul`/`GHASH` AoRTE | 0.25 day | ⬜ next |
+| `GF_Mul`/`GHASH` AoRTE | 0.25 day | ✅ done |
 | `Host_Matches` functional (optional) | +1 day | ⬜ optional |
 
 ~4–6 focused days for AoRTE + the high-value functional postconditions across

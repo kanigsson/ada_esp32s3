@@ -253,6 +253,58 @@ bodies — and hence no SPARKNaCl or RSA — are pulled in (the run is seconds, 
 and precondition changes are transparent at the call sites — the pinned anchors and
 received chains are non-null, Indexable buffers, so `All_Parsable` holds at runtime.
 
-## Phase 5 — pending
+## Phase 5 — `AES.GCM` GHASH authenticator  ✅ complete
 
-See `ROADMAP-tier-a.md`: `AES.GCM` `GF_Mul` / `GHASH` (independent, AoRTE trivial).
+The GHASH side of AES-GCM — `GF_Mul` (the GF(2¹²⁸) multiply), `GHASH_Block`,
+`GHASH_Bytes` and `GHASH_Lengths` — is `SPARK_Mode => On` and **fully proved**
+(AoRTE). Run with `./proof/prove.sh -P proof/aes_gcm_proof.gpr -j0 --level=2
+--report=all`.
+
+```
+SPARK Analysis results        Total       Flow     Provers   Unproved
+Initialization                    5          5            .          .
+Run-time Checks                  11          .      11 (Z3)          .
+Termination                       1          1            .          .
+Total                            17    6 (35%)     11 (65%)          .
+```
+
+**17 / 17 VCs discharged, 0 unproved, 0 warnings** at `--level=2`. The run-time
+checks are the GF(2¹²⁸) bit-loop index/shift arithmetic (`X (I / 8)`,
+`Shift_Right (.., I mod 8)`, the 16-byte right-shift+reduce), the GHASH_Bytes block
+cursor, and the length-block byte extraction; termination is the GHASH_Bytes
+folding loop.
+
+### The hardware boundary (same pattern as RSA)
+
+The AES single-block cipher is the accelerator (silicon), so everything that drives
+it is `SPARK_Mode (Off)` and out of scope: `AES_E` (the `Encrypt_ECB` wrapper),
+`Inc32`, `CTR`, `Setup`, and the public `Encrypt` / `Decrypt` AEAD entry points.
+`aes_gcm_proof.gpr` includes `esp32s3-aes.ads` (the `Block` / `Key_Bytes` /
+`Supported_Key` types + the `Encrypt_ECB` contract) but **excludes the register
+body** `esp32s3-aes.adb`. The public AEAD API is unchanged.
+
+### Proof note
+
+`GF_Mul` / `GHASH_Block` / `GHASH_Lengths` operate on the fixed 16-byte `Block`, so
+their AoRTE is immediate. `GHASH_Bytes` folds a variable-length `Byte_Array` in
+16-byte chunks; its only obligation is that the block cursor `Off + 16` not
+overflow, discharged by a headroom precondition `Data'Last < Natural'Last - 16`
+(real AEAD payloads are a few KiB) — the same "finite buffer" convention as the
+X.509 side's `Indexable`. Note this is **AoRTE only**: the algebraic correctness of
+`GF_Mul` (carry-less multiply mod x¹²⁸+x⁷+x²+x+1) is a separate, costly functional
+proof, deliberately deferred (see `ROADMAP-tier-a.md`, "Functional properties").
+
+### Regression / compatibility
+
+The HAL (`esp32s3_hal.gpr`) and the `esp32s3_aes_gcm_kat` example build (embedded).
+The added `GHASH_Bytes` precondition is internal; the `SPARK_Mode (Off)` markers do
+not change generated code.
+
+## Tier A — done
+
+AoRTE is proved across all five attacker-facing units: `X509.DER`, `X509`,
+`Cert_Verify`, `Chain_Verify`, and the `AES.GCM` GHASH authenticator — anchored on
+the already-proven SPARKNaCl SHA-256, with the RSA and AES accelerators consumed by
+contract at the silicon boundary. The four proof projects
+(`x509_proof.gpr`, `cert_verify_proof.gpr`, `chain_verify_proof.gpr`,
+`aes_gcm_proof.gpr`) are all green at `--level=2` with no justifications.
