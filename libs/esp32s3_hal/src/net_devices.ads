@@ -18,6 +18,11 @@ package Net_Devices is
    type MAC_Address  is array (0 .. 5) of Octet;
    subtype Port_Number is Interfaces.Unsigned_16;
 
+   --  How many interfaces a board may carry, and the id that names one in the
+   --  registry / routing table.  Bump Max_Interfaces if a board needs more.
+   Max_Interfaces : constant := 4;
+   type Interface_Id is range 0 .. Max_Interfaces - 1;
+
    --  Mirrors ESP32S3.W5500.Sockets.Status literal-for-literal (so a backend over
    --  that engine can convert by position).
    type Status is
