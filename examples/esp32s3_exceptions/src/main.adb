@@ -1,6 +1,7 @@
 --  Ada exception demonstration on the bare-metal ESP32-S3 (embedded profile)
 --  =========================================================================
---  Shows the four things that happen to an Ada exception, in order:
+--  What it demonstrates
+--    The four things that happen to an Ada exception, in order:
 --
 --    [1] LOCAL handling   -- raised and caught in the SAME block.
 --    [2] PROPAGATION      -- raised in a called subprogram, caught by its caller
@@ -12,11 +13,22 @@
 --                            prints the exception and halts; the runtime default
 --                            would reset the board.
 --
---  Built for the EMBEDDED profile: light-tasking is No_Exception_Propagation, so
---  [2]/[3] could not propagate there -- every raise would go straight to [4].
---  The demo prints with Ada.Text_IO (which the runtime now routes to the
---  USB-serial console); the last-chance handler uses esp_rom_printf directly,
---  since it runs in the fragile state just after an exception escaped everything.
+--  Build & run
+--    ./x run esp32s3_exceptions
+--    Built for the EMBEDDED profile: light-tasking is No_Exception_Propagation,
+--    so [2]/[3] could not propagate there -- every raise would go straight to
+--    [4]; embedded (and full) add zero-cost (ZCX) exception propagation.
+--
+--  Output
+--    Prints "[1]".."[4]" with the caught exception names/messages, then the
+--    last-chance handler's "*** LAST CHANCE HANDLER ... ***" line and halts.
+--    The demo body prints with Ada.Text_IO (which the runtime now routes to the
+--    USB-serial console); the last-chance handler uses esp_rom_printf directly,
+--    since it runs in the fragile state just after an exception escaped
+--    everything.
+--
+--  Hardware
+--    None (self-contained); USB-serial console only.
 with Ada.Text_IO;    use Ada.Text_IO;
 with Ada.Exceptions; use Ada.Exceptions;
 with Ada.Real_Time;  use Ada.Real_Time;

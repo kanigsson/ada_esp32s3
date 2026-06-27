@@ -10,7 +10,7 @@ Attach\_Handler} is supported across all three profiles --- including the
 bare-board full \texttt{System.Interrupts} the \texttt{full} profile needs,
 which no stock bare-board runtime provides.
 
-\section{The Xtensa interrupt levels}
+\section{The Xtensa interrupt levels}\index{interrupts}\index{interrupt levels}\index{xt\_highint5}
 
 The ESP32-S3's Xtensa LX7 has six maskable interrupt levels plus a non-maskable
 one, and two of those levels are special:
@@ -40,7 +40,7 @@ priority may mask it, or it would silence the scheduler's own tick (this is why
 the Ada interrupt-priority ceilings are capped one below it; see the context-switch
 and CXD1006 discussions).
 
-\section{Priorities and the masking model}
+\section{Priorities and the masking model}\index{interrupt priorities}\index{interrupt masking}
 
 Ada interrupt priorities map onto Xtensa levels in
 \texttt{System.BB.Board\_Support.Priority\_Of\_Interrupt}: a hardware interrupt's
@@ -53,7 +53,7 @@ gives symbolic IDs for the slots that are free for application use:
 The tick (16) and poke (31) are listed as kernel-reserved --- do not attach to
 them.
 
-\section{From silicon to handler}
+\section{From silicon to handler}\index{interrupt vector}\index{interrupt wrapper}
 
 \texttt{start.S} points \texttt{VECBASE} at our vendored vector table before
 anything else runs, so every vector is ours. When a level-5 interrupt fires
@@ -100,13 +100,13 @@ A device interrupt at level 2 or 3 follows the identical shape one level down
 (\texttt{EPS\_3/EPC\_3}, \texttt{rfi 3}, etc.), and may itself be preempted by the
 level-5 tick.
 
-\section{Attaching a handler: two axes}
+\section{Attaching a handler: two axes}\index{Attach\_Handler}\index{protected handler}
 
 It helps to keep two \emph{independent} distinctions apart. The first is
 \emph{which API layer} you attach through; the second --- which lives entirely
 inside the high-level layer --- is \emph{static versus dynamic} attachment.
 
-\subsection{Axis 1 --- API layer (high level vs low level)}
+\subsection{Axis 1 --- API layer (high level vs low level)}\index{Ada.Interrupts}
 
 \textbf{High level --- \texttt{Ada.Interrupts} / \texttt{pragma Attach\_Handler}.}
 The portable Ada way: the handler is a protected procedure, the enclosing
@@ -175,7 +175,7 @@ package body Low is
 end Low;
 \end{lstlisting}
 
-\subsection{Axis 2 --- static vs dynamic (within the high-level layer)}
+\subsection{Axis 2 --- static vs dynamic (within the high-level layer)}\index{dynamic attachment}
 
 Static versus dynamic is the dividing line of the \texttt{No\_Dynamic\_Attachment}
 restriction; it only concerns the high-level \texttt{Ada.Interrupts} layer.
@@ -244,7 +244,7 @@ while the low-level \texttt{System.BB.Interrupts} primitive sits beneath both --
 itself a run-time call, but \emph{not} the Ada \texttt{No\_Dynamic\_Attachment}
 notion of ``dynamic''.
 
-\section{Why the profiles differ}
+\section{Why the profiles differ}\index{runtime profile}\index{System.Interrupts}
 
 The high-level form compiles differently depending on the tasking profile, and
 that is the crux:
@@ -273,7 +273,7 @@ For a long time, then, a \texttt{full}-profile build of an \texttt{Ada.Interrupt
 handler simply failed with \texttt{construct not allowed in this configuration}
 and \texttt{System.Interrupts.Register\_Interrupt\_Handler not defined}.
 
-\subsection{The bare-board full \texttt{System.Interrupts}}
+\subsection{The bare-board full \texttt{System.Interrupts}}\index{umbrella handler}
 
 That gap is now closed. \texttt{full\_overlay/gnarl/s-interr}
 is a bare-board re-implementation of the full \texttt{System.Interrupts}
@@ -329,7 +329,7 @@ on an embedded target that never exits, and the low-level
 \texttt{System.BB.Interrupts.Attach\_Handler} primitive remains available on all
 profiles as the no-finalization escape hatch.
 
-\section{Exercising the vectors}
+\section{Exercising the vectors}\index{CPU\_INT}
 
 Because a bug in the vectors (a corrupted context, a dropped interrupt) is exactly
 the kind of thing that hides until the worst moment, the

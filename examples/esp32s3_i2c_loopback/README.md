@@ -64,6 +64,6 @@ So the **READ** direction and the ACK handshake can only be verified against a
 ./x flash esp32s3_i2c_loopback -p /dev/ttyACM0
 ```
 
-The Ada is built against the pinned `esp32s3_rts` runtime by
-`main/build_ada.sh`; the report prints over the USB-Serial-JTAG console via the
-ROM `esp_rom_printf` glue in `main/glue.c`.
+The Ada is built against the pinned `esp32s3_rts` runtime by the shared
+`examples/common/bare/build_ada.sh`; the report prints over the USB-Serial-JTAG
+console via the ROM `esp_rom_printf` glue in `glue.c`.

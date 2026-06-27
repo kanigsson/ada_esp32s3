@@ -10,7 +10,7 @@ broken context switch. This chapter walks through the mechanism end to end: wher
 it lives, the state it must preserve, the two completely different ways it is
 entered, and how the trickier parts were verified on hardware.
 
-\section{Where it lives}
+\section{Where it lives}\index{context switch}
 
 The switch spans three files, two languages, and the boundary between the generic
 GNARL kernel and this CPU port:
@@ -38,7 +38,7 @@ defined simply as \texttt{First\_Thread /= Running\_Thread}. When the highest
 ready task is not the one on the CPU, the kernel calls
 \texttt{CPU\_Primitives.Context\_Switch} and the machinery below takes over.
 
-\section{The data structures}
+\section{The data structures}\index{context buffer}\index{stack pointer}\index{thread table}
 
 Two structures carry the state.
 
@@ -70,7 +70,7 @@ first field is the \texttt{Context\_Buffer}. The switch updates
 \texttt{Running := First} as part of resuming, so the table always names the live
 task.
 
-\section{The windowed-ABI premise}
+\section{The windowed-ABI premise}\index{register window}\index{window overflow}
 
 On the Xtensa windowed ABI a \texttt{call} does not push registers; it
 \emph{rotates} a 64-entry physical register file so the callee sees a fresh
@@ -89,7 +89,7 @@ task returns up its own call chain. This is why the \texttt{Context\_Buffer} is 
 small, and why this port is closest in spirit to the SPARC (LEON) windowed port
 rather than the flat ARM and RISC-V ones.
 
-\section{Two ways in}
+\section{Two ways in}\index{preemption}\index{interrupt frame}
 
 A task can lose the CPU two very different ways, and the switch handles them with
 two different entry points.
@@ -120,7 +120,7 @@ stack pointer down one frame per tick until a window spill double-faulted
 \textemdash{} is the story behind several of the comments in \texttt{highint5.S}
 and \texttt{context\_switch.S}, and behind ACATS \texttt{CXD8002}.)
 
-\section{Dual-format dispatch}
+\section{Dual-format dispatch}\index{WINDOWBASE}\index{PS register}
 
 Because a task can be saved either way, each \texttt{Context\_Buffer} records its
 \texttt{Frame\_Kind}, and the shared resume code reads it to resume correctly:
@@ -181,7 +181,7 @@ The L5 timer fires while a compute task runs:
         interrupt via \texttt{\_xt\_context\_restore} + \texttt{rfi}.
 \end{enumerate}
 
-\section{Starting a task that has never run}
+\section{Starting a task that has never run}\index{task stack}\index{trampoline}
 
 A brand-new task has no spilled frames to reload, so its first dispatch cannot use
 \texttt{retw}. \texttt{Initialize\_Context} sets the new buffer's \texttt{PC} field
@@ -193,7 +193,7 @@ loop registers are zero-initialised (a non-zero \texttt{LCOUNT} would make the
 hardware spuriously loop on first entry) and \texttt{THREADPTR} starts at zero,
 i.e.\ ``no thread-local storage'' until the task sets it.
 
-\section{What state is saved \textemdash{} and what is not}
+\section{What state is saved \textemdash{} and what is not}\index{coprocessor state}\index{THREADPTR}
 
 \begin{longtable}{p{5.5cm} p{2.2cm} p{5.5cm}}
 \textbf{State} & \textbf{Saved?} & \textbf{Notes} \\ \hline

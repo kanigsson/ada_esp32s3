@@ -116,4 +116,4 @@ end;
 
 Built as the **embedded** profile (the drivers target it). The report prints
 over the USB-Serial-JTAG console via the ROM `esp_rom_printf` glue in
-`main/glue.c`.
+`glue.c`.

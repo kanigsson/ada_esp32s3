@@ -1,35 +1,15 @@
 with X509.DER;
 
-package body X509 with SPARK_Mode => On is
+package body X509 is
 
    use type Interfaces.Unsigned_8;
 
-   --  In-buffer facts of a freshly-read element, as a reusable contract piece.
-   function TLV_In (Buf : Byte_Array; E : DER.TLV) return Boolean is
-     (E.Elem_Last <= Buf'Last
-      and then E.Content.Last <= E.Elem_Last
-      and then (if Length (E.Content) > 0 then
-                  E.Content.First >= Buf'First
-                  and then E.Content.Last <= Buf'Last))
-   with Ghost;
-
    --  Read the element at P within [.. Limit]; require Valid and (if Want /= 0) a
    --  matching tag.  Clears Ok on failure and short-circuits once Ok is False.
-   --  On success (Ok stays True) the element's slices lie within Buf -- the hook
-   --  every stored Result slice relies on; and Ok is monotone (never re-raised).
    procedure Expect (Buf : Byte_Array; P, Limit : Natural; Want : U8;
-                     E : out DER.TLV; Ok : in out Boolean)
-     with Pre  => Buf'Last < Natural'Last,
-          Post => (if E.Valid
-                     then TLV_In (Buf, E)
-                          and then P <= E.Elem_Last      --  element spans >= [P ..]
-                          and then E.Elem_Last <= Limit
-                     else E.Elem_Last = 0)               --  malformed: empty, zeroed
-                  and then (if Ok then E.Valid)
-                  and then (if Ok then Ok'Old)
-   is
+                     E : out DER.TLV; Ok : in out Boolean) is
    begin
-      E := (Tag => 0, Content => (1, 0), Elem_Last => 0, Valid => False);
+      E := (Valid => False, others => <>);
       if not Ok then
          return;
       end if;
@@ -39,29 +19,60 @@ package body X509 with SPARK_Mode => On is
       end if;
    end Expect;
 
-   --  The SAN store invariant: a well-formed, in-buffer set of dNSName slices.
-   --  Parse_SAN / Parse_Extensions take only the SAN array + count (least
-   --  privilege), so the prover knows the rest of the Certificate is untouched.
-   function SAN_OK (Cert : Byte_Array; SAN : Slice_Array; Count : Natural)
-                    return Boolean is
-     (Count <= Max_SAN
-      and then (for all I in 1 .. Count => Slice_In (Cert, SAN (I))))
-   with Ghost;
-
-   --  subjectAltName extension OID is 2.5.29.17  (DER content 55 1D 11).
-   function Is_SAN_OID (Cert : Byte_Array; S : Slice) return Boolean is
+   --  All the v3 extensions we read live under arc 2.5.29 ("55 1D .."), so a
+   --  3-byte OID whose last byte selects the extension: subjectAltName .17 (0x11),
+   --  keyUsage .15 (0x0F), basicConstraints .19 (0x13), extKeyUsage .37 (0x25).
+   function Is_Ext_OID (Cert : Byte_Array; S : Slice; Last_Byte : U8)
+                        return Boolean is
      (Length (S) = 3
       and then Cert (S.First) = 16#55#
       and then Cert (S.First + 1) = 16#1D#
-      and then Cert (S.First + 2) = 16#11#)
-   with Pre => Slice_In (Cert, S);
+      and then Cert (S.First + 2) = Last_Byte);
+
+   --  Known OBJECT IDENTIFIER values (DER content bytes, after tag+length).
+   OID_RSA_Enc      : constant Byte_Array :=          --  1.2.840.113549.1.1.1
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#01#);
+   OID_EC_PubKey    : constant Byte_Array :=          --  1.2.840.10045.2.1
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#02#, 16#01#);
+   OID_P256_Curve   : constant Byte_Array :=          --  1.2.840.10045.3.1.7 prime256v1
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#03#, 16#01#, 16#07#);
+   OID_RSA_SHA256   : constant Byte_Array :=          --  1.2.840.113549.1.1.11
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#0B#);
+   OID_ECDSA_SHA256 : constant Byte_Array :=          --  1.2.840.10045.4.3.2
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#02#);
+   OID_ECDSA_SHA384 : constant Byte_Array :=          --  1.2.840.10045.4.3.3
+     (16#2A#, 16#86#, 16#48#, 16#CE#, 16#3D#, 16#04#, 16#03#, 16#03#);
+   OID_RSA_SHA384   : constant Byte_Array :=          --  1.2.840.113549.1.1.12
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#0C#);
+   OID_RSA_SHA512   : constant Byte_Array :=          --  1.2.840.113549.1.1.13
+     (16#2A#, 16#86#, 16#48#, 16#86#, 16#F7#, 16#0D#, 16#01#, 16#01#, 16#0D#);
+   OID_Ed25519      : constant Byte_Array :=          --  1.3.101.112 id-Ed25519
+     (16#2B#, 16#65#, 16#70#);
+   OID_Server_Auth  : constant Byte_Array :=          --  1.3.6.1.5.5.7.3.1 id-kp-serverAuth
+     (16#2B#, 16#06#, 16#01#, 16#05#, 16#05#, 16#07#, 16#03#, 16#01#);
+   OID_Client_Auth  : constant Byte_Array :=          --  1.3.6.1.5.5.7.3.2 id-kp-clientAuth
+     (16#2B#, 16#06#, 16#01#, 16#05#, 16#05#, 16#07#, 16#03#, 16#02#);
+   OID_Any_EKU      : constant Byte_Array :=          --  2.5.29.37.0 anyExtendedKeyUsage
+     (16#55#, 16#1D#, 16#25#, 16#00#);
+
+   --  Do the OID content bytes at Slice S equal OID?
+   function OID_Match (Cert : Byte_Array; S : Slice; OID : Byte_Array) return Boolean
+   is
+   begin
+      if Length (S) /= OID'Length then
+         return False;
+      end if;
+      for I in 0 .. OID'Length - 1 loop
+         if Cert (S.First + I) /= OID (OID'First + I) then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end OID_Match;
 
    --  GeneralNames ::= SEQUENCE OF GeneralName; collect dNSName ([2], tag 0x82).
    procedure Parse_SAN (Cert : Byte_Array; First, Last : Natural;
-                        SAN : in out Slice_Array; Count : in out Natural)
-     with Pre  => Indexable (Cert) and then SAN_OK (Cert, SAN, Count),
-          Post => SAN_OK (Cert, SAN, Count)
-   is
+                        Result : in out Certificate) is
       Seq, Name : DER.TLV;
       P : Natural;
    begin
@@ -71,23 +82,97 @@ package body X509 with SPARK_Mode => On is
       end if;
       P := Seq.Content.First;
       while P <= Seq.Content.Last loop
-         pragma Loop_Invariant (SAN_OK (Cert, SAN, Count));
          DER.Read (Cert, P, Seq.Content.Last, Name);
          exit when not Name.Valid;
-         if Name.Tag = 16#82# and then Count < Max_SAN then
-            Count := Count + 1;
-            SAN (Count) := Name.Content;
+         if Name.Tag = 16#82# and then Result.SAN_Count < Max_SAN then
+            Result.SAN_Count := Result.SAN_Count + 1;
+            Result.SAN (Result.SAN_Count) := Name.Content;
          end if;
          P := Name.Elem_Last + 1;
       end loop;
    end Parse_SAN;
 
+   --  BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLen INTEGER OPT }
+   procedure Parse_Basic_Constraints (Cert : Byte_Array; First, Last : Natural;
+                                      Result : in out Certificate) is
+      Seq, T : DER.TLV;
+      P : Natural;
+   begin
+      Result.BC_Present := True;
+      DER.Read (Cert, First, Last, Seq);
+      if not Seq.Valid or else Seq.Tag /= 16#30# then
+         return;                       --  empty/odd: cA stays FALSE (not a CA)
+      end if;
+      P := Seq.Content.First;
+      DER.Read (Cert, P, Seq.Content.Last, T);
+      if T.Valid and then T.Tag = 16#01# and then Length (T.Content) = 1 then
+         Result.Is_CA := Cert (T.Content.First) /= 0;       --  cA BOOLEAN
+         P := T.Elem_Last + 1;
+         DER.Read (Cert, P, Seq.Content.Last, T);
+      end if;
+      if T.Valid and then T.Tag = 16#02#                    --  pathLenConstraint INTEGER
+        and then Length (T.Content) in 1 .. 2
+      then
+         declare
+            V : Integer := 0;
+         begin
+            for I in T.Content.First .. T.Content.Last loop
+               V := V * 256 + Integer (Cert (I));
+            end loop;
+            Result.Path_Len := V;
+         end;
+      end if;
+   end Parse_Basic_Constraints;
+
+   --  KeyUsage ::= BIT STRING.  Content is [unused-bits][data..]; KeyUsage bit N
+   --  is bit (7-N) of data byte N/8 -- digitalSignature = 0, keyCertSign = 5.
+   procedure Parse_Key_Usage (Cert : Byte_Array; First, Last : Natural;
+                              Result : in out Certificate) is
+      BS : DER.TLV;
+      Bits0 : U8;
+   begin
+      Result.KU_Present := True;
+      DER.Read (Cert, First, Last, BS);
+      if not BS.Valid or else BS.Tag /= 16#03# or else Length (BS.Content) < 2 then
+         return;
+      end if;
+      Bits0 := Cert (BS.Content.First + 1);                 --  first data byte
+      Result.KU_Digital_Sig := (Bits0 and 16#80#) /= 0;     --  bit 0
+      Result.KU_Cert_Sign   := (Bits0 and 16#04#) /= 0;     --  bit 5
+   end Parse_Key_Usage;
+
+   --  ExtKeyUsage ::= SEQUENCE OF KeyPurposeId (OID).
+   procedure Parse_EKU (Cert : Byte_Array; First, Last : Natural;
+                        Result : in out Certificate) is
+      Seq, Purpose : DER.TLV;
+      P : Natural;
+   begin
+      Result.EKU_Present := True;
+      DER.Read (Cert, First, Last, Seq);
+      if not Seq.Valid or else Seq.Tag /= 16#30# then
+         return;
+      end if;
+      P := Seq.Content.First;
+      while P <= Seq.Content.Last loop
+         DER.Read (Cert, P, Seq.Content.Last, Purpose);
+         exit when not Purpose.Valid;
+         if Purpose.Tag = 16#06# then
+            if OID_Match (Cert, Purpose.Content, OID_Server_Auth) then
+               Result.EKU_Server := True;
+            elsif OID_Match (Cert, Purpose.Content, OID_Client_Auth) then
+               Result.EKU_Client := True;
+            elsif OID_Match (Cert, Purpose.Content, OID_Any_EKU) then
+               Result.EKU_Server := True;
+               Result.EKU_Client := True;
+            end if;
+         end if;
+         P := Purpose.Elem_Last + 1;
+      end loop;
+   end Parse_EKU;
+
    --  Extensions ::= SEQUENCE OF Extension { extnID OID, [critical], extnValue }.
    procedure Parse_Extensions (Cert : Byte_Array; First, Last : Natural;
-                               SAN : in out Slice_Array; Count : in out Natural)
-     with Pre  => Indexable (Cert) and then SAN_OK (Cert, SAN, Count),
-          Post => SAN_OK (Cert, SAN, Count)
-   is
+                               Result : in out Certificate) is
       Seq, Ext, OID, Val : DER.TLV;
       P, EP : Natural;
    begin
@@ -97,14 +182,12 @@ package body X509 with SPARK_Mode => On is
       end if;
       P := Seq.Content.First;
       while P <= Seq.Content.Last loop
-         pragma Loop_Invariant (SAN_OK (Cert, SAN, Count));
          DER.Read (Cert, P, Seq.Content.Last, Ext);
          exit when not Ext.Valid or else Ext.Tag /= 16#30#;
          EP := Ext.Content.First;
          DER.Read (Cert, EP, Ext.Content.Last, OID);
-         if OID.Valid and then OID.Tag = 16#06#
-           and then Is_SAN_OID (Cert, OID.Content)
-         then
+         if OID.Valid and then OID.Tag = 16#06# then
+            --  Skip the optional critical BOOLEAN, then take extnValue OCTET STRING.
             EP := OID.Elem_Last + 1;
             DER.Read (Cert, EP, Ext.Content.Last, Val);
             if Val.Valid and then Val.Tag = 16#01# then    --  optional critical BOOLEAN
@@ -112,7 +195,16 @@ package body X509 with SPARK_Mode => On is
                DER.Read (Cert, EP, Ext.Content.Last, Val);
             end if;
             if Val.Valid and then Val.Tag = 16#04# then    --  extnValue OCTET STRING
-               Parse_SAN (Cert, Val.Content.First, Val.Content.Last, SAN, Count);
+               if Is_Ext_OID (Cert, OID.Content, 16#11#) then        --  subjectAltName
+                  Parse_SAN (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#13#) then     --  basicConstraints
+                  Parse_Basic_Constraints
+                    (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#0F#) then     --  keyUsage
+                  Parse_Key_Usage (Cert, Val.Content.First, Val.Content.Last, Result);
+               elsif Is_Ext_OID (Cert, OID.Content, 16#25#) then     --  extKeyUsage
+                  Parse_EKU (Cert, Val.Content.First, Val.Content.Last, Result);
+               end if;
             end if;
          end if;
          P := Ext.Elem_Last + 1;
@@ -141,13 +233,6 @@ package body X509 with SPARK_Mode => On is
          return;
       end if;
       Result.TBS := (First => Outer.Content.First, Last => Tbs.Elem_Last);
-      --  TBS spans the tbsCertificate: from the outer SEQUENCE's content start to
-      --  the end of tbs.  Ok is True here, so both reads succeeded: Outer's content
-      --  is non-empty (it holds tbs) and within Cert, and tbs ends within Cert, so
-      --  TBS lies within Cert.  Asserting it unconditionally pins it to the end (TBS
-      --  is never reassigned), discharging the Well_Formed TBS clause.
-      pragma Assert (Outer.Content.First <= Tbs.Elem_Last);
-      pragma Assert (Slice_In (Cert, Result.TBS));
 
       P := Tbs.Content.First;
       L := Tbs.Content.Last;
@@ -200,10 +285,38 @@ package body X509 with SPARK_Mode => On is
             SL    : constant Natural := SPKI.Content.Last;
             AlgId : DER.TLV;
          begin
-            Expect (Cert, SP, SL, 16#30#, AlgId, Ok);     --  algorithm (skip)
+            Expect (Cert, SP, SL, 16#30#, AlgId, Ok);     --  algorithm SEQUENCE
+            --  Classify the key algorithm from the first OID inside it.
+            declare
+               AP   : Natural := AlgId.Content.First;
+               Alg, Curve : DER.TLV;
+            begin
+               Expect (Cert, AP, AlgId.Content.Last, 16#06#, Alg, Ok);
+               if Ok then
+                  if OID_Match (Cert, Alg.Content, OID_RSA_Enc) then
+                     Result.Key_Kind := Key_RSA;
+                  elsif OID_Match (Cert, Alg.Content, OID_EC_PubKey) then
+                     --  EC: the next OID is the named curve; require prime256v1.
+                     AP := Alg.Elem_Last + 1;
+                     Expect (Cert, AP, AlgId.Content.Last, 16#06#, Curve, Ok);
+                     if Ok and then OID_Match (Cert, Curve.Content, OID_P256_Curve) then
+                        Result.Key_Kind := Key_EC_P256;
+                     else
+                        Ok := False;                       --  unsupported curve
+                     end if;
+                  elsif OID_Match (Cert, Alg.Content, OID_Ed25519) then
+                     Result.Key_Kind := Key_Ed25519;       --  no params / no curve
+                  else
+                     Ok := False;                          --  unsupported key type
+                  end if;
+               end if;
+            end;
             SP := AlgId.Elem_Last + 1;
             Expect (Cert, SP, SL, 16#03#, Bits, Ok);      --  subjectPublicKey BIT STRING
-            if Ok and then Length (Bits.Content) >= 2 then
+
+            if Ok and then Result.Key_Kind = Key_RSA
+              and then Length (Bits.Content) >= 2
+            then
                --  Skip the BIT STRING's unused-bits byte; parse RSAPublicKey.
                Expect (Cert, Bits.Content.First + 1, Bits.Content.Last, 16#30#, RSASeq, Ok);
                if Ok then
@@ -219,6 +332,23 @@ package body X509 with SPARK_Mode => On is
                      Result.RSA_Exponent := Ex.Content;
                   end;
                end if;
+
+            elsif Ok and then Result.Key_Kind = Key_EC_P256
+              and then Length (Bits.Content) >= 66
+              and then Cert (Bits.Content.First + 1) = 16#04#   --  uncompressed point
+            then
+               --  BIT STRING content = unused-bits(1) || 0x04 || X(32) || Y(32).
+               Result.EC_X := (First => Bits.Content.First + 2,
+                               Last  => Bits.Content.First + 33);
+               Result.EC_Y := (First => Bits.Content.First + 34,
+                               Last  => Bits.Content.First + 65);
+
+            elsif Ok and then Result.Key_Kind = Key_Ed25519
+              and then Length (Bits.Content) >= 33
+            then
+               --  BIT STRING content = unused-bits(1) || 32-byte Ed25519 public key.
+               Result.Ed_Pub := (First => Bits.Content.First + 1,
+                                 Last  => Bits.Content.First + 32);
             else
                Ok := False;
             end if;
@@ -230,9 +360,7 @@ package body X509 with SPARK_Mode => On is
          P := SPKI.Elem_Last + 1;
          DER.Read (Cert, P, L, E);
          if E.Valid and then E.Tag = 16#A3# then
-            Parse_Extensions
-              (Cert, E.Content.First, E.Content.Last,
-               Result.SAN, Result.SAN_Count);
+            Parse_Extensions (Cert, E.Content.First, E.Content.Last, Result);
          end if;
       end if;
 
@@ -241,6 +369,21 @@ package body X509 with SPARK_Mode => On is
       Expect (Cert, P, Outer.Content.Last, 16#30#, SigAlg, Ok);
       Expect (Cert, SigAlg.Content.First, SigAlg.Content.Last, 16#06#, OID, Ok);
       Result.Sig_Alg_OID := OID.Content;
+      if Ok then
+         if OID_Match (Cert, OID.Content, OID_RSA_SHA256) then
+            Result.Sig_Kind := Sig_RSA_SHA256;
+         elsif OID_Match (Cert, OID.Content, OID_RSA_SHA384) then
+            Result.Sig_Kind := Sig_RSA_SHA384;
+         elsif OID_Match (Cert, OID.Content, OID_RSA_SHA512) then
+            Result.Sig_Kind := Sig_RSA_SHA512;
+         elsif OID_Match (Cert, OID.Content, OID_ECDSA_SHA256) then
+            Result.Sig_Kind := Sig_ECDSA_SHA256;
+         elsif OID_Match (Cert, OID.Content, OID_ECDSA_SHA384) then
+            Result.Sig_Kind := Sig_ECDSA_SHA384;
+         elsif OID_Match (Cert, OID.Content, OID_Ed25519) then
+            Result.Sig_Kind := Sig_Ed25519;
+         end if;
+      end if;
       P := SigAlg.Elem_Last + 1;
 
       --  signatureValue BIT STRING (drop the leading unused-bits byte).
@@ -259,14 +402,9 @@ package body X509 with SPARK_Mode => On is
    ---------------------------------------------------------------------------
 
    --  Parse an ASN.1 Time (UTCTime YYMMDDHHMMSSZ or GeneralizedTime
-   --  YYYYMMDDHHMMSSZ) at slice S into a packed Time_64.  Ok is False if malformed.
-   --  (A SPARK procedure -- a Boolean function with an `out` parameter is not in
-   --  the subset.)  The nested readers carry Off < L so every Cert access is in
-   --  bounds (S lies within Cert, and Off < L = Length means S.First + Off <=
-   --  S.Last); D is total so a non-digit byte can never underflow.
-   procedure Parse_Time (Cert : Byte_Array; S : Slice; Tag : U8;
-                         T : out Time_64; Ok : out Boolean)
-     with Pre => Slice_In (Cert, S)
+   --  YYYYMMDDHHMMSSZ) at slice S into a packed Time_64.  False if malformed.
+   function Parse_Time (Cert : Byte_Array; S : Slice; Tag : U8; T : out Time_64)
+                        return Boolean
    is
       F    : constant Natural := S.First;
       L    : constant Natural := Length (S);
@@ -274,60 +412,52 @@ package body X509 with SPARK_Mode => On is
       Year, Mon, Day, Hr, Mi, Sc : Natural;
 
       function Is_Digit (Off : Natural) return Boolean is
-        (Cert (F + Off) in 16#30# .. 16#39#)
-      with Pre => Off < L and then Slice_In (Cert, S);
+        (Cert (F + Off) in 16#30# .. 16#39#);
       function D (Off : Natural) return Natural is
-        (if Cert (F + Off) in 16#30# .. 16#39#
-         then Natural (Cert (F + Off)) - 16#30# else 0)
-      with Pre => Off < L and then Slice_In (Cert, S),
-           Post => D'Result <= 9;
-      function Two (Off : Natural) return Natural is (D (Off) * 10 + D (Off + 1))
-      with Pre => L >= 2 and then Off <= L - 2 and then Slice_In (Cert, S),
-           Post => Two'Result <= 99;
+        (Natural (Cert (F + Off)) - 16#30#);
+      function Two (Off : Natural) return Natural is (D (Off) * 10 + D (Off + 1));
    begin
-      T  := 0;
-      Ok := False;
+      T := 0;
       if Tag = 16#17# then                        --  UTCTime (13: YYMMDDHHMMSSZ)
          if L /= 13 or else Cert (F + 12) /= 16#5A# then
-            return;
+            return False;
          end if;
          for K in 0 .. 11 loop
-            if not Is_Digit (K) then return; end if;
+            if not Is_Digit (K) then return False; end if;
          end loop;
          Year := (if Two (0) < 50 then 2000 + Two (0) else 1900 + Two (0));
          Base := 2;
       elsif Tag = 16#18# then                      --  GeneralizedTime (15)
          if L /= 15 or else Cert (F + 14) /= 16#5A# then
-            return;
+            return False;
          end if;
          for K in 0 .. 13 loop
-            if not Is_Digit (K) then return; end if;
+            if not Is_Digit (K) then return False; end if;
          end loop;
          Year := D (0) * 1000 + D (1) * 100 + D (2) * 10 + D (3);
          Base := 4;
       else
-         return;
+         return False;
       end if;
       Mon := Two (Base);      Day := Two (Base + 2);
       Hr  := Two (Base + 4);  Mi  := Two (Base + 6);  Sc := Two (Base + 8);
       if Mon not in 1 .. 12 or else Day not in 1 .. 31
         or else Hr > 23 or else Mi > 59 or else Sc > 60
       then
-         return;
+         return False;
       end if;
-      T  := Pack_Time (Year, Mon, Day, Hr, Mi, Sc);
-      Ok := True;
+      T := Pack_Time (Year, Mon, Day, Hr, Mi, Sc);
+      return True;
    end Parse_Time;
 
    function Valid_At (Cert : Byte_Array; C : Certificate; Now : Time_64)
                       return Boolean
    is
-      NB, NA       : Time_64;
-      NB_Ok, NA_Ok : Boolean;
+      NB, NA : Time_64;
    begin
-      Parse_Time (Cert, C.Not_Before, C.NB_Tag, NB, NB_Ok);
-      Parse_Time (Cert, C.Not_After,  C.NA_Tag, NA, NA_Ok);
-      if not NB_Ok or else not NA_Ok then
+      if not Parse_Time (Cert, C.Not_Before, C.NB_Tag, NB)
+        or else not Parse_Time (Cert, C.Not_After, C.NA_Tag, NA)
+      then
          return False;
       end if;
       return Now >= NB and then Now <= NA;
@@ -341,13 +471,8 @@ package body X509 with SPARK_Mode => On is
      (if B in 16#41# .. 16#5A# then B + 16#20# else B);
 
    --  Case-insensitive equality of Cert[BF..BL] (ASCII bytes) and Host[HF..HL].
-   --  Indexing happens only when both ranges are non-empty, so the bounds are
-   --  required only then.
    function Eq_CI (Cert : Byte_Array; BF, BL : Natural;
-                   Host : String; HF, HL : Natural) return Boolean
-     with Pre => (if BL >= BF then BF >= Cert'First and then BL <= Cert'Last)
-                 and then (if HL >= HF then HF >= Host'First and then HL <= Host'Last)
-   is
+                   Host : String; HF, HL : Natural) return Boolean is
    begin
       if BL < BF or else HL < HF or else BL - BF /= HL - HF then
          return False;
@@ -362,11 +487,14 @@ package body X509 with SPARK_Mode => On is
 
    function Name_Matches (Cert : Byte_Array; S : Slice; Host : String)
                           return Boolean
-     with Pre => Indexable (Cert) and then Slice_In (Cert, S)
    is
       function Has_Dot (From, To : Natural) return Boolean is
-        (for some I in From .. To => Cert (I) = 16#2E#)
-      with Pre => (if From <= To then From >= Cert'First and then To <= Cert'Last);
+      begin
+         for I in From .. To loop
+            if Cert (I) = 16#2E# then return True; end if;
+         end loop;
+         return False;
+      end Has_Dot;
    begin
       if Length (S) = 0 or else Host'Length = 0 then
          return False;

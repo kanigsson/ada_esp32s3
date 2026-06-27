@@ -12,9 +12,21 @@
 --            are written without reading.  The RX FIFO should throttle (RTS
 --            deasserts -> CTS deasserts -> the CTS-gated transmitter stalls)
 --            well below the total, then drain back fully and intact once read.
+--    test 3  per-line inversion: data loops TXD->RXD on one pad; inverting only
+--            TX flips the polarity the (non-inverted) RX expects, so the link
+--            breaks; inverting RX as well makes both ends agree again.
 --
---  A "PASS" line on the USB-Serial-JTAG console confirms each on silicon.  The
---  report goes through the ROM printf glue (the reliable console path here).
+--  Build & run:  ./x run esp32s3_uart_loopback
+--    The drivers need full exception propagation, so this runs on the embedded
+--    profile (build.sh sets ESP32S3_RTS_PROFILE=embedded), not the default
+--    light-tasking.
+--  Output:  a banner, the sent/recv byte dumps, then one PASS/FAIL line per
+--    test and "[uart] done.".  PASS on all three lines means the run succeeded.
+--    The report goes through the ROM printf glue (the reliable console path
+--    here).
+--  Hardware:  none (self-contained).  UART1's internal TX->RX loopback carries
+--    the data; the flow and inversion tests borrow free GPIOs (5 and 4) for an
+--    on-chip matrix/pad loopback -- no external wiring or jumpers.
 with Interfaces;    use Interfaces;
 with Ada.Real_Time; use Ada.Real_Time;
 
@@ -29,20 +41,32 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    use ESP32S3.UART;
 
+   --  The HAL UART controller under test.
    Port : constant UART_Port := UART1;
+
+   --  Line speed for every test; 8-N-1 frame format is the Setup default.
+   Baud_Rate : constant := 115_200;
 
    --  A free GPIO that RTS drives and CTS reads back (matrix loopback of the
    --  flow lines; data stays on the controller's internal TX->RX loopback).
-   Flow_Pad : constant := 5;
-   Threshold : constant := 8;       --  RTS deasserts when RX FIFO hits 8 bytes
+   Flow_Control_Pad : constant := 5;
+
+   --  RTS deasserts once the RX FIFO holds this many unread bytes.  Kept low
+   --  (and well under the 128-byte FIFO) so the throttle is easy to observe.
+   Rx_Flow_Threshold : constant := 8;
 
    --  A free pad for the inversion test's TXD<->RXD single-pad loopback (CONF0
    --  line-invert applies at the I/O boundary, so this routes through a pad
    --  rather than the controller's internal loopback).
-   Inv_Pad : constant := 4;
-   Inv_Tx  : constant Byte_Array :=
+   Inversion_Pad : constant := 4;
+
+   --  Inversion-test pattern: a spread of bit patterns (all-0, all-1, the
+   --  alternating 0xA5/0x5A, nibble splits) so a polarity flip is unmissable.
+   Inversion_Tx : constant Byte_Array :=
      (16#00#, 16#FF#, 16#A5#, 16#5A#, 16#0F#, 16#F0#, 16#12#, 16#ED#);
 
+   --  Loopback-test pattern: 16 mixed bytes (sync/marker values plus a counting
+   --  ramp) so a stuck or shifted bit shows up in the byte-for-byte compare.
    Tx : constant Byte_Array :=
      (16#55#, 16#AA#, 16#00#, 16#FF#, 16#12#, 16#34#, 16#56#, 16#78#,
       16#9A#, 16#BC#, 16#DE#, 16#F0#, 16#0F#, 16#A5#, 16#5A#, 16#C3#);
@@ -61,33 +85,45 @@ procedure Main is
       New_Line;
    end Dump;
 
-   --  Flow-control test payload: 64 bytes (>> Threshold, < 128-byte FIFO).
+   --  Flow-control test payload: 64 bytes (>> Rx_Flow_Threshold, < 128-byte
+   --  FIFO) so the FIFO fills past the threshold but never overruns.
    Flow_Tx : Byte_Array (0 .. 63);
 
-   S      : Session;
-   Rx     : Byte_Array (Tx'Range);
-   Flow_Rx : Byte_Array (Flow_Tx'Range);
-   Inv_Rx  : Byte_Array (Inv_Tx'Range);
-   Got    : Natural;
-   Got2   : Natural;
+   --  The held-port handle; everything below runs through it.
+   S : Session;
+
+   --  Receive buffers, one per test, each sized to its sent payload.
+   Rx           : Byte_Array (Tx'Range);
+   Flow_Rx      : Byte_Array (Flow_Tx'Range);
+   Inversion_Rx : Byte_Array (Inversion_Tx'Range);
+
+   --  Byte counts the driver actually read back.
+   Loopback_Got  : Natural;
+   Flow_Got      : Natural;
+   Inversion_Got : Natural;   --  TX-only-inverted read (expected short/garbled)
+   Both_Got      : Natural;   --  TX+RX-inverted read (expected full + clean)
+
+   --  RX bytes available while TX is throttled; should sit near the threshold.
    Capped : Natural;
-   Equal  : Boolean;
-   Tx_Only_Broke : Boolean;
-   Tx_Rx_Match   : Boolean;
+
+   --  Per-test verdicts.
+   Equal             : Boolean;   --  reused: loopback compare, then flow compare
+   Tx_Only_Broke     : Boolean;   --  TX-only inversion broke the link (as wanted)
+   Tx_Rx_Match       : Boolean;   --  TX+RX inversion round-tripped intact
 begin
    delay until Clock + Milliseconds (200);   --  let the console settle
    Put_Line ("[uart] bare-metal UART self-test "
              & "(internal TX->RX loopback, no wiring)");
 
-   Setup (Port, Baud => 115_200);            --  8-N-1 defaults
+   Setup (Port, Baud => Baud_Rate);          --  8-N-1 defaults
 
    Acquire (S, Port);
    Enable_Loopback (S);                      --  internal TX->RX (held port)
    Write (S, Tx);
-   Read (S, Rx, Got);
+   Read (S, Rx, Loopback_Got);
    Release (S);
 
-   Equal := Got = Tx'Length;
+   Equal := Loopback_Got = Tx'Length;
    if Equal then
       for I in Tx'Range loop
          if Rx (I) /= Tx (I) then
@@ -97,16 +133,17 @@ begin
    end if;
 
    Dump (False, Tx, Tx'Length);              --  sent
-   Dump (True, Rx, Got);                     --  recv
+   Dump (True, Rx, Loopback_Got);            --  recv
    Put ("[uart] loopback: ");
    Put_Line (if Equal then "PASS" else "FAIL");
 
    ----------------------------------------------------------------------------
    --  Test 2: RTS/CTS hardware flow control.  RTS is matrix-looped to CTS on
-   --  Flow_Pad; data still uses the internal TX->RX loopback.  Writing 64 bytes
-   --  without reading fills the RX FIFO to ~Threshold, at which point RTS
-   --  deasserts -> CTS deasserts -> the CTS-gated transmitter stalls, capping RX
-   --  far below 64.  Draining then re-asserts RTS/CTS and the rest flows in.
+   --  Flow_Control_Pad; data still uses the internal TX->RX loopback.  Writing
+   --  64 bytes without reading fills the RX FIFO to ~Rx_Flow_Threshold, at which
+   --  point RTS deasserts -> CTS deasserts -> the CTS-gated transmitter stalls,
+   --  capping RX far below 64.  Draining then re-asserts RTS/CTS and the rest
+   --  flows in.
    ----------------------------------------------------------------------------
    for I in Flow_Tx'Range loop
       Flow_Tx (I) := Byte (I);
@@ -114,15 +151,15 @@ begin
 
    Acquire (S, Port);
    Configure_Pins (S,
-                   Rts => Flow_Pad, Cts => Flow_Pad,
-                   Rx_Flow_Threshold => Threshold);
+                   Rts => Flow_Control_Pad, Cts => Flow_Control_Pad,
+                   Rx_Flow_Threshold => Rx_Flow_Threshold);
    Write (S, Flow_Tx);                       --  64 bytes queued to the TX FIFO
    delay until Clock + Milliseconds (20);    --  let TX run until throttled
-   Capped := Available (S);                  --  RX should be stuck near Threshold
-   Read (S, Flow_Rx, Got);                   --  drain -> RTS re-asserts -> rest flows
+   Capped := Available (S);                  --  RX should be stuck near threshold
+   Read (S, Flow_Rx, Flow_Got);              --  drain -> RTS re-asserts -> rest flows
    Release (S);
 
-   Equal := Got = Flow_Tx'Length and then Capped < Flow_Tx'Length;
+   Equal := Flow_Got = Flow_Tx'Length and then Capped < Flow_Tx'Length;
    if Equal then
       for I in Flow_Tx'Range loop
          if Flow_Rx (I) /= Flow_Tx (I) then
@@ -147,15 +184,16 @@ begin
    ----------------------------------------------------------------------------
    --  TX inverted only -> polarity mismatch -> link should NOT round-trip cleanly.
    Acquire (S, Port);
-   Enable_Loopback (S, False);                         --  off; use a real pad
-   Configure_Pins (S, Tx => Inv_Pad, Rx => Inv_Pad);   --  single-pad loopback
+   Enable_Loopback (S, False);                          --  off; use a real pad
+   Configure_Pins (S, Tx => Inversion_Pad,
+                      Rx => Inversion_Pad);             --  single-pad loopback
    Set_Inversion (S, Tx => True);
-   Write (S, Inv_Tx);
-   Read  (S, Inv_Rx, Got);
+   Write (S, Inversion_Tx);
+   Read  (S, Inversion_Rx, Inversion_Got);
    Release (S);
-   Tx_Only_Broke := Got /= Inv_Tx'Length;
-   for I in Inv_Tx'First .. Inv_Tx'First + Got - 1 loop
-      if Inv_Rx (I) /= Inv_Tx (I) then
+   Tx_Only_Broke := Inversion_Got /= Inversion_Tx'Length;
+   for I in Inversion_Tx'First .. Inversion_Tx'First + Inversion_Got - 1 loop
+      if Inversion_Rx (I) /= Inversion_Tx (I) then
          Tx_Only_Broke := True;       --  any deviation = link broke (as expected)
       end if;
    end loop;
@@ -163,12 +201,12 @@ begin
    --  TX and RX both inverted -> ends agree again -> clean round-trip.
    Acquire (S, Port);
    Set_Inversion (S, Tx => True, Rx => True);
-   Write (S, Inv_Tx);
-   Read  (S, Inv_Rx, Got2);
+   Write (S, Inversion_Tx);
+   Read  (S, Inversion_Rx, Both_Got);
    Release (S);
-   Tx_Rx_Match := Got2 = Inv_Tx'Length;
-   for I in Inv_Tx'Range loop
-      if Inv_Rx (I) /= Inv_Tx (I) then
+   Tx_Rx_Match := Both_Got = Inversion_Tx'Length;
+   for I in Inversion_Tx'Range loop
+      if Inversion_Rx (I) /= Inversion_Tx (I) then
          Tx_Rx_Match := False;
       end if;
    end loop;

@@ -52,7 +52,7 @@ Everything above the ROM is Ada (with a little Xtensa assembly in board support)
 \label{fig:layers}
 \end{figure}
 
-\section{What runs before \texttt{Main}}
+\section{What runs before \texttt{Main}}\index{environment task}\index{elaboration}
 
 At power-on: ROM $\rightarrow$ our 2nd-stage bootloader (cache/MMU + PSRAM)
 $\rightarrow$ \texttt{start.S} (selects the 240\,MHz PLL, sets up the stack and
@@ -98,7 +98,7 @@ end Main;
 \texttt{delay until} is served by the board-support tick; \texttt{ESP32S3.GPIO} is
 the HAL; everything links against the runtime crate.
 
-\chapter{The Runtime Profiles}
+\chapter{The Runtime Profiles}\index{runtime profile}
 \label{ch:profiles}
 
 The runtime is offered in three \emph{profiles}, selected by the environment
@@ -132,7 +132,7 @@ are restricted to the richer two.
   the silicon. \\
 \end{longtable}
 
-\section{Choosing a profile}
+\section{Choosing a profile}\index{light-tasking profile}\index{embedded profile}\index{full profile}\index{Jorvik}
 
 \begin{itemize}
 \item Certifiable, deterministic, minimal-footprint firmware, or code that must
@@ -168,7 +168,7 @@ is safely reused across profiles without stale objects.
   writes the image.
 \end{itemize}
 
-\section{The \texttt{./x} helper}
+\section{The \texttt{./x} helper}\index{x helper script}
 
 From the repository root, the \texttt{./x} script builds, flashes, monitors and
 debugs any example by name:
@@ -207,7 +207,7 @@ Alire toolchain and the committed vendored blobs.
 
 \section{Packaging and flashing: two Ada host tools}
 
-\subsection{\texttt{esp\_elf2image} --- ELF to flash image}
+\subsection{\texttt{esp\_elf2image} --- ELF to flash image}\index{esp\_elf2image}
 
 \texttt{examples/common/bare/elf2image} converts \texttt{app.elf} into the
 ESP32-S3 flash image \texttt{app.bin} --- the exact on-flash format the chip's
@@ -234,7 +234,7 @@ hardware across every example. The packaging is more than a flat copy:
 The flash parameters (\texttt{dio}/\texttt{80m}/\texttt{2MB}, chip = ESP32-S3) are
 fixed to match the bare boot; they are constants at the top of the source.
 
-\subsection{\texttt{esp\_flash} --- writing it to the chip}
+\subsection{\texttt{esp\_flash} --- writing it to the chip}\index{esp\_flash}
 
 \texttt{examples/common/bare/espflash} writes the image over the chip's
 \emph{ROM} serial bootloader.
@@ -273,7 +273,7 @@ Note that \texttt{esp\_flash} writes \emph{flash} only; the external PSRAM is no
 flashed --- the 2nd-stage bootloader maps it at runtime. On hardware a $\sim$225\,KB
 image flashes in about three seconds (ROM speed, no stub).
 
-\section{Starting your own project}
+\section{Starting your own project}\index{esp32-ada launcher}\index{board.ads}
 
 The \texttt{esp32-ada} launcher scaffolds a fresh application in any empty
 directory (no runtime sources are copied --- it pins the crate):
@@ -296,7 +296,7 @@ package Board is
 end Board;
 \end{lstlisting}
 
-\section{Console output}
+\section{Console output}\index{console output}
 
 The runtime wires \texttt{Ada.Text\_IO} to the built-in USB-serial-JTAG console,
 so \texttt{Put\_Line} reaches \texttt{/dev/ttyACM0}. The examples additionally use

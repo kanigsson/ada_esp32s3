@@ -27,7 +27,7 @@ effort that replaced the vendored ESP-IDF binaries with readable from-source cod
 It is a genuine war story, and the registers and values below are the real ones,
 captured from working silicon.
 
-\section{What the octal PSRAM is, and why it is hard}
+\section{What the octal PSRAM is, and why it is hard}\index{PSRAM}\index{octal SPI}\index{MSPI}
 
 The PSRAM is an external DRAM die that speaks an \emph{octal} (8-data-line) variant
 of the memory-SPI (MSPI) protocol, clocked DDR --- data on both clock edges. The
@@ -53,7 +53,7 @@ controller cannot just sample data on a fixed edge; it has to \emph{learn} when 
 returning bits are valid. That learning step is the only part of the whole sequence
 that is not a fixed register script, and it is where almost all the difficulty lives.
 
-\section{The de-blobbing goal}
+\section{The de-blobbing goal}\index{de-blobbing}\index{ESP-IDF}
 
 A working PSRAM bring-up already existed: the vendored ESP-IDF v5.4.4 binaries
 \texttt{esp\_psram\_impl\_octal.c.obj} and the \texttt{mspi\_timing\_*.c.obj} set,
@@ -83,7 +83,7 @@ the bootloader chapter advertised.
 generated, config-gated code you never see. Here it is two short C files you can
 read top to bottom: the deterministic register script, and one honest timing sweep.}
 
-\section{The deterministic part: a fixed register script}
+\section{The deterministic part: a fixed register script}\index{register script}\index{mode registers}
 
 Most of the bring-up is a fixed sequence of register writes and ROM calls that is
 identical on every boot and every board. The driving function is
@@ -148,7 +148,7 @@ through the ROM helper \texttt{esp\_rom\_opiflash\_exec\_cmd} in OPI-DTR mode
 \texttt{CS=BIT(1)}. Read command is \texttt{0x4040}, write \texttt{0xC0C0}, sync read
 \texttt{0x0000}, sync write \texttt{0x8080}; read dummy 18 half-cycles, write dummy 8.
 
-\subsection{The golden cache-phase registers}
+\subsection{The golden cache-phase registers}\index{cache MMU}
 
 The last deterministic step configures the SPI0 (cache) controller so that a plain
 load from \texttt{0x3D000000} silently becomes an octal-DDR PSRAM read. These five
@@ -173,7 +173,7 @@ these five writes, \texttt{Cache\_Resume\_DCache(0)} hands the cache back and th
 chip is, deterministically, configured. Everything so far is reproducible from
 source. What remains is the one step that is not.
 
-\section{The non-deterministic part: timing tuning}
+\section{The non-deterministic part: timing tuning}\index{din timing}
 
 At 80\,MHz DDR the controller must choose \emph{when} to sample the returning data.
 The S3 exposes three per-data-line knobs for this, all in the SPI0 (cache) MSPI block
@@ -196,7 +196,7 @@ can preempt it. So this knob has to be chosen carefully, and chosen safely.
 
 \section{The tuning war story}
 
-\subsection{Why IDF's own tuning is a no-op}
+\subsection{Why IDF's own tuning is a no-op}\index{din\_mode}
 
 The natural assumption is that the vendor blob already calibrates \texttt{din\_mode}.
 It does not. Single-stepping \texttt{mspi\_timing\_psram\_tuning} on live silicon
@@ -314,7 +314,7 @@ used for bandwidth-sensitive work, not just capacity. The 40\,MHz script remains
 documented fallback --- the right choice if a future board needs PSRAM only as a large,
 slow backing store and would rather not carry a sweep at all.
 
-\section{On-target validation}
+\section{On-target validation}\index{external RAM}
 \label{ch:psram-validate}
 
 None of this matters unless an Ada program can actually use the result, so the

@@ -5,8 +5,8 @@
 # from-source Xtensa support (vendor/), link with the vendored linker scripts,
 # package with our own Ada elf2image (../elf2image).
 #
-#   $1 = example directory (must contain main/build_ada.sh; main/glue.c optional
-#        -- examples that format output via ESP32S3.Log need no example C glue)
+#   $1 = example directory (a single *.gpr; an optional glue.c at its root
+#        for C natives -- examples that log via ESP32S3.Log need none)
 #   $2 = the example's Ada main symbol, e.g. _ada_example (GNAT "_ada_<mainunit>")
 # Produces $1/app.bin; flash it with bare_flash.sh.
 set -e
@@ -101,7 +101,7 @@ if [ "$(cat "$PROF_STAMP" 2>/dev/null)" != "$PROF_NOW" ]; then
     #  $EX/obj is gprbuild's Ada closure (.ali/.o, incremental); a stale tree built
     #  against the previous runtime mislinks under the new one, so clear it.
     rm -rf "$EX/obj"
-    rm -f "$EX/main/app_main.o" "$EX/.noidf/bare_heap.o" \
+    rm -f "$EX/.noidf/bare_heap.o" \
           "$EX/.noidf/bare_mem.o" "$EX/.noidf/bare_crt.o" "$EX/.noidf/tlsf_core.o" \
           "$EX/app.bin" "$EX/app.elf"
 fi
@@ -124,7 +124,7 @@ done
 export GPR_PROJECT_PATH
 
 echo "[bare] 1/4  Ada -> app_main.o  ($(basename "$EX"), main=$ADA_MAIN)"
-bash "$EX/main/build_ada.sh"
+bash "$BARE/build_ada.sh" "$EX"
 
 # The Ada main symbol the caller passed is a guess from the test-list line; for a
 # multi-file test the real main unit can differ (e.g. C94004 -> c94004a).  When the
@@ -178,8 +178,8 @@ $GCC $CFLAGS -DADA_MAIN="$ADA_MAIN" -DENV_STACK_SIZE="$ENV_STACK_SIZE" $ENV_STAC
 $GCC $CFLAGS -c "$BARE/bare_log.c" -o "$OBJ/bare_log.o"   # ESP32S3.Log shim (hal_log_*)
 # Per-example C glue is optional (examples that log via ESP32S3.Log need none).
 GLUE_OBJ=""
-if [ -f "$EX/main/glue.c" ]; then
-    $GCC $CFLAGS ${EXTRA_CFLAGS:-} -c "$EX/main/glue.c" -o "$OBJ/glue.o"   # $EXTRA_CFLAGS: example build options
+if [ -f "$EX/glue.c" ]; then
+    $GCC $CFLAGS ${EXTRA_CFLAGS:-} -c "$EX/glue.c" -o "$OBJ/glue.o"   # $EXTRA_CFLAGS: example build options
     GLUE_OBJ="$OBJ/glue.o"
 fi
 # Boot-support shims (the former stubs.c) as ZFP Ada over the svd-derived
@@ -256,7 +256,7 @@ $GCC -nostdlib -no-pie \
     -Wl,--defsym=__heap_end=_bare_heap_top \
     $BHEAP_DEFSYM \
     -o "$EX/app.elf" \
-    "$EX/main/app_main.o" "$OBJ/bare_glue.o" "$OBJ/bare_log.o" $GLUE_OBJ "$OBJ/bare_boot.o" "$OBJ/app_desc.o" \
+    "$EX/obj/app_main.o" "$OBJ/bare_glue.o" "$OBJ/bare_log.o" $GLUE_OBJ "$OBJ/bare_boot.o" "$OBJ/app_desc.o" \
     "$OBJ/start.o" "$OBJ/highint5.o" $SO_OBJ "${LIB_OBJS[@]}" $EXTRA_OBJS \
     "$OBJ/xtensa_context.o" "$OBJ/xtensa_vectors.o" \
     "$OBJ/xtensa_intr_asm.o" "$OBJ/xtensa_intr.o" \

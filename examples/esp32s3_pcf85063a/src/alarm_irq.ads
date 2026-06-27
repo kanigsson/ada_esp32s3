@@ -1,4 +1,5 @@
---  Library-level latch for the PCF85063A INT line (IO4).
+--  Library-level latch for the PCF85063A INT line (whatever GPIO Rtc_Int in
+--  Main names; No_Pin on this board, so this stays idle).
 --
 --  ESP32S3.GPIO.Interrupts.Enable takes a library-level `access procedure`, and
 --  its Callback runs in INTERRUPT context (a level-3 protected action): it must
@@ -7,7 +8,7 @@
 --  status, acknowledging the alarm) at task level.
 package Alarm_IRQ is
 
-   --  Set by Handler when INT (IO4) falls; cleared by the main task.
+   --  Set by Handler when the INT line falls; cleared by the main task.
    Fired : Boolean := False with Atomic, Volatile;
 
    --  The interrupt action handed to ESP32S3.PCF85063A.Interrupts.Attach.

@@ -122,6 +122,7 @@ on-card test left to the user.
 | `Touch` | per-pad capacitance + `Touched` threshold (`esp32s3_touch_read`) |
 | `SHA` | FIPS-180 SHA-1/224/256 vectors (`esp32s3_crypto`) |
 | `AES` | FIPS-197 AES-128/256 vectors (`esp32s3_crypto`) |
+| `W25Q` | W25Q256FV JEDEC ID + erase/program/read-back round-trip (`esp32s3_w25q`) |
 
 **🟡 Needs on-card testing** (compile-verified + no-card smoke run only — boots,
 runs the init path on silicon, reports `No_Card` cleanly; the on-card read/write

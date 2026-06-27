@@ -4,8 +4,6 @@
 /build/
 sdkconfig
 sdkconfig.old
-/main/app_main.o
-/main/.ada_build/
 
 # IDF-free (no-idf) build outputs
 /app.bin

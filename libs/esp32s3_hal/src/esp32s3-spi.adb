@@ -48,6 +48,7 @@ package body ESP32S3.SPI is
                                 Mosi : ESP32S3.GPIO.Optional_Pin;
                                 Miso : ESP32S3.GPIO.Optional_Pin;
                                 Cs   : ESP32S3.GPIO.Optional_Pin);
+      procedure Set_Hardware_CS (Host : SPI_Host; Enabled : Boolean);
       function  Ready (Host : SPI_Host) return Boolean;
       function  Owned (S : Session) return access E.Bus;
    end State;
@@ -80,6 +81,11 @@ package body ESP32S3.SPI is
       begin
          E.Configure_Pins (Buses (Host), Sclk, Mosi, Miso, Cs);
       end Configure_Pins;
+
+      procedure Set_Hardware_CS (Host : SPI_Host; Enabled : Boolean) is
+      begin
+         E.Set_Hardware_CS (Buses (Host), Enabled);
+      end Set_Hardware_CS;
 
       function Ready (Host : SPI_Host) return Boolean is (Ready_Map (Host));
 
@@ -127,15 +133,40 @@ package body ESP32S3.SPI is
    -- Acquire --
    -------------
 
-   procedure Acquire (S : in out Session; Host : SPI_Host) is
+   procedure Acquire (S         : in out Session;
+                      Host      : SPI_Host;
+                      Select_CB : CS_Select      := null;
+                      Ctx       : System.Address  := System.Null_Address) is
    begin
       if not State.Ready (Host) then
          raise Not_Initialized with "SPI host acquired before Setup";
       end if;
       Guards (Host).Acquire;          --  suspends here until the host is free
-      S.Host   := Host;
-      S.Active := True;
+      S.Host      := Host;
+      S.Active    := True;
+      S.Select_CB := Select_CB;
+      S.Ctx       := Ctx;
+      S.Selected  := False;
+      --  A callback device drives its own select, so suppress the hardware CS0
+      --  for this hold; a hardware-CS device (null callback) re-enables it.
+      State.Set_Hardware_CS (Host, Enabled => Select_CB = null);
    end Acquire;
+
+   --------------------
+   -- Select_Device --
+   --------------------
+
+   procedure Select_Device (S : in out Session; On : Boolean) is
+   begin
+      if not S.Active then
+         raise Not_Owned
+           with "SPI Select_Device without holding the host -- Acquire first";
+      end if;
+      if S.Select_CB /= null then     --  no-op for a hardware-CS Session
+         S.Select_CB (S.Ctx, On);
+         S.Selected := On;
+      end if;
+   end Select_Device;
 
    --------------
    -- Transfer --
@@ -154,6 +185,12 @@ package body ESP32S3.SPI is
    procedure Release (S : in out Session) is
    begin
       if S.Active then
+         --  Deassert a still-selected callback device before releasing the bus,
+         --  so an early exit / exception can't strand a device asserted.
+         if S.Selected and then S.Select_CB /= null then
+            S.Select_CB (S.Ctx, False);
+            S.Selected := False;
+         end if;
          S.Active := False;
          Guards (S.Host).Release;
       end if;

@@ -5,7 +5,7 @@ This chapter takes you from a fresh clone to an LED blinking under your own Ada,
 in a few commands. The later chapters explain the runtime, the HAL and the
 language techniques; this one just gets you running.
 
-\section{What you need}
+\section{What you need}\index{Alire}
 
 \begin{description}[style=nextline]
 \item[An ESP32-S3 board.] Any devkit with the built-in USB-Serial-JTAG port (most
@@ -35,9 +35,9 @@ cd ada_esp32s3
 git submodule update --init --recursive
 \end{lstlisting}
 
-\section{The \texttt{./x} dispatcher}
+\section{The \texttt{./x} dispatcher}\index{x helper script}
 
-The repository ships with around forty ready-to-run examples, and one script at
+The repository ships with over sixty ready-to-run examples, and one script at
 its root --- \texttt{./x} --- drives all of them \emph{from inside the clone}. (For
 your \emph{own} application, kept outside the repo, the counterpart command is
 \texttt{esp32-ada}, \S\ref{sec:esp32-ada}; the two share the same verbs.) List the
@@ -64,7 +64,17 @@ The pieces are also separate commands when you want them:
 ./x clean   esp32s3_gpio0_blink
 \end{lstlisting}
 
-\section{Choosing a profile}
+The examples are meant to be \emph{read}, not just run: each opens with a header
+that says what it demonstrates, how to build and run it, what the console should
+print, and what hardware (if any) it needs; magic numbers are named, and the
+``why'' is in the code rather than only in this book. A short house style at
+\texttt{examples/STYLE.md} records the bar, with \texttt{esp32s3\_gpio0\_blink}
+and \texttt{esp32s3\_gdma\_copy} as the models to copy; \texttt{./x new} (and
+\texttt{esp32-ada init}, \S\ref{sec:esp32-ada}) scaffold a new project already in
+that shape. So once a chapter here points you at an example, the example itself
+carries the rest of the explanation.
+
+\section{Choosing a profile}\index{runtime profile}\index{light-tasking profile}\index{embedded profile}\index{full profile}
 
 Most examples build under more than one runtime profile (Chapter~\ref{ch:profiles}).
 Pass \texttt{--profile} to pick one; \texttt{auto} (the default) uses the
@@ -78,7 +88,7 @@ example's own:
 handles, a heap and the full HAL (the usual choice), and \texttt{full} adds the
 complete Ada tasking model.
 
-\section{Board configuration}
+\section{Board configuration}\index{board.ads}
 
 Each project owns a \texttt{config/board.ads} (flash and PSRAM sizes) that sizes
 the image and the second-stage bootloader. Edit it directly, or:
@@ -101,7 +111,7 @@ On-chip debugging needs the pinned OpenOCD + S3 GDB, fetched once; then
 The Debugging chapter (Chapter~\ref{ch:debug}) covers GDB, decoding a Guru
 Meditation, and the editor integration in full.
 
-\section{Your own project, out of tree: \texttt{esp32-ada}}
+\section{Your own project, out of tree: \texttt{esp32-ada}}\index{esp32-ada launcher}\index{scaffolding}
 \label{sec:esp32-ada}
 
 \texttt{./x} is for the examples that ship \emph{inside} the clone. For your own
@@ -120,7 +130,7 @@ adds the runtime and HAL projects to \texttt{GPR\_PROJECT\_PATH} --- so both
 \begin{lstlisting}[style=sh]
 . /path/to/ada_esp32s3/export.sh    # once per shell (add to ~/.bashrc to persist)
 mkdir ~/myblink && cd ~/myblink
-esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb, glue
+esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb
 #  ... edit src/main.adb ...
 esp32-ada run -p /dev/ttyACM0       # build + flash + monitor
 \end{lstlisting}
@@ -155,9 +165,8 @@ myblink/
   app.gpr            # withs esp32s3_rts.gpr + esp32s3_hal.gpr (resolved by name)
   board.ads          # this project's flash / PSRAM sizes
   src/main.adb       # your code (procedure Main; boots both cores, then idles)
-  main/glue.c        # your C natives (starts empty)
   build.sh flash.sh  # thin shims into the SDK's shared bare-boot
-  main/build_ada.sh
+  glue.c             # optional: C natives, only if your Ada imports any
   .vscode/           # ALS project + build/flash/run tasks driving esp32-ada
 \end{lstlisting}
 
@@ -169,7 +178,7 @@ SDK's \texttt{libs/}. The default profile is \texttt{light-tasking}; pass
 \texttt{-P embedded} (or \texttt{full}) to build under another
 (Chapter~\ref{ch:profiles}).
 
-\subsection{Taking an example out of tree to edit}
+\subsection{Taking an example out of tree to edit}\index{examples}
 
 The in-repo examples are wired to their location --- an Alire path-pin in
 \texttt{alire.toml}, a \texttt{\textit{name}.gpr}, and build shims relative to
@@ -200,7 +209,7 @@ A few things make the copy build cleanly:
   it with \texttt{-P}.
 \item \textbf{Bring board config and C natives if customized.} If the example sets
   a non-default flash/PSRAM size, copy its \texttt{board.ads} (or run
-  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{main/glue.c}.
+  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{glue.c}.
 \item \textbf{Extra libraries.} If the example \texttt{with}s more of the SDK's
   \texttt{libs/} (beyond the HAL), add the matching \texttt{with "<name>.gpr";} to
   \texttt{app.gpr}.

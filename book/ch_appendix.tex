@@ -2,7 +2,7 @@
 \label{ch:appendix}
 
 \section{Usable GPIO pins}
-\label{app:pins}
+\label{app:pins}\index{GPIO pins}\index{Pin\_Id}
 
 The HAL's \texttt{Pin\_Id} subtype (\S\ref{sec:subtypes}) admits only the pads the
 ESP32-S3 actually exposes. Everything else is a compile-time error.
@@ -22,7 +22,7 @@ So \texttt{Pin\_Id} is \texttt{0\,..\,21 | 38\,..\,48}, and \texttt{Optional\_Pi
 adds the sentinel \texttt{No\_Pin} ($=-1$) for ``leave this line unrouted.''
 
 \section{Runtime profiles at a glance}
-\label{app:profiles}
+\label{app:profiles}\index{runtime profile}
 
 \begin{center}
 \begin{tabular}{l l l l}
@@ -44,7 +44,7 @@ you need dynamic tasking, rendezvous or \texttt{abort}
 (Chapter~\ref{ch:profiles}).
 
 \section{Example index}
-\label{app:examples}
+\label{app:examples}\index{example index}
 
 Every example builds and runs with \texttt{./x run <name> -p /dev/ttyACM0}; the
 profile column is its default.

@@ -52,7 +52,7 @@ across calls, re-raising, and reading the exception name/message all work. See t
 
 > The demo body prints with `Ada.Text_IO` (the runtime routes it to the
 > USB-serial console). The last-chance handler uses the ROM `esp_rom_printf`
-> directly (via `main/glue.c`), because it runs in the fragile state just after
+> directly (via `glue.c`), because it runs in the fragile state just after
 > an exception has escaped everything.
 
 ## Build & flash

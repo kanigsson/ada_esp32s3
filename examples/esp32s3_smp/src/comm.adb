@@ -22,9 +22,18 @@ package body Comm is
    --  rather than busy-returning.
    Gets : Integer := 0 with Atomic, Volatile;
 
+   --  GNARL numbers CPUs from 1 (System.Multiprocessors.CPU_Range), so the
+   --  `CPU =>` aspect is one more than the hardware core the task runs on:
+   --  CPU 2 is hardware core 1, CPU 1 is hardware core 0.
+   Producer_CPU : constant := 2;   --  hardware core 1
+   Consumer_CPU : constant := 1;   --  hardware core 0
+
+   --  Producer cadence: one value posted per period.
+   Post_Period : constant Time_Span := Milliseconds (500);
+
    protected Mailbox is
-      procedure Post (V, From : Integer);
-      entry Get (V, From : out Integer);
+      procedure Post (Value, From : Integer);
+      entry Get (Value, From : out Integer);
    private
       Full : Boolean := False;
       Item : Integer := 0;
@@ -32,48 +41,49 @@ package body Comm is
    end Mailbox;
 
    protected body Mailbox is
-      procedure Post (V, From : Integer) is
+      procedure Post (Value, From : Integer) is
       begin
-         Item := V;
+         Item := Value;
          Src  := From;
          Full := True;
       end Post;
-      entry Get (V, From : out Integer) when Full is
+      entry Get (Value, From : out Integer) when Full is
       begin
-         V    := Item;
-         From := Src;
-         Full := False;
+         Value := Item;
+         From  := Src;
+         Full  := False;
       end Get;
    end Mailbox;
 
    --  Producer on core 1: posts an incrementing value every 500 ms and reports
    --  how many consumer entry calls completed in the period (~1 == healthy).
-   task Producer with Priority => System.Priority'Last - 1, CPU => 2;
+   task Producer with Priority => System.Priority'Last - 1, CPU => Producer_CPU;
    task body Producer is
-      N    : Integer := 0;
-      Next : Time := Clock + Milliseconds (500);
+      Count : Integer := 0;
+      Next  : Time := Clock + Post_Period;
    begin
       loop
          delay until Next;
-         N := N + 1;
-         Log_Rate (Interfaces.C.int (Gets), Interfaces.C.int (N));
+         Count := Count + 1;
+         Log_Rate (Interfaces.C.int (Gets), Interfaces.C.int (Count));
          Gets := 0;
-         Mailbox.Post (N, Integer (Core_Id));     --  value + this core (1)
-         Next := Next + Milliseconds (500);
+         Mailbox.Post (Count, Integer (Core_Id));   --  value + this core (1)
+         Next := Next + Post_Period;
       end loop;
    end Producer;
 
    --  Consumer on core 0: blocks in the entry until the core-1 producer posts,
    --  then reads and logs the cross-core transfer on a single line.
-   task Consumer with Priority => System.Priority'Last - 1, CPU => 1;
+   task Consumer with Priority => System.Priority'Last - 1, CPU => Consumer_CPU;
    task body Consumer is
-      V, From : Integer;
+      Value     : Integer;
+      From_Core : Integer;
    begin
       loop
-         Mailbox.Get (V, From);                   --  blocks across cores
+         Mailbox.Get (Value, From_Core);          --  blocks across cores
          Gets := Gets + 1;
-         Log_Xfer (Interfaces.C.int (V),
-                   Interfaces.C.int (From), Core_Id);
+         Log_Xfer (Interfaces.C.int (Value),
+                   Interfaces.C.int (From_Core), Core_Id);
       end loop;
    end Consumer;
 

@@ -53,6 +53,12 @@ package ESP32S3.Ext4.Superblock is
    function Has_Metadata_Csum (SB : Info) return Boolean is
      ((SB.Feature_RO_Compat and RO_Compat_Metadata_Csum) /= 0);
 
+   --  True when the volume carries a JBD2 journal (mkfs default).  When false
+   --  (mkfs -O ^has_journal) the FS commits by flushing the cache + superblock
+   --  directly instead of journaling -- see ESP32S3.Ext4.FS.Commit.
+   function Has_Journal (SB : Info) return Boolean is
+     ((SB.Feature_Compat and Compat_Has_Journal) /= 0);
+
    --  Read + validate the superblock from Dev (raises Corrupt on a bad magic).
    procedure Read (Dev : ESP32S3.Block_Dev.Device; SB : out Info);
 

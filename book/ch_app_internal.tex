@@ -22,7 +22,7 @@ RNG, RTC, RTC-IO, Touch, SHA, AES, SDMMC) work under every profile, and each
 section notes which case applies. See the driver-design chapter
 (\S\ref{ch:driver-design}) for why the ownership gateway is built this way.
 
-\section{GPIO --- General-Purpose I/O}
+\section{GPIO --- General-Purpose I/O}\index{GPIO driver}
 \label{app:int:gpio}
 
 The ESP32-S3 routes every digital pad through a \emph{GPIO matrix}: a pad can be
@@ -114,7 +114,7 @@ the common static-pin case --- a flash/PSRAM pad never even links.}
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_gpio0\_blink}.
 
-\section{UART --- Asynchronous Serial}
+\section{UART --- Asynchronous Serial}\index{UART driver}
 \label{app:int:uart}
 
 The chip has three general-purpose UART controllers; the bare runtime uses
@@ -193,7 +193,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_uart\_loopback}.
 
-\section{SPI --- Serial Peripheral Interface}
+\section{SPI --- Serial Peripheral Interface}\index{SPI driver}
 \label{app:int:spi}
 
 \texttt{ESP32S3.SPI} is a task-safe, full-duplex \emph{master} over the two
@@ -212,8 +212,12 @@ $\le$400\,kHz, then switches to several MHz). \texttt{Configure\_Pins} routes
 \texttt{Optional\_Pin}), and \texttt{Enable\_Loopback} ties MOSI to MISO through
 one pad for a self-test. The single transfer primitive is a blocking,
 full-duplex DMA \texttt{Transfer} of 1\,..\,4095 bytes between two SRAM buffers,
-addressed by \texttt{System.Address}. The controlled \texttt{Session}
-auto-releases on scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
+addressed by \texttt{System.Address}. A device that brings its own chip-select ---
+to share the bus, or behind a 3:8 decoder or an I/O-expander --- registers a
+library-level \texttt{CS\_Select} callback at \texttt{Acquire} and brackets its
+transaction with \texttt{Select\_Device}; the driver then suppresses the hardware
+\texttt{CS0} for that session. The controlled \texttt{Session} auto-releases on
+scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
 
 \begin{lstlisting}
 package ESP32S3.SPI is
@@ -225,11 +229,17 @@ package ESP32S3.SPI is
                           Clock_Hz : Positive := 1_000_000);
    procedure Set_Clock   (Host : SPI_Host; Hz : Positive);
    procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
+   type CS_Select is access procedure            --  app chip select: library-
+     (Ctx : System.Address; Active : Boolean);   --  level, closure-free
+
    procedure Configure_Pins (Host : SPI_Host;
                              Sclk, Mosi, Miso : ESP32S3.GPIO.Optional_Pin;
                              Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
-   procedure Acquire  (S : in out Session; Host : SPI_Host);
+   procedure Acquire  (S : in out Session; Host : SPI_Host;
+                       Select_CB : CS_Select := null;
+                       Ctx : System.Address := System.Null_Address);
+   procedure Select_Device (S : in out Session; On : Boolean);
    procedure Transfer (S : Session; Tx, Rx : System.Address; Length : Natural);
    procedure Release  (S : in out Session);
    Not_Initialized, Not_Owned : exception;
@@ -262,7 +272,7 @@ display driver.
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_sd\_spi} (and the ST7789
 display) exercise this driver against real hardware.
 
-\section{I2C --- Two-Wire Master}
+\section{I2C --- Two-Wire Master}\index{I2C driver}
 \label{app:int:i2c}
 
 \texttt{ESP32S3.I2C} is a polled, single-segment master over the two
@@ -332,7 +342,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_i2c\_loopback}.
 
-\section{RNG --- Hardware Random Number Generator}
+\section{RNG --- Hardware Random Number Generator}\index{RNG driver}
 \label{app:int:rng}
 
 \texttt{ESP32S3.RNG} reads the on-chip random number generator: each load of its
@@ -378,7 +388,7 @@ begin
 \noindent\textbf{Example:} no dedicated example; the driver is a one-call read
 (\texttt{ESP32S3.RNG.Read}) usable directly from any profile, ZFP included.
 
-\section{Temperature --- On-Chip Die Sensor}
+\section{Temperature --- On-Chip Die Sensor}\index{Temperature driver}
 \label{app:int:temperature}
 
 \texttt{ESP32S3.Temperature} reads the SoC's internal temperature sensor. It
@@ -433,7 +443,7 @@ begin
 (\texttt{ESP32S3.Temperature.Read\_Celsius}) after the optional
 \texttt{Initialize}.
 
-\section{LEDC --- LED Controller (PWM)}
+\section{LEDC --- LED Controller (PWM)}\index{LEDC driver}
 \label{app:int:ledc}
 
 The ESP32-S3's LEDC block is the simple ``dim an LED / generate a clean PWM''
@@ -489,7 +499,7 @@ end;   --  Ch0 finalizes: output stopped, channel freed
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_ledc\_pwm}.
 
-\section{MCPWM --- Motor-Control PWM}
+\section{MCPWM --- Motor-Control PWM}\index{MCPWM driver}
 \label{app:int:mcpwm}
 
 MCPWM is the heavyweight PWM block: two units (\texttt{MCPWM0}, \texttt{MCPWM1}),
@@ -565,7 +575,7 @@ Protect_Channel (Gen0, Fault0, One_Shot, Force_Low);
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_mcpwm\_pwm}.
 
-\section{Timer --- General-Purpose Timers}
+\section{Timer --- General-Purpose Timers}\index{Timer driver}
 \label{app:int:timer}
 
 The S3's two timer groups, \texttt{TIMG0} and \texttt{TIMG1}, each contain one
@@ -619,7 +629,7 @@ end;   --  T finalizes: stopped and released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_timer\_count}.
 
-\section{PCNT --- Pulse Counter}
+\section{PCNT --- Pulse Counter}\index{PCNT driver}
 \label{app:int:pcnt}
 
 PCNT counts edges on an input signal. The S3 has four counter units, each
@@ -667,7 +677,7 @@ end;   --  U finalizes: paused and released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_pcnt\_count}.
 
-\section{SDM --- Sigma-Delta Modulator}
+\section{SDM --- Sigma-Delta Modulator}\index{SDM driver}
 \label{app:int:sdm}
 
 The SDM block (part of the GPIO sigma-delta unit, \texttt{GPIO\_SD}) provides
@@ -716,7 +726,7 @@ end;   --  Ch finalizes: output low, channel released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_sdm\_output}.
 
-\section{RMT --- Remote Control Transceiver}
+\section{RMT --- Remote Control Transceiver}\index{RMT driver}
 \label{app:int:rmt}
 
 RMT is the ``infinitely-flexible pulse generator'': it transmits and receives
@@ -785,7 +795,7 @@ end;   --  Tx, Rx finalize: released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_rmt\_loopback}.
 
-\section{GDMA --- General DMA}
+\section{GDMA --- General DMA}\index{GDMA driver}
 \label{app:int:gdma}
 
 The ESP32-S3 has a single AHB GDMA block with five channel pairs (\texttt{0..4}).
@@ -851,7 +861,7 @@ leaks one.}
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_gdma\_copy}.
 
-\section{I2S --- Digital Audio Serial Bus}
+\section{I2S --- Digital Audio Serial Bus}\index{I2S driver}
 \label{app:int:i2s}
 
 The S3 has two I2S controllers (\texttt{I2S0}, \texttt{I2S1}), each moving PCM
@@ -916,7 +926,7 @@ end;                                        --  S finalizes -> port released
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_i2s\_loopback} (Standard
 full-duplex) and \texttt{examples/esp32s3\_i2s\_pdm} (PDM microphone capture).
 
-\section{LCD --- i8080 Parallel Display}
+\section{LCD --- i8080 Parallel Display}\index{LCD driver}
 \label{app:int:lcd}
 
 The LCD half of the S3's LCD\_CAM controller drives an 8-bit Intel-8080
@@ -972,7 +982,7 @@ end;
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_lcd\_i8080}.
 
-\section{ADC --- SAR Analog-to-Digital Converter}
+\section{ADC --- SAR Analog-to-Digital Converter}\index{ADC driver}
 \label{app:int:adc}
 
 The S3 has two SAR ADC units, each with up to ten 12-bit channels on fixed GPIOs:
@@ -1029,7 +1039,7 @@ end;                                        --  R finalizes -> unit released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_adc\_read}.
 
-\section{TWAI --- CAN Controller}
+\section{TWAI --- CAN Controller}\index{TWAI driver}
 \label{app:int:twai}
 
 The S3's TWAI block (Two-Wire Automotive Interface) is a single
@@ -1099,7 +1109,7 @@ end;                                        --  S finalizes -> controller releas
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_twai\_loopback}.
 
-\section{RTC --- Real-Time Clock and Deep Sleep}
+\section{RTC --- Real-Time Clock and Deep Sleep}\index{RTC driver}
 \label{app:int:rtc}
 
 The ESP32-S3's RTC (low-power) domain stays alive while the digital core is
@@ -1166,7 +1176,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_rtc\_sleep}.
 
-\section{RTC-IO --- Low-Power GPIO and Pad Hold}
+\section{RTC-IO --- Low-Power GPIO and Pad Hold}\index{RTC\_IO driver}
 \label{app:int:rtcio}
 
 GPIO0 through GPIO21 are RTC-capable: they belong to the low-power IO domain. The
@@ -1214,7 +1224,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_rtcio\_hold}.
 
-\section{Touch --- Capacitive Touch Sensor}
+\section{Touch --- Capacitive Touch Sensor}\index{Touch driver}
 \label{app:int:touch}
 
 The S3's capacitive touch sensor (v2) provides 14 channels, channel $n$ wired to
@@ -1271,7 +1281,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_touch\_read}.
 
-\section{SHA --- Hardware Hash Accelerator}
+\section{SHA --- Hardware Hash Accelerator}\index{SHA driver}
 \label{app:int:sha}
 
 The SHA accelerator computes SHA-1, SHA-224 and SHA-256 of a byte message in
@@ -1317,7 +1327,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_crypto}.
 
-\section{AES --- Hardware AES Accelerator}
+\section{AES --- Hardware AES Accelerator}\index{AES driver}
 \label{app:int:aes}
 
 The AES accelerator performs single-block (128-bit) AES in hardware.
@@ -1373,7 +1383,7 @@ begin
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_crypto}.
 
-\section{SDMMC --- Native SD/MMC Host Controller}
+\section{SDMMC --- Native SD/MMC Host Controller}\index{SDMMC driver}
 \label{app:int:sdmmc}
 
 The dedicated SDHOST controller drives an SD card on the real SD bus --- a clock,

@@ -10,7 +10,7 @@ and bounded fragmentation. This chapter is the current truth about the heap. The
 (\S\ref{ch:appendix}) describe the allocator that TLSF replaced; what follows
 supersedes them.
 
-\section{Why a heap, and what lands here}
+\section{Why a heap, and what lands here}\index{heap}\index{dynamic allocation}\index{secondary stack}
 
 Ada programs reach the heap by two doors. The first is the language itself: every
 \texttt{new T} (and every access-type allocator, and the storage pool behind
@@ -37,7 +37,7 @@ code that is statically sized and never frees. The \texttt{embedded} and
 \texttt{free} actually returns memory to the pool and a long-running program can
 allocate and release indefinitely.
 
-\section{Why first-fit had to go}
+\section{Why first-fit had to go}\index{first-fit allocator}\index{fragmentation}
 
 The allocator TLSF replaced kept a single linked list of free blocks. To satisfy
 a request it walked that list from the head looking for the first block large
@@ -63,7 +63,7 @@ and a set of capability flags (\texttt{MALLOC\_CAP\_INTERNAL},
 allocator and one arena; \emph{which} arena (leftover DRAM or PSRAM) is chosen
 once, at link time, in \texttt{bare\_build.sh}.}
 
-\section{TLSF, taught from the code}
+\section{TLSF, taught from the code}\index{TLSF allocator}
 
 The portable allocator lives in \texttt{tlsf\_core.ads}/\texttt{.adb}. It is
 deliberately target-free: no lock, no assembly, no linker symbols. It takes an
@@ -80,7 +80,7 @@ function  Ready return Boolean;
 function  Invariants_Hold return Boolean;   --  test-only
 \end{lstlisting}
 
-\subsection{Boundary tags: every block knows its neighbours}
+\subsection{Boundary tags: every block knows its neighbours}\index{boundary tags}
 
 The arena is one contiguous chain of physically-adjacent blocks. Each block
 carries a header before its payload:
@@ -110,7 +110,7 @@ For the same reason all the mutable state (\texttt{Heads}, the bitmaps,
 \texttt{Pool\_Lo}, \texttt{Sentinel}) has zero initializers, which places it in
 \texttt{.bss} (zeroed by \texttt{start.S}) rather than \texttt{.data}.
 
-\subsection{Two-level segregated free lists}
+\subsection{Two-level segregated free lists}\index{segregated free lists}
 
 Free blocks are bucketed by size into a two-dimensional grid of lists. The
 \emph{first level} (FL) is a power-of-two class: roughly, $\mathrm{FL} =
@@ -194,7 +194,7 @@ step depends on the number of free blocks.}
 \label{fig:tlsf-alloc}
 \end{figure}
 
-\subsection{Allocate, free, split, coalesce}
+\subsection{Allocate, free, split, coalesce}\index{coalescing}
 
 \texttt{Allocate} rounds the request to a 16-byte multiple (and up to the
 two-word minimum payload), finds a bucket, pops the head block off it, and ---
@@ -217,7 +217,7 @@ are set. Every one of these steps touches a fixed, small number of blocks.
 enough, and otherwise allocates-copies-frees. \texttt{Init} lays the arena out as
 exactly one big free block plus the sentinel.
 
-\section{The target glue: \texttt{bare\_heap}}
+\section{The target glue: \texttt{bare\_heap}}\index{bare\_heap}\index{malloc}\index{free}
 
 \texttt{tlsf\_core} has no idea it is on a microcontroller. Everything
 target-specific lives in \texttt{bare\_heap.ads}/\texttt{.adb}, which is the unit
@@ -241,7 +241,7 @@ procedure Task_Stack_Free (Stack, Thread : System.Address);
 pragma Export (C, Task_Stack_Free, "__gnat_task_stack_free");
 \end{lstlisting}
 
-\subsection{The critical section}
+\subsection{The critical section}\index{critical section}
 
 \texttt{tlsf\_core} is not internally locked --- by design, so the host harness
 can drive it single-threaded. On target, multiple agents reach the heap: the
@@ -285,7 +285,7 @@ heap --- at the PSRAM region. The Ada is identical either way; only the two
 \texttt{T.Init} over whatever region those symbols delimit (a \texttt{Started}
 flag, also \texttt{.bss}-resident, gates this).
 
-\subsection{Freeing a task's own stack}
+\subsection{Freeing a task's own stack}\index{task stack reclamation}
 
 The full profile allocates each task's primary stack on the heap, which raises a
 nasty question: when a task terminates, who frees the stack it was \emph{running
@@ -316,7 +316,7 @@ chooses to \emph{leak} the stack rather than risk a use-after-free --- a deliber
 ``leak-on-timeout'' policy.
 
 \section{Validation}
-\label{sec:heap-validation}
+\label{sec:heap-validation}\index{heap validation}
 
 Because \texttt{tlsf\_core} is target-free, it is tested off-chip as ordinary Ada.
 \texttt{heap\_stress.adb} is a generic that takes an allocator's six operations

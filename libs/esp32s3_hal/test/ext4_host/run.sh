@@ -27,18 +27,38 @@ IMG="$(mktemp /tmp/ext4_host.XXXXXX.img)"
 trap 'rm -f "$IMG"' EXIT
 fresh() { rm -f "$IMG"; truncate -s 64M "$IMG"; mkfs.ext4 -q -F -O ^metadata_csum -b 4096 "$IMG"; }
 
-# Scenarios mirror examples/esp32s3_ext4_write and the re-run drift hunt.
-for S in one two rerun battery dirty_battery; do
-   fresh
-   if ! ./ext4_host "$IMG" "$S" >/tmp/ext4_host.out 2>&1; then
+# A no-journal volume (mkfs -O ^has_journal): the FS commits by flushing the
+# cache + superblock directly instead of journaling (ESP32S3.Ext4.FS.Commit).
+fresh_nojournal() {
+   rm -f "$IMG"; truncate -s 64M "$IMG"
+   mkfs.ext4 -q -F -O ^metadata_csum,^has_journal -b 4096 "$IMG"
+}
+
+run_scenario() { # $1 = scenario, $2 = label
+   if ! ./ext4_host "$IMG" "$1" >/tmp/ext4_host.out 2>&1; then
       # harness exits non-zero on a phantom free (double-free bug)
-      printf '  %-14s HARNESS FAIL: %s\n' "$S" \
+      printf '  %-14s HARNESS FAIL: %s\n' "$2" \
              "$(grep -i 'PHANTOM' /tmp/ext4_host.out | head -1)"
    elif e2fsck -f -n "$IMG" >/tmp/ext4_host.fsck 2>&1; then
-      printf '  %-14s e2fsck CLEAN\n' "$S"
+      printf '  %-14s e2fsck CLEAN\n' "$2"
    else
-      printf '  %-14s e2fsck ERRORS:\n' "$S"
+      printf '  %-14s e2fsck ERRORS:\n' "$2"
       grep -iE 'wrong|invalid|unattached|deleted' /tmp/ext4_host.fsck | sed 's/^/      /'
    fi
+}
+
+# Scenarios mirror examples/esp32s3_ext4_write and the re-run drift hunt.
+echo "journaled:"
+for S in one two rerun battery dirty_battery stream; do fresh; run_scenario "$S" "$S"; done
+grep -h '^stream:' /tmp/ext4_host.out | sed 's/^/      /'
+
+echo "double-indirect (Append/Truncate/Unlink > 4 MiB):"
+for S in dindirect dtrunc dunlink; do
+   fresh; run_scenario "$S" "$S"
+   grep -hE "^(dindirect|dtrunc|dunlink):" /tmp/ext4_host.out | sed 's/^/      /'
 done
+
+echo "no-journal:"
+for S in one two battery stream; do fresh_nojournal; run_scenario "$S" "$S"; done
+grep -h '^stream:' /tmp/ext4_host.out | sed 's/^/      /'
 echo "done."

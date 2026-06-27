@@ -181,6 +181,15 @@ package body ESP32S3.SPI.Engine is
       Route_In (S.Miso_In, Pad, As_Input => False);
    end Enable_Loopback;
 
+   procedure Set_Hardware_CS (B : Bus; Enabled : Boolean) is
+   begin
+      if B.Regs /= null then
+         B.Regs.MISC.CS0_DIS := not Enabled;   --  CS0_DIS = 1 suppresses CS0
+         B.Regs.CMD.UPDATE := True;            --  latch into the shifter
+         while B.Regs.CMD.UPDATE loop null; end loop;
+      end if;
+   end Set_Hardware_CS;
+
    procedure Transfer (B : Bus; Tx, Rx : System.Address; Length : Natural) is
    begin
       if not B.Valid or else Length = 0 or else Length > 4095 then

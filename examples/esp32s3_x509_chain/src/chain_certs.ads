@@ -1,8 +1,25 @@
---  Test certificates (DER), library-level so they can be referenced by access.
+--  Embedded test certificates for the esp32s3_x509_chain self-test, as raw DER.
+--  Declared at library level (aliased constants) so Chain_Verify.Cert_Ref can
+--  point at them by access -- no copying and no heap.
+--
+--  Each is an RSA-2048 / sha256WithRSAEncryption X.509v3 certificate.  Decoded
+--  facts (the "legend") -- regenerate from any blob with:
+--      openssl x509 -inform DER -in <cert>.der -noout -text
+--
+--    name       subject / CN        issuer        serial  validity (UTC)        role
+--    ---------  ------------------  ------------  ------  --------------------  -------------------------------
+--    CA_DER     Test Root CA        self-signed     0x10  2020-01-01..2049-12   CA:TRUE root that signs Leaf
+--    Leaf_DER   test.example.com    Test Root CA    0x20  2020-01-01..2049-12   leaf, SAN DNS:test.example.com
+--    Other_DER  Unrelated CA        self-signed     0x11  2020-01-01..2049-12   CA:TRUE root, NOT pinned (decoy)
+--
+--  Provenance: a self-contained, deterministic test PKI generated offline with
+--  OpenSSL (root + leaf issued under it, plus an unrelated self-signed root) and
+--  pasted in as DER.  They are fixtures only -- never trusted off-device.
 with X509;
 package Chain_Certs is
    subtype Byte_Array is X509.Byte_Array;
 
+   --  Trusted root: self-signed CA that issues Leaf_DER (CN=Test Root CA).
    CA_DER : aliased constant Byte_Array :=
      (16#30#, 16#82#, 16#02#, 16#BC#, 16#30#, 16#82#, 16#01#, 16#A4#, 16#A0#, 16#03#, 16#02#, 16#01#,
       16#02#, 16#02#, 16#01#, 16#10#, 16#30#, 16#0D#, 16#06#, 16#09#, 16#2A#, 16#86#, 16#48#, 16#86#,
@@ -64,6 +81,7 @@ package Chain_Certs is
       16#D3#, 16#BB#, 16#C0#, 16#D9#, 16#30#, 16#FF#, 16#52#, 16#EB#, 16#C6#, 16#63#, 16#F0#, 16#F6#,
       16#71#, 16#04#, 16#45#, 16#79#, 16#7B#, 16#14#, 16#DE#, 16#DA#);
 
+   --  Leaf signed by CA_DER (CN=test.example.com, SAN DNS:test.example.com).
    Leaf_DER : aliased constant Byte_Array :=
      (16#30#, 16#82#, 16#02#, 16#CC#, 16#30#, 16#82#, 16#01#, 16#B4#, 16#A0#, 16#03#, 16#02#, 16#01#,
       16#02#, 16#02#, 16#01#, 16#20#, 16#30#, 16#0D#, 16#06#, 16#09#, 16#2A#, 16#86#, 16#48#, 16#86#,
@@ -126,6 +144,8 @@ package Chain_Certs is
       16#98#, 16#91#, 16#75#, 16#2E#, 16#6F#, 16#B7#, 16#70#, 16#01#, 16#01#, 16#E5#, 16#28#, 16#13#,
       16#6A#, 16#1A#, 16#F2#, 16#A5#, 16#9D#, 16#2E#, 16#C9#, 16#8F#, 16#CD#, 16#CC#, 16#80#, 16#87#);
 
+   --  Unrelated self-signed root, NOT pinned (CN=Unrelated CA); the decoy used to
+   --  drive the Untrusted_Root case.
    Other_DER : aliased constant Byte_Array :=
      (16#30#, 16#82#, 16#02#, 16#BC#, 16#30#, 16#82#, 16#01#, 16#A4#, 16#A0#, 16#03#, 16#02#, 16#01#,
       16#02#, 16#02#, 16#01#, 16#11#, 16#30#, 16#0D#, 16#06#, 16#09#, 16#2A#, 16#86#, 16#48#, 16#86#,

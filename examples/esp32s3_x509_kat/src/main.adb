@@ -1,6 +1,22 @@
---  X.509 DER parser known-answer test: parse a real self-signed RSA-2048
---  certificate and check the extracted fields (serial, notAfter, RSA modulus and
---  exponent) against host-known values.  Proves the bounds-checked DER walk.
+--  X.509 DER parser known-answer test (X509.Parse)
+--  ===============================================
+--  What it demonstrates: the bounds-checked DER certificate walk in the HAL's
+--  X509 package.  It parses a known self-signed RSA-2048 certificate held in the
+--  binary and checks the extracted fields (serial, notAfter, notAfter tag, RSA
+--  modulus and exponent) against the values precomputed on the host -- a
+--  known-answer test, so any drift in the parser shows up as a FAIL.
+--
+--  Build & run: ./x run esp32s3_x509_kat
+--  Runs under the embedded profile (build.sh sets ESP32S3_RTS_PROFILE=embedded);
+--  X509 is pure byte handling with no chip dependency, so the smallest profile
+--  is enough.
+--
+--  Output: a header line, then one "[x509] <field> : PASS" per checked field,
+--  then "[x509] done".  PASS on every line means the parser recovered each field
+--  byte-for-byte.  If C.Valid comes back False the per-field lines are skipped
+--  (the structure failed to parse at all).
+--
+--  Hardware: none (self-contained -- the certificate is embedded below).
 with Ada.Real_Time; use Ada.Real_Time;
 with Interfaces;
 with X509;          use X509;
@@ -13,6 +29,26 @@ pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 procedure Main is
    use type Interfaces.Unsigned_8;
 
+   --  Settle time before the first console write, so the banner is not cut into
+   --  by the boot-ROM chatter still draining on the UART.
+   Console_Settle : constant Time_Span := Milliseconds (200);
+
+   --  DER tag for an ASN.1 UTCTime (0x17); GeneralizedTime would be 0x18.  This
+   --  certificate's notAfter is a UTCTime, so the parser must report this tag.
+   UTCTime_Tag : constant := 16#17#;
+
+   --  Idle period for the post-test parking loop (nothing to do once the KAT has
+   --  printed; just keep the app alive without spinning).
+   Idle_Period : constant Time_Span := Seconds (3600);
+
+   --  The certificate under test, and the expected field values, are a
+   --  known-answer vector: a self-signed RSA-2048 certificate constructed for
+   --  this test (subject/issuer CN = "test.example.com", serialNumber =
+   --  0x0123456789ABCDEF, validity 2020-01-01 .. UTCTime "491231235959Z",
+   --  SHA-256 with RSA signature).  Cert_DER is its full DER encoding; the Exp_*
+   --  arrays are the exact byte ranges X509.Parse must recover from it.
+
+   --  Full DER of the certificate (the bytes a TLS peer would send).
    Cert_DER : constant Byte_Array (0 .. 697) :=
      (16#30#, 16#82#, 16#02#, 16#B6#, 16#30#, 16#82#, 16#01#, 16#9E#, 16#A0#, 16#03#, 16#02#, 16#01#,
       16#02#, 16#02#, 16#08#, 16#01#, 16#23#, 16#45#, 16#67#, 16#89#, 16#AB#, 16#CD#, 16#EF#, 16#30#,
@@ -74,16 +110,22 @@ procedure Main is
       16#AC#, 16#D1#, 16#6D#, 16#B9#, 16#7B#, 16#13#, 16#47#, 16#4C#, 16#62#, 16#AE#, 16#E1#, 16#A2#,
       16#7C#, 16#28#);
 
+   --  serialNumber INTEGER content: 0x0123456789ABCDEF.
    Exp_Serial : constant Byte_Array (0 .. 7) :=
      (16#01#, 16#23#, 16#45#, 16#67#, 16#89#, 16#AB#, 16#CD#, 16#EF#);
 
+   --  notAfter time as ASCII UTCTime "491231235959Z" (YYMMDDHHMMSSZ = Dec 31
+   --  23:59:59).
    Exp_Not_After : constant Byte_Array (0 .. 12) :=
      (16#34#, 16#39#, 16#31#, 16#32#, 16#33#, 16#31#, 16#32#, 16#33#, 16#35#, 16#39#, 16#35#, 16#39#,
       16#5A#);
 
+   --  RSA public exponent: 65537 (0x010001), the conventional F4.
    Exp_Exponent : constant Byte_Array (0 .. 2) :=
      (16#01#, 16#00#, 16#01#);
 
+   --  RSA modulus INTEGER content (big-endian, leading 0x00 sign byte then the
+   --  256-byte 2048-bit modulus).
    Exp_Modulus : constant Byte_Array (0 .. 256) :=
      (16#00#, 16#DA#, 16#D7#, 16#BA#, 16#C4#, 16#60#, 16#9D#, 16#59#, 16#13#, 16#E2#, 16#FD#, 16#92#,
       16#1B#, 16#FB#, 16#0C#, 16#E3#, 16#EB#, 16#31#, 16#2E#, 16#F1#, 16#BB#, 16#4D#, 16#89#, 16#73#,
@@ -110,12 +152,18 @@ procedure Main is
 
    C : Certificate;
 
-   --  Does Cert_DER (S.First .. S.Last) equal Want?
+   --  Does the certificate sub-range named by S equal the expected bytes Want?
+   --  S indexes into Cert_DER (the parser returns ranges, not copies), so this
+   --  compares the parsed-out field against the host-known answer.
    function Slice_Eq (S : Slice; Want : Byte_Array) return Boolean is
    begin
-      if Length (S) /= Want'Length then return False; end if;
+      if Length (S) /= Want'Length then
+         return False;
+      end if;
       for I in 0 .. Want'Length - 1 loop
-         if Cert_DER (S.First + I) /= Want (Want'First + I) then return False; end if;
+         if Cert_DER (S.First + I) /= Want (Want'First + I) then
+            return False;
+         end if;
       end loop;
       return True;
    end Slice_Eq;
@@ -125,7 +173,10 @@ procedure Main is
       Put_Line ("[x509] " & Name & " : " & (if Pass then "PASS" else "FAIL"));
    end Check;
 begin
-   delay until Clock + Milliseconds (200);
+   delay until Clock + Console_Settle;
+
+   --  Seed the hardware entropy source.  The X509 parse itself is deterministic,
+   --  but TLS work links the RNG, so keep it enabled here for parity.
    ESP32S3.RNG.Enable_Entropy_Source;
 
    Put_Line ("[x509] parse a self-signed RSA-2048 certificate");
@@ -134,11 +185,14 @@ begin
    if C.Valid then
       Check ("serial",        Slice_Eq (C.Serial,       Exp_Serial));
       Check ("notAfter",      Slice_Eq (C.Not_After,    Exp_Not_After));
-      Check ("notAfter UTC",  C.NA_Tag = 16#17#);
+      Check ("notAfter UTC",  C.NA_Tag = UTCTime_Tag);
       Check ("RSA modulus",   Slice_Eq (C.RSA_Modulus,  Exp_Modulus));
       Check ("RSA exponent",  Slice_Eq (C.RSA_Exponent, Exp_Exponent));
    end if;
    Put_Line ("[x509] done");
 
-   loop delay until Clock + Seconds (3600); end loop;
+   --  Test done; park forever rather than return (there is no OS to return to).
+   loop
+      delay until Clock + Idle_Period;
+   end loop;
 end Main;

@@ -47,7 +47,8 @@ package body ESP32S3.Block_Dev.SDMMC_Source is
       return (Ctx   => C.all'Address,
               Read  => Do_Read'Access,
               Write => Do_Write'Access,
-              Count => Do_Count'Access);
+              Count => Do_Count'Access,
+              Erase => null);
    end Make;
 
 end ESP32S3.Block_Dev.SDMMC_Source;

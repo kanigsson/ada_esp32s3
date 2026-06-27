@@ -1,5 +1,5 @@
 \chapter{Writing a Task-Safe Peripheral Driver}
-\label{ch:driver-design}
+\label{ch:driver-design}\index{driver design}\index{task-safe driver}
 
 Chapters~\ref{ch:hal}--\ref{ch:hal3} \emph{used} the drivers. This chapter shows
 how to \emph{write} one, and --- just as important --- why it is built the way it
@@ -29,7 +29,7 @@ while task A is mid-\texttt{Write}, or from starting a transfer it has no busine
 starting. The corruption is intermittent and miserable to debug. We want a design
 where those mistakes are \emph{impossible to write}, not merely discouraged.
 
-\section{The ownership model}
+\section{The ownership model}\index{ownership gateway}\index{session}\index{capability}
 
 The cure is to make \emph{ownership} a value you hold, and to make every operation
 that touches the live controller require it.
@@ -51,7 +51,7 @@ The \texttt{Session} is the public face. The interesting part is the machinery
 behind it that makes ``you cannot reconfigure without holding it'' a structural
 fact rather than a rule a future maintainer must remember.
 
-\section{Three layers}
+\section{Three layers}\index{Engine pattern}\index{private child}
 
 A compliant driver is three packages:
 
@@ -124,7 +124,7 @@ brings the controller up and returns a \texttt{Bus}; every other operation takes
 \texttt{with}s the SVD registers at all} --- so once the engine exists, the global
 controller is unreachable from anywhere except through a \texttt{Bus} handle.
 
-\section{Layer 2 --- ownership: the Session and the Guard}
+\section{Layer 2 --- ownership: the Session and the Guard}\index{protected object}\index{limited type}\index{controlled type}
 
 The public package declares the handle and a per-controller lock. The
 \texttt{Session} is limited and controlled:
@@ -173,7 +173,7 @@ releases. (For a peripheral with several identical instances --- e.g. two SPI
 hosts --- this is an \texttt{array (Host) of Guard} and a matching array of
 handles; the singleton case is shown here for clarity.)
 
-\section{Layer 3 --- the gateway that cannot be bypassed}
+\section{Layer 3 --- the gateway that cannot be bypassed}\index{Owned gateway}
 
 Here is the heart of the design. The configured \texttt{Bus} lives inside a
 package nested in the \emph{body}, so no other part of the driver can name it. The
@@ -277,7 +277,7 @@ In the HAL, SPI and I2S (whose engine \texttt{Bus} is limited) and LCD (whose
 handle owns a GDMA channel) use this form; I2C, UART and TWAI return the handle by
 value. Nothing else about the pattern changes.
 
-\section{Why it is built this way}
+\section{Why it is built this way}\index{RAII}
 
 Each layer earns its place by removing a specific class of mistake:
 

@@ -69,7 +69,7 @@ task does the I2C work; the report then reads `detected via INT interrupt`.
 ```
 
 Console output goes through the ROM USB-Serial-JTAG `printf` (the
-example-specific glue in `main/glue.c`); the Ada driver does all the I2C and
+example-specific glue in `glue.c`); the Ada driver does all the I2C and
 register work. If you see `no PCF85063A ACK at 0x51`, check power and the
 SDA/SCL wiring.
 
