@@ -7,8 +7,74 @@ properties** where a clean specification exists. These units parse and verify
 hostile network input (X.509 certificates, TLS signatures), so they are the
 highest-value proof target and have no hardware dependency that blocks proof.
 
-Prereq: the native proof harness and SPARKNaCl replay (steps 1–2) are in place —
-see `README.md`.
+Prereq: the cross-targeted proof harness and SPARKNaCl replay (steps 1–2) are in
+place — see `README.md`.
+
+---
+
+## ▶ STATUS & HANDOFF (read this first)
+
+| Phase | Unit | State |
+|------:|------|-------|
+| 1 | `X509.DER` | ✅ **proved** (AoRTE + `Read` lemma) |
+| 2 | `X509` body (`Parse`/`Valid_At`/`Host_Matches`) | ✅ **proved** (AoRTE + `Well_Formed`) |
+| 3 | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | ⬜ **next — start here** |
+| 4 | `Chain_Verify` | ⬜ pending |
+| 5 | `AES.GCM` `GF_Mul`/`GHASH` | ⬜ pending (independent, easy) |
+
+`proof/x509_proof.gpr` proves at **226/226 VCs, `--level=2`, no justifications**
+(full results + per-phase tables in `tier-a-results.md`).
+
+**How to run** (toolchain/env is all handled by the script):
+```sh
+./proof/prove.sh -P proof/x509_proof.gpr -j0 --report=fail   # all proved => silent
+./proof/prove.sh -P proof/x509_proof.gpr -j0 --report=all -u <unit>.adb   # per-unit detail
+```
+Bump `--level=3`/`4` while iterating; the committed proof holds at the gpr default
+`--level=2`. Don't hand-set `PATH`/`target.atp` — `prove.sh` does it.
+
+### Phase 3 starting steps (`Cert_Verify`, in `libs/tls`)
+
+1. Add a proof project `proof/cert_verify_proof.gpr` mirroring `x509_proof.gpr`,
+   but with `Source_Dirs` covering both `../libs/esp32s3_hal/src` and
+   `../libs/tls/src`. `Source_Files`: `cert_verify.ads/adb`, `x509.ads`,
+   `x509-der.ads`, the **SPARKNaCl** sources it needs (`with` or add
+   `../crates/sparknacl/src`), and `esp32s3-rsa.ads` **only** (see step 3).
+2. Turn `Cert_Verify` `SPARK_Mode => On`. Prove **AoRTE** across the PKCS#1 / PSS
+   index arithmetic (`PS_Len`, `EmLen`, `DBLen`, `ZeroN`, `2 ** (8-LeadBits)`,
+   the `BE_To_Words`/`Words_To_BE` loops).
+3. **Proving across the hardware boundary** (see section below): include
+   `esp32s3-rsa.ads` but **exclude `esp32s3-rsa.adb`** (register body). Add a
+   `Post` to `ESP32S3.RSA.Mod_Exp` describing the result *shape* only
+   (`Z'Length = M'Length`, `Z` initialised) so `Words_To_BE (Z, …)` proves —
+   correctness of the modular exponentiation is silicon, out of scope.
+4. Consume the proven `X509` results: `Cert_Verify`'s callers slice the buffer
+   over `Certificate` fields, so thread `X509.Well_Formed` (already a postcondition
+   of `Parse`) into the relevant preconditions — do **not** re-derive bounds.
+5. Scope: **AoRTE + constant-time-compare structural property**, not functional
+   "signature valid ⇔ …" (rests on `Mod_Exp` = hardware). See the table in
+   "Functional properties" below.
+
+### Reusable patterns established in phases 1–2 (apply these in 3–5)
+
+- **In-buffer contract glue** lives in `x509.ads` (ghost): `Slice_In`,
+  `Well_Formed`, `Indexable` (buffer leaves one-past-end headroom: `Cert'Last <
+  Natural'Last - 1`). Reuse them; don't invent parallel predicates.
+- **Case-split postconditions beat unconditional ones.** A flat
+  `E.Elem_Last <= Buf'Last` would not prove; `(if Valid then … else Elem_Last = 0)`
+  did. When a fact has a trivial "failure" value, state it as a case split.
+- **Least-privilege parameters.** Pass the specific components a helper mutates
+  (e.g. `SAN : in out Slice_Array; Count : in out Natural`), not the whole record,
+  so the prover knows untouched fields are preserved across the call.
+- **Monotone status flags:** an `Ok : in out Boolean` wrapper with
+  `Post => (if Ok then Ok'Old)` lets you prove "a value stored mid-walk is good
+  whenever the walk ultimately succeeds."
+- **SPARK subset gotcha:** a `Boolean` function with an `out` parameter is **not**
+  in the subset — make it a procedure (cost me a refactor of `Parse_Time`).
+- **Total accessors:** make digit/byte readers total (return 0 for out-of-domain)
+  to kill underflow VCs instead of threading value preconditions everywhere.
+
+---
 
 ## Units in scope
 
@@ -29,14 +95,15 @@ boundary" below.
 
 ## How proof is wired (cross-targeted, contract-only deps)
 
-Add `proof/x509_proof.gpr` following `sparknacl_proof.gpr`: cross-targeted
+`proof/x509_proof.gpr` (phases 1–2) is the template: cross-targeted
 (`for Target use "xtensa-esp32-elf"`, `for Runtime use Esp32s3_Rts.Runtime_Path`,
-`-gnateT=target.atp` via `package Builder`), `Source_Files` listing just these
-units plus the **specs** they depend on, driven by `./proof/prove.sh -P
-proof/x509_proof.gpr`. Proving against the real target (not native) keeps the
-harness uniform with Tier B and faithful to the silicon's representation.
+`-gnateT=target.atp` via `package Builder`), with `Source_Files` listing just the
+units under proof plus the **specs** they depend on, driven by `./proof/prove.sh
+-P proof/x509_proof.gpr`. Proving against the real target (not native) keeps the
+harness uniform with Tier B and faithful to the silicon's representation. The
+phase-3 `Cert_Verify` project follows the same shape (see the handoff above).
 
-Two dependency subtleties to handle in the GPR:
+Two dependency subtleties to handle in each GPR:
 
 1. **`Cert_Verify` → `ESP32S3.RSA`.** Include `esp32s3-rsa.ads` (contracts) but
    **exclude `esp32s3-rsa.adb`** (register body). gnatprove treats `Mod_Exp` as
@@ -183,27 +250,29 @@ spec, sometimes infeasible):
 
 ## Definition of done (Tier A)
 
-- `proof/x509_proof.gpr` exists; `gnatprove --report=fail` is silent at
-  `--level=2 -j0` for all 5 units (AoRTE).
-- `DER.Read`, `Parse` (`Well_Formed`), and `Valid_At` functional postconditions
-  proved.
-- Finding #1 fixed (with a regression note), findings #2–#4 discharged by
-  contracts rather than `pragma Assume` where possible; any residual
-  `Assume`/justification documented inline with rationale.
-- A short `proof/tier-a-results.md` capturing the VC summary table, mirroring the
-  SPARKNaCl section in `README.md`.
+- ✅ `proof/x509_proof.gpr` exists; `--report=fail` silent at `--level=2 -j0`
+  (phases 1–2: `X509.DER` + `X509`, 226/226 VCs).
+- ✅ `DER.Read`, `Parse` (`Well_Formed`) functional postconditions proved.
+  (`Valid_At`/`Host_Matches` proved AoRTE; their *functional* date/RFC-6125 specs
+  are optional, see below.)
+- ✅ Finding #1 fixed plus three more the proof surfaced (empty-content `P+1`,
+  `Length`, `Pack_Time`); all discharged by contracts, no `pragma Assume`. The
+  two `pragma Assert`s in `Parse` (TBS span) are themselves proved.
+- ✅ `proof/tier-a-results.md` captures the per-phase VC summary tables.
+- ⬜ Remaining for Tier A done: phase 3 `Cert_Verify`, phase 4 `Chain_Verify`,
+  phase 5 `AES.GCM` GHASH (each its own proof GPR + `tier-a-results.md` section).
 
 ## Effort estimate
 
-| Phase | Effort |
-|-------|--------|
-| Harness GPR + contract-only RSA/SHA wiring | 0.5 day |
-| `X509.DER` (+ finding #1) | 0.5 day |
-| `X509` (predicate design + AoRTE + `Parse`/`Valid_At` post) | 1.5–2 days |
-| `Cert_Verify` AoRTE | 1–1.5 days |
-| `Chain_Verify` | 0.5 day |
-| `GF_Mul`/`GHASH` AoRTE | 0.25 day |
-| `Host_Matches` functional (optional) | +1 day |
+| Phase | Effort | Status |
+|-------|--------|--------|
+| Harness GPR + SPARKNaCl replay | 0.5 day | ✅ done |
+| `X509.DER` (+ finding #1) | 0.5 day | ✅ done |
+| `X509` (predicate design + AoRTE + `Parse` post) | 1.5–2 days | ✅ done |
+| `Cert_Verify` AoRTE | 1–1.5 days | ⬜ next |
+| `Chain_Verify` | 0.5 day | ⬜ |
+| `GF_Mul`/`GHASH` AoRTE | 0.25 day | ⬜ |
+| `Host_Matches` functional (optional) | +1 day | ⬜ optional |
 
 ~4–6 focused days for AoRTE + the high-value functional postconditions across
 the whole certificate-verification path — a fully proven, attacker-facing TLS
