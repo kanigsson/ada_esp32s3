@@ -106,17 +106,19 @@ every page from here on. They are worth pinning down now --- with the reason for
 each --- so that the register and bit-field code in later chapters reads as intended
 rather than as noise.
 
-\textbf{Case is insignificant --- so you pick a convention and the compiler keeps you
-honest.} Ada folds letter case for identifiers and reserved words alike:
-\texttt{Led}, \texttt{led} and \texttt{LED} are one name, and \texttt{LOOP},
-\texttt{Loop} and \texttt{loop} are one keyword. Crucially, the language also forbids
-two names that differ \emph{only} in case --- precisely so a reader never has to
-squint at \texttt{Value} versus \texttt{value} to tell two things apart. The freedom
-is therefore really a discipline: choose a house style and the consistency carries
-meaning. This book uses the conventional Ada style --- \texttt{Mixed\_Case} for
-identifiers and types (\texttt{Pin\_Id}, \texttt{Clock}), lower case for reserved
-words (\texttt{procedure}, \texttt{loop}, \texttt{end}) --- so when you see that shape
-you are reading a choice, not a rule the compiler imposed.
+\textbf{Case is insignificant --- so pick a convention, because the compiler will
+not.} Ada folds letter case for identifiers and reserved words alike: \texttt{Led},
+\texttt{led} and \texttt{LED} are one name, and \texttt{LOOP}, \texttt{Loop} and
+\texttt{loop} are one keyword. The compiler does not care which you write, and it
+will not impose a style on you --- so the consistency has to come from you. (The one
+thing it does enforce is that two names may not differ \emph{only} in case: you
+cannot declare both \texttt{Value} and \texttt{value}, precisely so a reader never
+has to tell them apart by capitalisation.) Picking a house style and applying it is
+therefore what makes the case \emph{carry} meaning. This book uses the conventional
+Ada style --- \texttt{Mixed\_Case} for identifiers and types (\texttt{Pin\_Id},
+\texttt{Clock}), lower case for reserved words (\texttt{procedure}, \texttt{loop},
+\texttt{end}) --- so when you see that shape you are reading a choice, not something
+the compiler required.
 
 \textbf{Numbers may be written in any base.} A plain literal is decimal (the
 \texttt{2} and \texttt{250} above), but an address or a bit mask is clearer in
