@@ -2,11 +2,13 @@ with Interfaces;
 with Ada.Real_Time;
 with Ada.Streams;  use Ada.Streams;
 with Net_Devices;
+with Net_Routes;
 
 package body GNAT.Sockets is
 
    use type Net_Devices.Status;
    use type Net_Devices.Device_Access;
+   use type Net_Devices.Interface_Id;
    use type Interfaces.Unsigned_16;
 
    Max_Sockets : constant := 8;                 --  most any one interface provides
@@ -15,6 +17,11 @@ package body GNAT.Sockets is
    --  Registered interfaces and the per-(interface, socket) state.
    Registry : array (Interface_Id) of Net_Devices.Device_Access := (others => null);
    N_Ifaces : Natural := 0;
+
+   --  Liveness source for the routing table: is interface Id usable right now?
+   --  Library-level + closure-free (bare-metal callback rules); reads the registry.
+   function Iface_Is_Up (Id : Interface_Id) return Boolean is
+     (Registry (Id) /= null and then Registry (Id).Is_Up);
 
    In_Use       : array (Interface_Id, Sock_Index) of Boolean := (others => (others => False));
    Local_Ports  : array (Interface_Id, Sock_Index) of Net_Devices.Port_Number :=
@@ -38,6 +45,8 @@ package body GNAT.Sockets is
       begin
          Registry (Id) := Device;
          N_Ifaces := N_Ifaces + 1;
+         --  Let the routing table see this interface's up/down state.
+         Net_Routes.Configure (Iface_Is_Up'Access);
          return Id;
       end;
    end Add_Interface;
@@ -92,6 +101,55 @@ package body GNAT.Sockets is
          Opened (Id, J) := True;
       end if;
    end Ensure_Open;
+
+   --  Choose the interface for a destination: the routing table when routes are
+   --  configured (longest-prefix, metric, live interfaces only); otherwise the
+   --  default interface, so a board that sets up no routes behaves as before.
+   procedure Resolve_Iface (Dest  : Net_Devices.IPv4_Address;
+                            Id    : out Interface_Id;
+                            Found : out Boolean) is
+   begin
+      if Net_Routes.Has_Routes then
+         Net_Routes.Resolve (Dest, Id, Found);
+      else
+         Id    := Default_Iface;       --  raises if no interface registered
+         Found := True;
+      end if;
+   end Resolve_Iface;
+
+   --  Re-home a socket onto interface Target before it is opened: allocate a chip
+   --  socket there, carry its pre-open state over, and free the old slot.  No-op
+   --  when already on Target -- so single-interface boards never actually move.
+   procedure Move_To (Socket : in out Socket_Type; Target : Interface_Id) is
+      Old_Id : constant Interface_Id := If_Of (Socket);
+      Old_J  : constant Sock_Index   := Ix_Of (Socket);
+   begin
+      if Target = Old_Id then
+         return;
+      end if;
+      declare
+         Count : constant Natural  := Registry (Target).Socket_Count;
+         New_J : Integer           := -1;
+      begin
+         for J in 0 .. Count - 1 loop
+            if not In_Use (Target, J) then New_J := J; exit; end if;
+         end loop;
+         if New_J < 0 then
+            raise Socket_Error;                     --  target interface is full
+         end if;
+         if Opened (Old_Id, Old_J) then
+            Registry (Old_Id).Close (Old_J);        --  not yet opened in practice
+         end if;
+         In_Use       (Target, New_J) := True;
+         Local_Ports  (Target, New_J) := Local_Ports  (Old_Id, Old_J);
+         Modes        (Target, New_J) := Modes        (Old_Id, Old_J);
+         Recv_Timeout (Target, New_J) := Recv_Timeout (Old_Id, Old_J);
+         Opened       (Target, New_J) := False;
+         In_Use (Old_Id, Old_J) := False;
+         Opened (Old_Id, Old_J) := False;
+         Socket := (Iface => Integer (Target), Index => New_J);
+      end;
+   end Move_To;
 
    ---------------------------------------------------------------------------
    --  Addresses
@@ -206,16 +264,29 @@ package body GNAT.Sockets is
    end Accept_Socket;
 
    procedure Connect_Socket (Socket : in out Socket_Type; Server : Sock_Addr_Type) is
-      Id : constant Interface_Id := If_Of (Socket);
-      J  : constant Sock_Index   := Ix_Of (Socket);
-      St : Net_Devices.Status;
+      Target : Interface_Id;
+      Found  : Boolean;
    begin
-      if Local_Ports (Id, J) = 0 then            --  pick an ephemeral local port
-         Local_Ports (Id, J) := Net_Devices.Port_Number (50_000 + J);
+      --  Route by destination, then bind the socket to the chosen interface.  With
+      --  no routes configured this is the default interface (unchanged behaviour);
+      --  with routes, a down interface yields no route -> Socket_Error.
+      Resolve_Iface (Server.Addr.B, Target, Found);
+      if not Found then
+         raise Socket_Error;
       end if;
-      Ensure_Open (Id, J);                        --  open TCP on the local port
-      Registry (Id).Connect (J, Server.Addr.B, Net_Devices.Port_Number (Server.Port), St);
-      if St /= Net_Devices.OK then raise Socket_Error; end if;
+      Move_To (Socket, Target);
+      declare
+         Id : constant Interface_Id := If_Of (Socket);
+         J  : constant Sock_Index   := Ix_Of (Socket);
+         St : Net_Devices.Status;
+      begin
+         if Local_Ports (Id, J) = 0 then         --  pick an ephemeral local port
+            Local_Ports (Id, J) := Net_Devices.Port_Number (50_000 + J);
+         end if;
+         Ensure_Open (Id, J);                     --  open TCP on the local port
+         Registry (Id).Connect (J, Server.Addr.B, Net_Devices.Port_Number (Server.Port), St);
+         if St /= Net_Devices.OK then raise Socket_Error; end if;
+      end;
    end Connect_Socket;
 
    procedure Send_Socket (Socket : Socket_Type;

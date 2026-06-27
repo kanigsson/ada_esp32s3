@@ -37,6 +37,11 @@ package Net_Routes is
    --  Drop all routes (reconfiguration / tests).
    procedure Clear;
 
+   --  Are any routes configured?  The facade falls back to its default interface
+   --  when this is False, so a single-interface board that sets up no routes keeps
+   --  its original behaviour; once routes exist, resolution is strict.
+   function Has_Routes return Boolean;
+
    --  Choose the interface for Dest: longest-prefix match among routes whose
    --  interface is up, then lowest metric.  Found is False if none qualify (no
    --  matching route, or every matching interface is down).

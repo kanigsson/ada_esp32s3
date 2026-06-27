@@ -41,6 +41,8 @@ package body Net_Routes is
       N_Routes := 0;
    end Clear;
 
+   function Has_Routes return Boolean is (N_Routes > 0);
+
    procedure Add_Route (Dest, Mask : Net_Devices.IPv4_Address;
                         Iface : Interface_Id; Metric : Natural := 100) is
    begin

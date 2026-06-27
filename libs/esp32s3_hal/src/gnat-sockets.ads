@@ -25,8 +25,9 @@ with Net_Devices;
 --  handles + Ada.Real_Time).
 package GNAT.Sockets is
 
-   --  Identifies a registered interface (0 = the first / default).
-   type Interface_Id is range 0 .. 3;
+   --  Identifies a registered interface (0 = the first / default).  Shared with
+   --  Net_Devices / Net_Routes so the registry and the routing table agree.
+   subtype Interface_Id is Net_Devices.Interface_Id;
 
    --  Register a network interface; the first one registered is the default.
    --  Returns its id.  (A Net_Devices.Device is provided by a chip driver, e.g.
