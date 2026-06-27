@@ -26,6 +26,10 @@ private package ESP32S3.SPI.Engine is
    --  Change just the bit clock of an already-Open bus (no GDMA re-Claim).
    procedure Set_Clock (B : Bus; Hz : Positive);
 
+   --  Change just the SPI mode (CPOL/CPHA) of an already-Open bus.  Applied per
+   --  device at Acquire, so two devices on one host can run different modes.
+   procedure Set_Mode (B : Bus; Mode : SPI_Mode);
+
    procedure Configure_Pins (B : Bus;
                              Sclk : ESP32S3.GPIO.Optional_Pin;
                              Mosi : ESP32S3.GPIO.Optional_Pin;

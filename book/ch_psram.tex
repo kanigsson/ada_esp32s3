@@ -112,7 +112,8 @@ setup, drop to a slow clock, do the chip transactions, raise the clock, then the
 cache phases. The deterministic steps are:
 
 \begin{longtable}{p{2.4cm} p{4.2cm} p{5.4cm}}
-\textbf{Step} & \textbf{Register / call} & \textbf{What it does} \\ \hline
+\toprule
+\textbf{Step} & \textbf{Register / call} & \textbf{What it does} \\ \midrule
 \endhead
 init pins      & \texttt{0x6000906C}=\texttt{0xF00}        & route GPIO\,26 to \texttt{SPICS1}, \texttt{FUN\_DRV}=3 \\
 clk pad drive  & \texttt{0x600033FC}=\texttt{0x0210105F}   & SMEM \texttt{SPICLK} pad drive \\
@@ -126,6 +127,7 @@ read MR0--8    & \texttt{exec\_cmd} \texttt{0x4040}        & decode vendor / den
 \textbf{tune din} & \texttt{psram\_tune\_din}              & \textbf{empirical 80\,MHz sweep --- the non-deterministic step} \\
 high speed     & \texttt{enter\_high\_speed\_mode}         & core 160\,MHz, /2 = 80\,MHz, apply din \\
 cache phases   & 5 SPI0 regs (below)                       & program transparent OPI-DDR cache access \\
+\bottomrule
 \end{longtable}
 
 A few of these deserve a closer look. The MR0 write is a read-modify-write of the
@@ -157,13 +159,15 @@ state --- and are written directly. They encode the same OPI-DDR geometry as the
 manual transactions above, but for the transparent cache path:
 
 \begin{longtable}{p{2.6cm} p{2.4cm} p{6.8cm}}
-\textbf{Register} & \textbf{Value} & \textbf{Meaning} \\ \hline
+\toprule
+\textbf{Register} & \textbf{Value} & \textbf{Meaning} \\ \midrule
 \endhead
 \texttt{SRAM\_CMD}  & \texttt{0x007C0000} & octal command/address/data lanes \\
 \texttt{SRAM\_DRD\_CMD} & \texttt{0xF0000000} & cache read command \texttt{0x0000}, 16-bit \\
 \texttt{SRAM\_DWR\_CMD} & \texttt{0xF0008080} & cache write command \texttt{0x8080}, 16-bit \\
 \texttt{SMEM\_DDR}  & \texttt{0x00003023} & DDR enable + variable dummy \\
 \texttt{CACHE\_SCTRL} & \texttt{0x01F7C479} & 32-bit addr, read dummy 18 / write 8, octal lanes \\
+\bottomrule
 \end{longtable}
 
 \texttt{CACHE\_SCTRL} carries the lane bits that make every phase octal

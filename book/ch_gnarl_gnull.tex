@@ -80,13 +80,13 @@ Table~\ref{tab:gnarl-units} maps the layers to the actual units you will find in
 \begin{longtable}{@{}p{0.16\linewidth}p{0.34\linewidth}p{0.42\linewidth}@{}}
 \caption{The tasking stack, by layer and real source unit}
 \label{tab:gnarl-units}\\
-\hline
+\toprule
 \textbf{Layer} & \textbf{Unit (file)} & \textbf{Role} \\
-\hline
+\midrule
 \endfirsthead
-\hline
+\toprule
 \textbf{Layer} & \textbf{Unit (file)} & \textbf{Role} \\
-\hline
+\midrule
 \endhead
 GNARL & \texttt{System.Tasking} (\texttt{s-taskin}) & The ATCB type and task-state model \\
 GNARL & \texttt{System.Tasking.Restricted.Stages} (\texttt{s-tarest}) & Task creation/activation under Ravenscar \\
@@ -98,7 +98,7 @@ Kernel & \texttt{System.BB.Threads} (\texttt{s-bbthre}) & Threads, ready queue, 
 Kernel & \texttt{System.BB.Time} (\texttt{s-bbtime}) & Monotonic clock + alarm queue \\
 Kernel & \texttt{System.BB.Parameters} (\texttt{s-bbpara}) & Board constants (\texttt{Ticks\_Per\_Second}, \dots) \\
 Kernel & \texttt{context\_switch.S} & Xtensa windowed-register switch (\S\ref{ch:context-switch}) \\
-\hline
+\bottomrule
 \end{longtable}
 
 The header comment at the top of \texttt{s-taprop.ads} is the canonical

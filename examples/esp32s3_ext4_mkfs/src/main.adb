@@ -88,9 +88,8 @@ procedure Main is
    --  exercises the on-device journaled formatter + the FS's JBD2 commit path.
    Use_Journal : constant Boolean := True;
 
-   CS_Cell : aliased W25Q.Pin_Cell := (Pin => CS_Pin);
    Flash   : W25Q.Flash :=
-     (Host => SPI.SPI2, CS => W25Q.GPIO_Select'Access, Ctx => CS_Cell'Address);
+     (Host => SPI.SPI2, Clock_Hz => Clock_Hz, CS_Pin => CS_Pin, others => <>);
 
    ID      : W25Q.JEDEC_ID;
    Mode_OK : Boolean;
@@ -160,10 +159,9 @@ begin
    delay until Clock + Milliseconds (200);
    Log.Put_Line ("[mkfs] format a blank SPI NOR flash to ext4 on-device (SPI2, CS=IO21)");
 
-   SPI.Setup (SPI.SPI2, Mode => 0, Clock_Hz => Clock_Hz);
+   SPI.Setup (SPI.SPI2);
    SPI.Configure_Pins (SPI.SPI2, Sclk => SCLK_Pin, Mosi => MOSI_Pin,
-                       Miso => MISO_Pin, Cs => SPI.No_Pin);
-   W25Q.Init_Pin (CS_Cell);
+                       Miso => MISO_Pin);
 
    W25Q.Read_Identification (Flash, ID);
    W25Q.Initialize (Flash, Mode_OK);

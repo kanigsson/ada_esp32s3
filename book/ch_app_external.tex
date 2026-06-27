@@ -575,6 +575,85 @@ end;                                            --  Session auto-released
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_st7789}.
 
+\section{TLV2556 --- SPI 12-bit ADC}\index{TLV2556 driver}\index{ADC driver}
+\label{app:ext:tlv2556}
+
+The TLV2556 is a Texas Instruments 12-bit, 11-channel, 200-kSPS
+successive-approximation ADC with an internal reference, on an SPI-compatible
+serial interface (mode 0). It is the off-chip complement to the SoC's own SAR ADC
+(in the HAL chapter): more channels, a stable internal reference, and --- because
+it lives on the SPI bus --- usable even when the internal ADC's pins are committed
+elsewhere.
+
+Two things make it a useful worked example. First, it \emph{shares the SPI2 bus
+with the W25Q flash}, through the SPI driver's built-in software chip-select: you
+name the select GPIO as \texttt{CS\_Pin} and the driver drives it --- active-low,
+held across the whole conversion --- and suppresses the hardware CS0 for the hold,
+so it cannot disturb the flash. (Contrast the ST7789 above, which toggles its CS
+as a plain GPIO by hand.) Second, the converter is \emph{pipelined}: each 16-clock
+frame shifts an 8-bit command in (channel select plus configuration) while the
+\emph{previous} conversion's result shifts out, MSB-first. \texttt{Read} hides
+that --- it primes the conversion, waits out the (max $\sim$5.5\,\textmu s)
+conversion time, then reads the result back.
+
+\begin{lstlisting}
+package ESP32S3.TLV2556 is
+   type Sample       is range 0 .. 4095;              --  12-bit unipolar result
+   type Analog_Input is (AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7,
+                         AIN8, AIN9, AIN10,            --  the 11 analog inputs ...
+                         Test_Half, Test_Zero, Test_Full);  --  ... and 3 self-tests
+   type Reference    is (Internal_4096mV, Internal_2048mV, External);
+
+   type Device is record                              --  describes itself on the bus
+      Host     : ESP32S3.SPI.SPI_Host;
+      Clock_Hz : Positive                  := 8_000_000;
+      CS_Pin   : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;  -- driver-driven CS
+      CS_CB    : ESP32S3.SPI.CS_Select     := null;   --  or a callback (decoder/expander)
+      Ctx      : System.Address            := System.Null_Address;
+   end record;
+
+   procedure Initialize (Dev : Device; Ref : Reference := External);
+   function  Read       (Dev : Device; Input : Analog_Input) return Sample;
+   function  Millivolts (S : Sample; Ref : Reference) return Natural;
+end ESP32S3.TLV2556;
+\end{lstlisting}
+
+The standout feature for bring-up is the \emph{self-test inputs}: three of the
+\texttt{Analog\_Input} values are not pins at all but internal voltages
+\emph{ratiometric to the reference rails}, so \texttt{Test\_Zero} reads 0,
+\texttt{Test\_Half} reads 2048, and \texttt{Test\_Full} reads 4095 --- regardless
+of the reference voltage or any analog wiring. They are the ADC analog of the
+W25Q's JEDEC-ID check: a reference- and wiring-independent proof that the SPI link,
+the framing, and the converter all work, before you trust a real reading.
+
+\begin{lstlisting}
+declare
+   package ADC renames ESP32S3.TLV2556;
+   Dev : ADC.Device :=                                --  shares SPI2; CS on IO12
+     (Host => ESP32S3.SPI.SPI2, Clock_Hz => 8_000_000, CS_Pin => 12, others => <>);
+begin
+   ESP32S3.SPI.Setup (ESP32S3.SPI.SPI2);              --  bus shared with the flash
+   ESP32S3.SPI.Configure_Pins (ESP32S3.SPI.SPI2, Sclk => 1, Mosi => 4, Miso => 45);
+   ADC.Initialize (Dev, Ref => ADC.External);
+
+   --  Bring-up proof: the ratiometric self-tests, independent of reference/wiring.
+   Put_Line ("zero=" & ADC.Read (Dev, ADC.Test_Zero)'Image    -- ~ 0
+           & " half=" & ADC.Read (Dev, ADC.Test_Half)'Image   -- ~ 2048
+           & " full=" & ADC.Read (Dev, ADC.Test_Full)'Image); -- ~ 4095
+
+   Value := ADC.Read (Dev, ADC.AIN0);                 --  then a real channel
+end;
+\end{lstlisting}
+
+On the hardware (the self-tests carry a couple of LSB of analog slack):
+
+\begin{lstlisting}[style=sh]
+[tlv2556] self-test: zero=0 half=2047 full=4095   PASS
+[tlv2556] AIN0 = 195 / 4095
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_tlv2556}.
+
 \section{GPS --- NMEA-0183 Receiver}\index{GPS driver}
 \label{app:ext:gps}
 

@@ -128,6 +128,7 @@ package ESP32S3.W5500 is
 private
    type Device is record
       Host       : ESP32S3.SPI.SPI_Host      := ESP32S3.SPI.SPI2;
+      Clock_Hz   : Positive                  := 10_000_000;   --  this device's clock
       Cs         : ESP32S3.GPIO.Pin_Id        := 0;
       Rst        : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
       Int        : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;

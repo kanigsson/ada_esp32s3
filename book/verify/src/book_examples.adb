@@ -100,9 +100,9 @@ package body Book_Examples is
       Tx : aliased array (0 .. 2) of Interfaces.Unsigned_8 := (16#9F#, 0, 0);
       Rx : aliased array (0 .. 2) of Interfaces.Unsigned_8;
    begin
-      Setup (SPI2, Mode => 0, Clock_Hz => 8_000_000);
+      Setup (SPI2);
       Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
-      Acquire (S, SPI2);
+      Acquire (S, SPI2, Mode => 0, Clock_Hz => 8_000_000);   --  per-device
       Transfer (S, Tx'Address, Rx'Address, 3);
    end SPI_Write_Dev;
 
@@ -135,9 +135,10 @@ package body Book_Examples is
       Tx : aliased array (0 .. 1) of Interfaces.Unsigned_8 := (16#9F#, 0);
       Rx : aliased array (0 .. 1) of Interfaces.Unsigned_8;
    begin
-      Setup (SPI2, Clock_Hz => 8_000_000);
+      Setup (SPI2);
       Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13);
-      Acquire (S, SPI2, Select_CB => CS_IO10'Access);   --  bring our own select
+      Acquire (S, SPI2, Clock_Hz => 8_000_000,
+               Select_CB => CS_IO10'Access);             --  bring our own select
       Select_Device (S, On => True);
       Transfer (S, Tx'Address, Rx'Address, 2);
       Select_Device (S, On => False);
@@ -706,15 +707,12 @@ package body Book_Examples is
       M.Commit;
    end EXT4_Append;
 
-   --  A library-level, active-low single-GPIO chip select for the flash (the
-   --  driver's GPIO_Select reads the pad from this aliased cell via Ctx).
+   --  The flash select is one plain GPIO (IO21): set CS_Pin and the SPI driver
+   --  drives it active-low, held across each command -- no callback needed.
    procedure W25Q_Probe is
       use ESP32S3.W25Q;
-      Select_Pad : aliased Pin_Cell := (Pin => 21);
-      Flash      : ESP32S3.W25Q.Flash :=
-        (Host => ESP32S3.SPI.SPI2,
-         CS   => GPIO_Select'Access,
-         Ctx  => Select_Pad'Address);
+      Flash   : ESP32S3.W25Q.Flash :=
+        (Host => ESP32S3.SPI.SPI2, CS_Pin => 21, others => <>);
       ID      : JEDEC_ID;
       Mode_OK : Boolean;
    begin
@@ -729,10 +727,8 @@ package body Book_Examples is
       use ESP32S3.W25Q;
       package BDW renames ESP32S3.Block_Dev.W25Q_Source;
       package WL  renames ESP32S3.Block_Dev.WL;
-      Select_Pad : aliased Pin_Cell := (Pin => 21);
       Flash      : ESP32S3.W25Q.Flash :=
-        (Host => ESP32S3.SPI.SPI2, CS => GPIO_Select'Access,
-         Ctx => Select_Pad'Address);
+        (Host => ESP32S3.SPI.SPI2, CS_Pin => 21, others => <>);
       Raw       : aliased BDW.Source;
       Vol       : aliased WL.Volume;
       Dev       : ESP32S3.Block_Dev.Device;
@@ -749,10 +745,8 @@ package body Book_Examples is
       use ESP32S3.W25Q;
       package BDW renames ESP32S3.Block_Dev.W25Q_Source;
       package WL  renames ESP32S3.Block_Dev.WL;
-      Select_Pad : aliased Pin_Cell := (Pin => 21);
       Flash      : ESP32S3.W25Q.Flash :=
-        (Host => ESP32S3.SPI.SPI2, CS => GPIO_Select'Access,
-         Ctx => Select_Pad'Address);
+        (Host => ESP32S3.SPI.SPI2, CS_Pin => 21, others => <>);
       Raw : aliased BDW.Source;
       Vol : aliased WL.Volume;
       Dev : ESP32S3.Block_Dev.Device;

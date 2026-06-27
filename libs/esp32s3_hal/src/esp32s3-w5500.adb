@@ -52,7 +52,7 @@ package body ESP32S3.W5500 is
       if not Dev.Configured then
          raise Not_Initialized;
       end if;
-      ESP32S3.SPI.Acquire (S, H);
+      ESP32S3.SPI.Acquire (S, H, Clock_Hz => Dev.Clock_Hz);
       while Off <= Data'Last loop
          declare
             N : constant Natural := Natural'Min (Chunk_Size, Data'Last - Off + 1);
@@ -86,7 +86,7 @@ package body ESP32S3.W5500 is
       if not Dev.Configured then
          raise Not_Initialized;
       end if;
-      ESP32S3.SPI.Acquire (S, H);
+      ESP32S3.SPI.Acquire (S, H, Clock_Hz => Dev.Clock_Hz);
       while Off <= Data'Last loop
          declare
             N : constant Natural := Natural'Min (Chunk_Size, Data'Last - Off + 1);
@@ -151,15 +151,16 @@ package body ESP32S3.W5500 is
       Host                 : ESP32S3.SPI.SPI_Host      := ESP32S3.SPI.SPI2;
       Clock_Hz             : Positive                  := 10_000_000) is
    begin
-      Dev.Host := Host;
-      Dev.Cs   := Cs;
-      Dev.Rst  := Rst;
-      Dev.Int  := Int;
+      Dev.Host     := Host;
+      Dev.Clock_Hz := Clock_Hz;
+      Dev.Cs       := Cs;
+      Dev.Rst      := Rst;
+      Dev.Int      := Int;
 
-      --  Mode 0 master; CS / MISO not routed to the peripheral -- CS is a GPIO.
-      ESP32S3.SPI.Setup (Host, Mode => 0, Clock_Hz => Clock_Hz);
-      ESP32S3.SPI.Configure_Pins (Host, Sclk => Sclk, Mosi => Mosi,
-                                  Miso => Miso, Cs => ESP32S3.SPI.No_Pin);
+      --  Route the shared bus pins; CS is driven here as a GPIO (not the
+      --  peripheral CS0).  Mode 0 / this device's clock are applied at Acquire.
+      ESP32S3.SPI.Setup (Host);
+      ESP32S3.SPI.Configure_Pins (Host, Sclk => Sclk, Mosi => Mosi, Miso => Miso);
 
       ESP32S3.GPIO.Configure (Cs, Mode => ESP32S3.GPIO.Output,
                               Pull => ESP32S3.GPIO.Pull_Up);

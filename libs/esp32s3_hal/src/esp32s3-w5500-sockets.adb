@@ -150,6 +150,17 @@ package body ESP32S3.W5500.Sockets is
    procedure Close (S : in out Socket) is
    begin
       if S.Is_Open then
+         --  Graceful active close for TCP: send FIN so the peer sees end-of-
+         --  stream (e.g. an FTP server reading a STOR data connection until EOF,
+         --  then replying 226).  An abrupt Cmd_Close sends no FIN, leaving the
+         --  peer to block until its own timeout.  Then force-free the socket.
+         if S.Proto = TCP_Proto then
+            Issue (S, Cmd_Discon);
+            for Tries in 1 .. 1000 loop                --  best effort; ~1 RTT
+               exit when R8 (S, Sn_SR) = SR_CLOSED;
+               Wait_Event (S);
+            end loop;
+         end if;
          Issue (S, Cmd_Close);
       end if;
       S.Is_Open := False;  S.Proto := None;
@@ -310,18 +321,33 @@ package body ESP32S3.W5500.Sockets is
                    Data   : Byte_Array;
                    Sent   : out Natural;
                    Result : out Status) is
-      Free : Unsigned_16;
-      WR   : Unsigned_16;
-      N    : Natural;
+      Free     : Unsigned_16;
+      WR       : Unsigned_16;
+      N        : Natural;
+      Deadline : constant Time := Clock + Milliseconds (10_000);
    begin
       if not S.Is_Open then
          Sent := 0;  Result := Not_Open;  return;
       end if;
-      Free := R16_Stable (S, Sn_TX_FSR);
-      N    := Natural'Min (Data'Length, Natural (Free));
-      if N = 0 then
-         Sent := 0;  Result := No_Space;  return;
-      end if;
+      --  Wait for room in the TX buffer rather than giving up: on a SUSTAINED
+      --  send the 2 KB socket buffer fills until the peer ACKs (and the peer
+      --  drains it continuously), so block here -- TCP send flow control.  Give
+      --  up only if the connection drops or a generous deadline elapses.  (The
+      --  old "N = 0 => No_Space, return" made Send_All abandon any transfer
+      --  larger than the socket buffer; native sockets never hit it.)
+      loop
+         Free := R16_Stable (S, Sn_TX_FSR);
+         exit when Free > 0;
+         case State (S) is
+            when Established | Close_Wait => null;        --  still connected
+            when others => Sent := 0;  Result := Closed_By_Peer;  return;
+         end case;
+         if Clock >= Deadline then
+            Sent := 0;  Result := Timed_Out;  return;
+         end if;
+         Wait_Event (S);
+      end loop;
+      N  := Natural'Min (Data'Length, Natural (Free));
       WR := R16 (S, Sn_TX_WR);
       Write (S.Dev.all, Socket_TX (S.Index), WR,
              Data (Data'First .. Data'First + N - 1));

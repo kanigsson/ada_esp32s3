@@ -47,11 +47,13 @@ It is deliberately small. Its job, in order:
   the loader looks at its load address:
 \begin{center}
 \begin{tabular}{l l l}
-\textbf{Window} & \textbf{Range} & \textbf{Action} \\ \hline
+\toprule
+\textbf{Window} & \textbf{Range} & \textbf{Action} \\ \midrule
 IRAM   & \texttt{16\#4037\_0000\#..16\#403E\_0000\#} & copy from flash into SRAM \\
 DRAM   & \texttt{16\#3FC8\_0000\#..16\#3FD0\_0000\#} & copy from flash into SRAM \\
 IROM   & \texttt{16\#4200\_0000\#..16\#4400\_0000\#} & map (execute-in-place via cache) \\
 DROM   & \texttt{16\#3C00\_0000\#..16\#3E00\_0000\#} & map (read-in-place via cache) \\
+\bottomrule
 \end{tabular}
 \end{center}
   RAM segments are copied byte-for-byte with the ROM SPI-flash read routine; the
@@ -151,13 +153,15 @@ windows of one physical memory:
 
 \begin{center}
 \begin{tabular}{l l l}
-\textbf{Region} & \textbf{Base} & \textbf{What lives there} \\ \hline
+\toprule
+\textbf{Region} & \textbf{Base} & \textbf{What lives there} \\ \midrule
 IRAM code     & \texttt{16\#4037\_8000\#} & vectors + hot code copied to SRAM \\
 IROM (flash)  & \texttt{16\#4200\_0000\#} & bulk code, execute-in-place via cache \\
 DRAM          & \texttt{16\#3FC9\_0000\#} & data, \texttt{.bss}, heap \\
 DROM (flash)  & \texttt{16\#3C00\_0000\#} & read-only data via cache \\
 PSRAM         & \texttt{16\#3D00\_0000\#} & external RAM (mapped by the loader) \\
 RTC slow mem  & \texttt{16\#5000\_0000\#} & retained across deep sleep \\
+\bottomrule
 \end{tabular}
 \end{center}
 

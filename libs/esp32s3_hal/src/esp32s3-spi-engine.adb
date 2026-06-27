@@ -143,6 +143,18 @@ package body ESP32S3.SPI.Engine is
       end if;
    end Set_Clock;
 
+   procedure Set_Mode (B : Bus; Mode : SPI_Mode) is
+      Out_Edge  : constant Boolean := (Mode = 1 or else Mode = 2);  --  CPHA map
+      Idle_Edge : constant Boolean := (Mode >= 2);                  --  CPOL
+   begin
+      if B.Regs /= null then
+         B.Regs.USER.CK_OUT_EDGE  := Out_Edge;
+         B.Regs.MISC.CK_IDLE_EDGE := Idle_Edge;
+         B.Regs.CMD.UPDATE := True;           --  latch into the shifter
+         while B.Regs.CMD.UPDATE loop null; end loop;
+      end if;
+   end Set_Mode;
+
    procedure Configure_Pins (B : Bus;
                              Sclk : ESP32S3.GPIO.Optional_Pin;
                              Mosi : ESP32S3.GPIO.Optional_Pin;

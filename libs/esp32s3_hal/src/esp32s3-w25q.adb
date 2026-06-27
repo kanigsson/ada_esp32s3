@@ -76,26 +76,13 @@ package body ESP32S3.W25Q is
       end loop;
    end Wait_Until_Ready;
 
-   ----------------------------------------------------------------------------
-   --  Single-GPIO chip select (the common case)
-   ----------------------------------------------------------------------------
-
-   procedure Init_Pin (Cell : Pin_Cell) is
+   --  Acquire the host for this flash, with its chip select (built-in CS_Pin or
+   --  a custom callback).
+   procedure Acquire (S : in out SPI.Session; Dev : Flash) is
    begin
-      ESP32S3.GPIO.Configure (Cell.Pin, Mode => ESP32S3.GPIO.Output,
-                              Drive => ESP32S3.GPIO.Drive_Strong);
-      ESP32S3.GPIO.Set (Cell.Pin);          --  idle high = deselected
-   end Init_Pin;
-
-   procedure GPIO_Select (Ctx : System.Address; Active : Boolean) is
-      Cell : Pin_Cell with Import, Address => Ctx;
-   begin
-      if Active then
-         ESP32S3.GPIO.Clear (Cell.Pin);     --  active-low: select drives low
-      else
-         ESP32S3.GPIO.Set (Cell.Pin);
-      end if;
-   end GPIO_Select;
+      SPI.Acquire (S, Dev.Host, Mode => 0, Clock_Hz => Dev.Clock_Hz,
+                   CS_Pin => Dev.CS_Pin, Select_CB => Dev.CS_CB, Ctx => Dev.Ctx);
+   end Acquire;
 
    ----------------------------------------------------------------------------
    --  Operations
@@ -106,7 +93,7 @@ package body ESP32S3.W25Q is
       Cmd : aliased Byte_Array := (0 => Cmd_Enter_4Byte);
       Rsp : aliased Byte_Array (0 .. 0);
    begin
-      SPI.Acquire (S, Dev.Host, Dev.CS, Dev.Ctx);
+      Acquire (S, Dev);
       Command (S, Cmd'Address, Rsp'Address, 1);                --  enter 4-byte mode
       OK := (Read_Register (S, Cmd_Read_Status3) and Status3_ADS) /= 0;
       SPI.Release (S);
@@ -117,7 +104,7 @@ package body ESP32S3.W25Q is
       Cmd : aliased Byte_Array := (Cmd_JEDEC_ID, 0, 0, 0);
       Rsp : aliased Byte_Array (0 .. 3);
    begin
-      SPI.Acquire (S, Dev.Host, Dev.CS, Dev.Ctx);
+      Acquire (S, Dev);
       Command (S, Cmd'Address, Rsp'Address, 4);
       SPI.Release (S);
       --  Rsp(0) is shifted in while the opcode goes out; the ID follows.
@@ -150,7 +137,7 @@ package body ESP32S3.W25Q is
       Header (0) := Cmd_Read;
       Put_Address (Header, Addr);
 
-      SPI.Acquire (S, Dev.Host, Dev.CS, Dev.Ctx);
+      Acquire (S, Dev);
       SPI.Select_Device (S, On => True);
       --  Opcode + address, then keep CS asserted and stream the data out in
       --  chunks -- the chip auto-increments, so successive transfers continue
@@ -173,7 +160,7 @@ package body ESP32S3.W25Q is
       Cmd (0) := Cmd_Sector_Erase;
       Put_Address (Cmd, Addr);
 
-      SPI.Acquire (S, Dev.Host, Dev.CS, Dev.Ctx);
+      Acquire (S, Dev);
       Write_Enable (S);
       Command (S, Cmd'Address, Rsp'Address, Header_Len);
       Wait_Until_Ready (S);
@@ -186,18 +173,12 @@ package body ESP32S3.W25Q is
       Buf : aliased Byte_Array (0 .. Header_Len + Page_Size - 1);
       Rsp : aliased Byte_Array (0 .. Header_Len + Page_Size - 1);
    begin
-      if Len = 0 or else Len > Page_Size then
-         raise Constraint_Error with "W25Q.Program_Page: 1 .. 256 bytes only";
-      end if;
-      if (Addr mod Page_Size) + Address (Len) > Page_Size then
-         raise Constraint_Error with "W25Q.Program_Page: crosses a page boundary";
-      end if;
-
+      --  Size + page-boundary rule is the precondition (see the spec).
       Buf (0) := Cmd_Page_Program;
       Put_Address (Buf, Addr);
       Buf (Header_Len .. Header_Len + Len - 1) := Data;
 
-      SPI.Acquire (S, Dev.Host, Dev.CS, Dev.Ctx);
+      Acquire (S, Dev);
       Write_Enable (S);
       Command (S, Buf'Address, Rsp'Address, Header_Len + Len);
       Wait_Until_Ready (S);

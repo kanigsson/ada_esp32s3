@@ -80,10 +80,12 @@ class maps each profile name to a variant:
 
 \begin{center}
 \begin{tabular}{l l}
-\textbf{Profile} & \textbf{\texttt{system.ads} variant} \\ \hline
+\toprule
+\textbf{Profile} & \textbf{\texttt{system.ads} variant} \\ \midrule
 \texttt{light-tasking} & \texttt{system-xi-xtensa-light-tasking.ads} \\
 \texttt{embedded}      & \texttt{system-xi-xtensa-embedded.ads} \\
 \texttt{full}          & synthesised locally (see below) \\
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -101,12 +103,14 @@ The board's own bodies are shared across profiles and named with the
 
 \begin{center}
 \begin{tabular}{l l}
-\textbf{File} & \textbf{Role} \\ \hline
+\toprule
+\textbf{File} & \textbf{Role} \\ \midrule
 \texttt{s-bbpara\_\_esp32s3.ads} & board parameters: 240\,MHz clock, interrupt range, stacks \\
 \texttt{s-bbbosu\_\_esp32s3.adb} & board support: the tick (\texttt{CCOMPARE}), interrupt dispatch \\
 \texttt{s-textio\_\_esp32s3.adb} & console \texttt{Put} via the ROM \texttt{esp\_rom\_printf} \\
 \texttt{s-macres\_\_esp32s3.adb} & machine reset \\
 \texttt{a-intnam\_\_esp32s3.ads}  & \texttt{Ada.Interrupts.Names} for the CPU's interrupts \\
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -134,7 +138,8 @@ each is documented at its head:
 
 \begin{center}
 \begin{tabular}{p{4.6cm} p{8.6cm}}
-\textbf{Patch} & \textbf{What it fixes} \\ \hline
+\toprule
+\textbf{Patch} & \textbf{What it fixes} \\ \midrule
 secondary-stack reclaim & free a task's heap secondary stack when it terminates \\
 trampoline IRAM alias & point nested-subprogram trampolines at the executable
   (IRAM) alias of SRAM, not the data view --- otherwise the first call faults \\
@@ -144,6 +149,7 @@ dynamic-priority re-apply & re-apply a \texttt{Set\_Priority} after the lock is
   released, which the bareboard unlock would otherwise undo \\
 FIFO-within-priority & implement RM~D.2.3 so a base-priority change moves a task
   to the tail of its ready queue \\
+\bottomrule
 \end{tabular}
 \end{center}
 

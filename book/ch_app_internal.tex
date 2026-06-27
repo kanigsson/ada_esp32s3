@@ -203,21 +203,27 @@ UART, the unsynchronised register driver is sealed in a private child,
 \texttt{ESP32S3.SPI.Engine}, and reached only through an acquired
 \texttt{Session}.
 
-\texttt{Setup} brings a host up at one of the four clock modes (CPOL/CPHA 0\,..\,3)
-and a bit clock from roughly 80\,kHz to 80\,MHz, and claims a GDMA channel;
-\texttt{Set\_Clock} re-tunes the rate without re-claiming DMA, which lets a
-device driver init slowly then run fast (an SD card negotiates at
-$\le$400\,kHz, then switches to several MHz). \texttt{Configure\_Pins} routes
+\texttt{Setup} brings a host up and claims a GDMA channel; mode and clock are not
+set here, because on a shared bus they are a per-\emph{device} property, applied at
+\texttt{Acquire}. \texttt{Configure\_Pins} routes the shared
 \texttt{Sclk}/\texttt{Mosi}/\texttt{Miso}/\texttt{Cs} to pads (each an
 \texttt{Optional\_Pin}), and \texttt{Enable\_Loopback} ties MOSI to MISO through
-one pad for a self-test. The single transfer primitive is a blocking,
-full-duplex DMA \texttt{Transfer} of 1\,..\,4095 bytes between two SRAM buffers,
-addressed by \texttt{System.Address}. A device that brings its own chip-select ---
-to share the bus, or behind a 3:8 decoder or an I/O-expander --- registers a
-library-level \texttt{CS\_Select} callback at \texttt{Acquire} and brackets its
-transaction with \texttt{Select\_Device}; the driver then suppresses the hardware
-\texttt{CS0} for that session. The controlled \texttt{Session} auto-releases on
-scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
+one pad for a self-test. \texttt{Acquire} takes the host and, under the exclusive
+hold, programs that device's \texttt{Mode} (CPOL/CPHA 0\,..\,3) and \texttt{Clock\_Hz}
+(roughly 80\,kHz\,..\,80\,MHz) --- so a flash at mode 0 / 8\,MHz and a display at
+mode 3 / 40\,MHz can share one controller, and an SD card can negotiate at
+$\le$400\,kHz then switch to several MHz on its next \texttt{Acquire}.
+\texttt{Set\_Clock} re-tunes the rate within a single hold (no DMA re-claim), for a
+device that changes speed mid-transaction. The single transfer primitive is a
+blocking, full-duplex DMA \texttt{Transfer} of 1\,..\,4095 bytes between two SRAM
+buffers, addressed by \texttt{System.Address}. A device that brings its own
+chip-select --- to share the bus --- names its select pin as \texttt{CS\_Pin} at
+\texttt{Acquire} (the driver owns the GPIO, active-low, held across the
+transaction) and brackets its transaction with \texttt{Select\_Device}; the driver
+then suppresses the hardware \texttt{CS0} for that session. A select that is not one
+plain GPIO (behind a 3:8 decoder or an I/O-expander) passes a library-level
+\texttt{CS\_Select} callback instead. The controlled \texttt{Session} auto-releases
+on scope exit, so this driver targets \texttt{embedded}/\texttt{full}.
 
 \begin{lstlisting}
 package ESP32S3.SPI is
@@ -225,18 +231,21 @@ package ESP32S3.SPI is
    subtype SPI_Mode is Natural range 0 .. 3;
    type Session is limited private;            --  auto-releasing
 
-   procedure Setup       (Host : SPI_Host; Mode : SPI_Mode := 0;
-                          Clock_Hz : Positive := 1_000_000);
-   procedure Set_Clock   (Host : SPI_Host; Hz : Positive);
+   procedure Setup       (Host : SPI_Host);    --  controller + GDMA
+   procedure Set_Clock   (Host : SPI_Host; Hz : Positive);   --  mid-hold re-tune
    procedure Enable_Loopback (Host : SPI_Host; Pad : ESP32S3.GPIO.Pin_Id);
    type CS_Select is access procedure            --  app chip select: library-
      (Ctx : System.Address; Active : Boolean);   --  level, closure-free
 
-   procedure Configure_Pins (Host : SPI_Host;
+   procedure Configure_Pins (Host : SPI_Host;   --  the shared bus wires
                              Sclk, Mosi, Miso : ESP32S3.GPIO.Optional_Pin;
                              Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
    procedure Acquire  (S : in out Session; Host : SPI_Host;
+                       Mode      : SPI_Mode := 0;             --  per-device
+                       Clock_Hz  : Positive := 1_000_000;     --  per-device
+                       Sclk, Mosi, Miso : ESP32S3.GPIO.Optional_Pin := No_Pin;
+                       CS_Pin    : ESP32S3.GPIO.Optional_Pin := No_Pin;
                        Select_CB : CS_Select := null;
                        Ctx : System.Address := System.Null_Address);
    procedure Select_Device (S : in out Session; On : Boolean);
@@ -258,9 +267,9 @@ Tx : aliased array (0 .. 7) of Interfaces.Unsigned_8
 Rx : aliased array (Tx'Range) of Interfaces.Unsigned_8 := (others => 0);
 S  : Session;
 begin
-   Setup (SPI2, Mode => 0, Clock_Hz => 1_000_000);
+   Setup (SPI2);
    Enable_Loopback (SPI2, Pad => 8);          --  MOSI -> MISO on GPIO8
-   Acquire (S, SPI2);
+   Acquire (S, SPI2);                          --  mode 0, default clock
    Transfer (S, Tx'Address, Rx'Address, Tx'Length);
    Release (S);                                --  Rx now mirrors Tx
 \end{lstlisting}

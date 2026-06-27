@@ -434,6 +434,120 @@ interrupt-signalled blocking is better when the wait may be long or power matter
 For the timeout: a status value on Jorvik, a catchable exception on embedded, and
 the \texttt{select}\,/\,\texttt{delay} timed entry call on full.
 
+\section{Choosing how to wait: a spectrum, by timescale}
+\label{sec:wait-spectrum}\index{busy-wait}\index{polling!spectrum}\index{spin loop}
+
+The previous section drew the choice as binary --- poll, or block on an interrupt.
+That is the right coarse split, but a driver author actually picks among
+\emph{four} points on a spectrum, and the deciding factor is almost always the
+same question: \emph{how long is the wait expected to be?} Match the strategy to
+the timescale and the rest follows.
+
+\subsection{A tight spin --- shorter than a context switch}
+
+When you are waiting on a hardware register bit that clears in a microsecond or
+two --- a command latching, a DMA-fed shift register draining --- the right thing
+is to spin with \emph{no} back-off at all:
+
+\begin{lstlisting}
+B.Regs.CMD.USR := True;            -- kick the SPI transfer
+while B.Regs.CMD.USR loop null;    -- ... and wait the few us for it to finish
+end loop;
+\end{lstlisting}
+
+This looks like the cardinal sin of embedded code --- a busy-loop burning the CPU
+--- but here it is correct, and a \texttt{delay until} would be \emph{worse}. The
+wait is a handful of microseconds; the kernel tick is a millisecond, and even a
+bare context switch costs more cycles than the bit takes to clear. Sleeping would
+turn a 2\,\textmu s wait into a 1\,ms one and add scheduler churn for nothing. The
+SPI engine (\texttt{CMD.USR}, \texttt{CMD.UPDATE}), the I2S engine
+(\texttt{TX\_UPDATE}), and the SHA peripheral (\texttt{BUSY.STATE}) all spin like
+this, deliberately. The rule: \emph{if the wait is shorter than the cost of
+yielding, do not yield.}
+
+\subsection{A bounded spin --- a tight loop that cannot hang}
+
+The pure \texttt{loop null} spin has one flaw: if the bit \emph{never} clears --- a
+wedged peripheral, a chip that is not there --- it hangs the core forever. Where
+that risk is real, the same spin gets a guard counter, so a fault becomes a
+bounded failure instead of a deadlock:
+
+\begin{lstlisting}
+Guard : Natural := 0;
+while not Done (C, Dir) and then Guard < 2_000_000 loop   -- GDMA completion
+   Guard := Guard + 1;
+end loop;
+--  fall through whether the DMA finished or the cap tripped; the caller checks Done
+\end{lstlisting}
+
+The cap is a crude worst-case-execution-time bound: still no \texttt{delay} (the
+expected wait is short), but liveness is guaranteed. GDMA's \texttt{Wait} and the
+W5500's command-accept (\texttt{Issue}, capped at 2000 tries) use this shape.
+
+\subsection{A paced poll --- when the wait is milliseconds}
+
+Once the expected wait reaches the millisecond range --- a reset settling, a slow
+status bit, a byte trickling in over a UART --- yielding pays off, and you back off
+with \texttt{delay until} so other tasks run meanwhile. This is the polling loop
+from the previous section, and \texttt{ESP32S3.Wait.Until\_True} packages it.
+Datasheet-mandated settle delays (the ST7789's 120\,ms power-on, the W5500's reset
+hold) are the same idea with a \emph{fixed} delay rather than a re-checked
+condition.
+
+\subsection{Blocking on an interrupt --- long or unbounded}
+
+When the wait could be long, is unpredictable, or power matters --- a network
+packet that may arrive in 1\,ms or 10\,s, a key-press, a sensor's data-ready line
+--- polling wastes both CPU and energy. Sleep instead: an interrupt handler
+\texttt{Set\_True}s a \texttt{Suspension\_Object} and the task
+\texttt{Suspend\_Until\_True}s on it, burning nothing until the hardware wakes it
+(Chapter~\ref{ch:suspension}). This is the top of the spectrum: the most machinery
+(a handler, a wired interrupt), but the only choice that costs \emph{zero} while
+waiting.
+
+\subsection{One driver, the whole spectrum}
+
+The W5500 networking stack is a useful specimen because it spans nearly all of
+these at once. Accepting a chip command spins, bounded (\texttt{Issue}); a short
+register read spins; and the blocking waits --- for an incoming connection, for
+received data, for room in the transmit buffer --- funnel through a single hook:
+
+\begin{lstlisting}
+procedure Wait_Event (S : Socket) is
+begin
+   if Waiter /= null then Waiter (S.Index);     -- sleep on INTn (Suspend_Until_True)
+   else delay until Clock + Milliseconds (1);   -- else a 1 ms paced poll
+   end if;
+end Wait_Event;
+\end{lstlisting}
+
+By default the stack \emph{polls} (the 1\,ms fallback); calling
+\texttt{Interrupts.Enable} registers a waiter and the very same waits become
+interrupt-blocking, with no change to the socket code. That default carries a
+throughput cost worth knowing: a bulk transfer paced at one decision per
+millisecond is far slower than one that wakes the instant the buffer drains --- the
+difference the 1\,MiB FTP upload of Chapter~\ref{ch:networking} ran into. For
+sustained data, enable the interrupts.
+
+\subsection{The rule of thumb}
+
+\begin{center}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Expected wait} & \textbf{Strategy} & \textbf{Example} \\ \midrule
+under a few \textmu s          & tight spin, no back-off        & SPI \texttt{CMD.USR}, SHA \texttt{BUSY} \\
+short, but may never end       & bounded spin (guard count)     & GDMA \texttt{Wait}, W5500 \texttt{Issue} \\
+milliseconds                   & paced poll (\texttt{delay until}) & reset/settle, \texttt{Wait.Until\_True} \\
+long / unbounded / power       & block on an interrupt          & W5500 \texttt{Wait\_Data}, sensor DRDY \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two failure modes bracket the table. Yield on a sub-microsecond wait and you pay a
+thousandfold latency penalty for nothing; spin --- even bounded --- on a
+multi-second wait and you burn a core and a battery. Picking the row that matches
+the timescale is most of getting it right.
+
 \section{Concurrency patterns}
 \label{sec:concurrency}\index{concurrency patterns}
 

@@ -108,7 +108,8 @@ source can often build under more than one; the HAL drivers that use finalizatio
 are restricted to the richer two.
 
 \begin{longtable}{p{2.6cm} p{11.3cm}}
-\textbf{Profile} & \textbf{What it gives you} \\ \hline
+\toprule
+\textbf{Profile} & \textbf{What it gives you} \\ \midrule
 \endhead
 \texttt{light-tasking} &
   The Ravenscar/Jorvik subset (\texttt{pragma Profile (Jorvik)}). Tasks,
@@ -130,6 +131,7 @@ are restricted to the richer two.
   asynchronous transfer of control. Built on a fully ported GNARL kernel.
   Experimental (work in progress), but real rendezvous and \texttt{abort} run on
   the silicon. \\
+\bottomrule
 \end{longtable}
 
 \section{Choosing a profile}\index{light-tasking profile}\index{embedded profile}\index{full profile}\index{Jorvik}

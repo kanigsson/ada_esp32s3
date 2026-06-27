@@ -45,7 +45,8 @@ Two structures carry the state.
 \textbf{The \texttt{Context\_Buffer}}, one per task, is deliberately tiny:
 
 \begin{longtable}{p{3cm} p{1.2cm} p{8cm}}
-\textbf{Field} & \textbf{Off} & \textbf{Meaning} \\ \hline
+\toprule
+\textbf{Field} & \textbf{Off} & \textbf{Meaning} \\ \midrule
 \endhead
 \texttt{SP}         & 0  & task stack pointer (top of its spilled frame) \\
 \texttt{PC}         & 4  & resume target: a \texttt{retw} stub, or the new-task trampoline \\
@@ -56,6 +57,7 @@ Two structures carry the state.
 \texttt{SAR}        & 24 & shift-amount register \\
 \texttt{LBEG/LEND/LCOUNT} & 28..36 & zero-overhead loop registers \\
 \texttt{Frame\_Kind} & 40 & 0 = solicited, 1 = interrupt (see below) \\
+\bottomrule
 \end{longtable}
 
 What is conspicuously \emph{absent} is the general register file. That is the
@@ -196,13 +198,15 @@ i.e.\ ``no thread-local storage'' until the task sets it.
 \section{What state is saved \textemdash{} and what is not}\index{coprocessor state}\index{THREADPTR}
 
 \begin{longtable}{p{5.5cm} p{2.2cm} p{5.5cm}}
-\textbf{State} & \textbf{Saved?} & \textbf{Notes} \\ \hline
+\toprule
+\textbf{State} & \textbf{Saved?} & \textbf{Notes} \\ \midrule
 \endhead
 \texttt{SP}/\texttt{PS}/\texttt{A0}, register windows & always & spill + frame \\
 \texttt{SAR}, \texttt{LBEG}/\texttt{LEND}/\texttt{LCOUNT} & always & loops: \texttt{XCHAL\_HAVE\_LOOPS}=1 \\
 \texttt{THREADPTR} & always & TLS base; per task \\
 \texttt{F0..F15} + \texttt{FCR} + \texttt{FSR} & conditional & only when the task owns a \texttt{CP\_State} area \\
 MAC16 \texttt{ACCLO}/\texttt{ACCHI}/\texttt{Mn} & no & \texttt{XCHAL\_HAVE\_MAC16}=0 \textemdash{} the unit is absent \\
+\bottomrule
 \end{longtable}
 
 The FPU is handled \emph{eagerly per task}: \texttt{CPENABLE} is enabled globally,

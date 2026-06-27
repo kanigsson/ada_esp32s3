@@ -113,6 +113,8 @@ package ESP32S3.ST7789 is
 private
    type Device is record
       Host       : ESP32S3.SPI.SPI_Host      := ESP32S3.SPI.SPI2;
+      Mode       : ESP32S3.SPI.SPI_Mode      := 0;
+      Clock_Hz   : Positive                  := 40_000_000;
       DC, CS     : ESP32S3.GPIO.Pin_Id        := 0;
       RST        : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
       W, H       : Positive                  := 1;
@@ -124,6 +126,8 @@ private
    type Session is new Ada.Finalization.Limited_Controlled with record
       Active : Boolean                  := False;
       Host   : ESP32S3.SPI.SPI_Host     := ESP32S3.SPI.SPI2;
+      Mode   : ESP32S3.SPI.SPI_Mode     := 0;
+      Clock_Hz : Positive               := 40_000_000;
       DC, CS : ESP32S3.GPIO.Pin_Id       := 0;
       RST    : ESP32S3.GPIO.Optional_Pin := ESP32S3.GPIO.No_Pin;
       W, H   : Positive                 := 1;

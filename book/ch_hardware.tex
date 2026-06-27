@@ -240,13 +240,15 @@ PSRAM) descriptors --- placement and alignment together.
 \begin{table}[ht]
 \centering
 \begin{tabular}{@{}l l l@{}}
-\textbf{Base} & \textbf{Top} & \textbf{Region} \\ \hline
+\toprule
+\textbf{Base} & \textbf{Top} & \textbf{Region} \\ \midrule
 \texttt{16\#3C00\_0000\#} & \texttt{16\#3D00\_0000\#} & Flash $\to$ DROM --- cached read-only data \\
 \texttt{16\#3D00\_0000\#} & \texttt{16\#3E00\_0000\#} & External PSRAM --- mapped by the bootloader \\
 \texttt{16\#3FC8\_8000\#} & \texttt{16\#3FD0\_0000\#} & Internal SRAM (DRAM view) --- data, stacks, heap \\
 \texttt{16\#4037\_0000\#} & \texttt{16\#403E\_0000\#} & Internal SRAM (IRAM view) --- code, vectors, DMA \\
 \texttt{16\#4200\_0000\#} & \texttt{16\#4400\_0000\#} & Flash $\to$ IROM --- cached code \\
 \texttt{16\#5000\_0000\#} & \texttt{16\#5000\_2000\#} & RTC slow RAM --- retained across deep sleep \\
+\bottomrule
 \end{tabular}
 \caption{Principal address-space regions, by ascending base address. Flash
 (DROM) and external PSRAM are not separate windows: they are two sub-ranges of

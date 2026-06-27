@@ -134,7 +134,8 @@ window simply by removing their markers.
 Full profile, \texttt{full\_applicable.txt} (1{,}518 tests), one image each:
 
 \begin{longtable}{p{4.5cm} r p{6.5cm}}
-\textbf{Outcome} & \textbf{Count} & \textbf{Meaning} \\ \hline
+\toprule
+\textbf{Outcome} & \textbf{Count} & \textbf{Meaning} \\ \midrule
 \endhead
 PASS                & 1{,}286 & graded \texttt{PASSED} / \texttt{TENTATIVELY PASSED} \\
 NOT-APPLICABLE      & 10      & test ruled itself out (correctly) \\
@@ -142,6 +143,7 @@ FAIL                & 0       & \\
 HUNG                & 4       & documented limitations (see below) \\
 CRASH               & 0       & \\
 won't-build         & 218     & needs a library unit the bare runtime omits \\
+\bottomrule
 \end{longtable}
 
 That is \textbf{1{,}296 conformant} (PASS plus N/A), \textbf{zero failures}, and
@@ -251,7 +253,8 @@ was never emitted. The fix is to emit the helper as a \emph{library-level} task 
 which is legal under Jorvik and accepted by \texttt{full} alike.
 
 \begin{longtable}{p{4.5cm} r p{6.5cm}}
-\textbf{Outcome} & \textbf{Count} & \textbf{Meaning} \\ \hline
+\toprule
+\textbf{Outcome} & \textbf{Count} & \textbf{Meaning} \\ \midrule
 \endhead
 PASS                & 840 & graded \texttt{PASSED} / \texttt{TENTATIVELY PASSED} \\
 NOT-APPLICABLE      & 3   & test ruled itself out (correctly) \\
@@ -259,6 +262,7 @@ FAIL                & 1   & \texttt{CXC3004}, the interactive test (see below) \
 HUNG                & 0   & \\
 CRASH               & 0   & \\
 won't-build         & 2   & partition-wide build constraints (see below) \\
+\bottomrule
 \end{longtable}
 
 \textbf{843 conformant, zero HUNG, zero CRASH, zero genuine FAIL} --- above the bundled

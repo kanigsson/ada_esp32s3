@@ -123,6 +123,7 @@ on-card test left to the user.
 | `SHA` | FIPS-180 SHA-1/224/256 vectors (`esp32s3_crypto`) |
 | `AES` | FIPS-197 AES-128/256 vectors (`esp32s3_crypto`) |
 | `W25Q` | W25Q256FV JEDEC ID + erase/program/read-back round-trip (`esp32s3_w25q`) |
+| `TLV2556` | TI 12-bit SPI ADC: self-test voltages 0/2048/4095 + channel read (`esp32s3_tlv2556`) |
 
 **🟡 Needs on-card testing** (compile-verified + no-card smoke run only — boots,
 runs the init path on silicon, reports `No_Card` cleanly; the on-card read/write
@@ -268,23 +269,24 @@ this whole path** (full-duplex SPI2 DMA, see below).
 with ESP32S3.SPI; use ESP32S3.SPI;
 
 --  once, single-threaded, at startup:
-Setup (SPI2, Mode => 0, Clock_Hz => 4_000_000);          -- or Setup (SPI3, ...)
-Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);
+Setup (SPI2);                                            -- or Setup (SPI3, ...)
+Configure_Pins (SPI2, Sclk => 12, Mosi => 11, Miso => 13, Cs => 10);  -- shared wires
 --  or, for a wiring-free self-test:  Enable_Loopback (SPI2, Pad => 5);
 
 --  then, from any task (mutually exclusive):
 declare
    S : Session;                       -- limited: cannot be copied/shared
 begin
-   Acquire  (S, SPI2);                -- suspends until the host is free
+   Acquire  (S, SPI2, Mode => 0, Clock_Hz => 4_000_000);  -- this device's mode/clock
    Transfer (S, Tx'Address, Rx'Address, 32);   -- full-duplex DMA, blocking
 end;                                  -- S auto-releases the host on scope exit
 ```
 A full-duplex SPI **master** for either general-purpose host (**SPI2** or
 **SPI3** — SPI0/SPI1 are the flash/PSRAM controllers, off-limits). The two hosts
 share one register layout and differ only in base address, GDMA trigger and
-GPIO-matrix signals, so one body drives either. Modes 0..3 and a software-divided
-bit clock are configurable; transfers run over `ESP32S3.GDMA`.
+GPIO-matrix signals, so one body drives either. Mode (0..3) and a software-divided
+bit clock are **per-device**, applied at `Acquire` under the exclusive hold, so two
+devices on one host can run different modes/clocks; transfers run over `ESP32S3.GDMA`.
 
 **Concurrency:** each host is mediated by a protected object, so two tasks can't
 clash — `Acquire` blocks until the host is free, the `Session` handle is *limited*

@@ -25,8 +25,9 @@ with Net_Devices;
 --  handles + Ada.Real_Time).
 package GNAT.Sockets is
 
-   --  Identifies a registered interface (0 = the first / default).
-   type Interface_Id is range 0 .. 3;
+   --  Identifies a registered interface (0 = the first / default).  Shared with
+   --  Net_Devices / Net_Routes so the registry and the routing table agree.
+   subtype Interface_Id is Net_Devices.Interface_Id;
 
    --  Register a network interface; the first one registered is the default.
    --  Returns its id.  (A Net_Devices.Device is provided by a chip driver, e.g.
@@ -61,8 +62,16 @@ package GNAT.Sockets is
                             Family  : Family_Type := Family_Inet;
                             Mode    : Mode_Type   := Socket_Stream);
 
-   --  Set the local port for a server (TCP) or the bound port (UDP).
+   --  Set the local port for a server (TCP) or the bound port (UDP).  Binding to a
+   --  specific interface's own address (rather than Any_Inet_Addr) also PINS the
+   --  socket to that interface (see Set_Interface).
    procedure Bind_Socket (Socket : in out Socket_Type; Address : Sock_Addr_Type);
+
+   --  Pin Socket to exactly one interface: it uses only Iface, and Connect FAILS
+   --  (Socket_Error) rather than re-routing if that interface is down -- a hard
+   --  "this traffic must never leave this link" for isolation/billing/compliance.
+   --  Unpinned sockets (the default) route by destination via the routing table.
+   procedure Set_Interface (Socket : in out Socket_Type; Iface : Interface_Id);
 
    procedure Listen_Socket (Socket : in out Socket_Type; Length : Natural := 15);
 
@@ -70,6 +79,12 @@ package GNAT.Sockets is
    procedure Accept_Socket (Server  : Socket_Type;
                             Socket  : out Socket_Type;
                             Address : out Sock_Addr_Type);
+
+   --  The local address bound to Socket: the interface's own IP (the chip's
+   --  configured source address, set at bring-up be it static or DHCP) and the
+   --  socket's local port.  PASV, for one, advertises this so a client knows where
+   --  to open the data connection.  Mirrors desktop GNAT.Sockets' Get_Socket_Name.
+   function Get_Socket_Name (Socket : Socket_Type) return Sock_Addr_Type;
 
    procedure Connect_Socket (Socket : in out Socket_Type; Server : Sock_Addr_Type);
 
@@ -118,9 +133,11 @@ private
    Any_Inet_Addr : constant Inet_Addr_Type := (B => (0, 0, 0, 0));
 
    --  A socket names a registered interface and one of its sockets (-1 = none).
+   --  Pin is the interface it is pinned to, or -1 to route freely by destination.
    type Socket_Type is record
       Iface : Integer := -1;
       Index : Integer := -1;
+      Pin   : Integer := -1;
    end record;
-   No_Socket : constant Socket_Type := (Iface => -1, Index => -1);
+   No_Socket : constant Socket_Type := (Iface => -1, Index => -1, Pin => -1);
 end GNAT.Sockets;
