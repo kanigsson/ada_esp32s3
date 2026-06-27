@@ -1,0 +1,15 @@
+--  Native (x86) host test for the Modbus framing layer.  Pure logic over Modbus
+--  types -- builds and runs natively, no bare-metal runtime, no hardware.
+project Modbus_Test is
+   for Source_Dirs use (".", "../../src");
+   for Object_Dir use "obj";
+   for Exec_Dir use ".";
+   for Main use ("modbus_test.adb");
+   for Source_Files use
+     ("modbus_test.adb",
+      "modbus.ads",
+      "modbus.adb");
+   package Compiler is
+      for Default_Switches ("Ada") use ("-g", "-O0", "-gnata", "-gnat2022");
+   end Compiler;
+end Modbus_Test;
