@@ -4,7 +4,7 @@
 --  xtensa-esp32-elf target via target.atp (-gnateT), runtime pulled in lazily,
 --  driven by ./proof/prove.sh -P proof/cert_verify_proof.gpr.
 --
---  Dependency boundaries (see ROADMAP-tier-a.md "Proving across the hardware
+--  Dependency boundaries (see proof-patterns.md "Proving across the hardware
 --  boundary"):
 --    * ESP32S3.RSA -- include the spec (esp32s3-rsa.ads, carries the Mod_Exp
 --      Pre/Post contracts) but EXCLUDE the register body (esp32s3-rsa.adb):

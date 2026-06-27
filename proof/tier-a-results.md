@@ -292,7 +292,7 @@ overflow, discharged by a headroom precondition `Data'Last < Natural'Last - 16`
 (real AEAD payloads are a few KiB) — the same "finite buffer" convention as the
 X.509 side's `Indexable`. Note this is **AoRTE only**: the algebraic correctness of
 `GF_Mul` (carry-less multiply mod x¹²⁸+x⁷+x²+x+1) is a separate, costly functional
-proof, deliberately deferred (see `ROADMAP-tier-a.md`, "Functional properties").
+proof, deliberately deferred (see `proof-patterns.md`, "Functional properties").
 
 ### Regression / compatibility
 

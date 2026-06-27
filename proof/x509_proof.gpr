@@ -5,7 +5,7 @@
 --
 --  Phase 1 covers X509.DER (the TLV reader) plus its parent spec X509 (types
 --  only -- X509's own body, Cert_Verify and Chain_Verify come in later phases;
---  see ROADMAP-tier-a.md).
+--  see proof-patterns.md).
 with "../crates/esp32s3_rts/esp32s3_rts.gpr";
 
 project X509_Proof is
