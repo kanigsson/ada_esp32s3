@@ -536,10 +536,17 @@ whatever has been registered:
 
 \begin{lstlisting}
 ESP32S3.Ext4.VFS.Add ("flash", Flash_FS.M'Access);
-FTP_Server.Run (Local_IP    => "192.168.1.50",   -- advertised in PASV
-                Server_Name => "Ada ESP32-S3",    -- the 220 greeting
-                Read_Only   => False);
+FTP_Server.Run (Server_Name => "Ada ESP32-S3");   -- the 220 greeting
 \end{lstlisting}
+
+Note what is \emph{absent}: no address. Passive FTP must tell the client which IP
+to open the data connection to, and rather than hand-feed it the DHCP lease, the
+server reads its own address from each accepted control connection
+(\texttt{Get\_Socket\_Name} returns the interface's configured IP) and advertises
+exactly that in the \texttt{227} reply. So it always names the address the client
+actually reached the board on, even as DHCP reassigns it. \texttt{Run} does take an
+optional \texttt{Local\_IP} to override this --- needed only behind NAT, where the
+public address differs from the board's own --- but ordinary use leaves it out.
 
 It runs the accept loop --- one client at a time, a control connection plus one
 passive data connection per transfer. The server side of the socket API is
