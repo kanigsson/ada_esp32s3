@@ -533,11 +533,13 @@ sustained data, enable the interrupts.
 
 \begin{center}
 \begin{tabular}{l l l}
-\textbf{Expected wait} & \textbf{Strategy} & \textbf{Example} \\ \hline
+\toprule
+\textbf{Expected wait} & \textbf{Strategy} & \textbf{Example} \\ \midrule
 under a few \textmu s          & tight spin, no back-off        & SPI \texttt{CMD.USR}, SHA \texttt{BUSY} \\
 short, but may never end       & bounded spin (guard count)     & GDMA \texttt{Wait}, W5500 \texttt{Issue} \\
 milliseconds                   & paced poll (\texttt{delay until}) & reset/settle, \texttt{Wait.Until\_True} \\
 long / unbounded / power       & block on an interrupt          & W5500 \texttt{Wait\_Data}, sensor DRDY \\
+\bottomrule
 \end{tabular}
 \end{center}
 

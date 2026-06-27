@@ -9,12 +9,14 @@ ESP32-S3 actually exposes. Everything else is a compile-time error.
 
 \begin{center}
 \begin{tabular}{l l}
-\textbf{Pads} & \textbf{Status} \\ \hline
+\toprule
+\textbf{Pads} & \textbf{Status} \\ \midrule
 \texttt{0 .. 21}   & usable (general-purpose) \\
 \texttt{22 .. 25}  & absent on the package \\
 \texttt{26 .. 32}  & SPI flash --- driving them hangs the chip \\
 \texttt{33 .. 37}  & octal PSRAM --- driving them hangs the chip \\
 \texttt{38 .. 48}  & usable (general-purpose) \\
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -26,7 +28,8 @@ adds the sentinel \texttt{No\_Pin} ($=-1$) for ``leave this line unrouted.''
 
 \begin{center}
 \begin{tabular}{l l l l}
-\textbf{Feature} & \textbf{light-tasking} & \textbf{embedded} & \textbf{full} \\ \hline
+\toprule
+\textbf{Feature} & \textbf{light-tasking} & \textbf{embedded} & \textbf{full} \\ \midrule
 Tasks, protected objects, \texttt{delay until} & yes & yes & yes \\
 Exception propagation (ZCX)        & no  & yes & yes \\
 Controlled types / finalization (RAII) & no & yes & yes \\
@@ -35,6 +38,7 @@ Heap                               & bump only & TLSF (O(1)) & TLSF (O(1)) \\
 \texttt{select} / rendezvous / \texttt{abort} & no & no & yes \\
 RAII-handle HAL drivers (SPI, I2S, \ldots) & no & yes & yes \\
 Smallest footprint                 & yes & --- & --- \\
+\bottomrule
 \end{tabular}
 \end{center}
 
@@ -51,7 +55,8 @@ profile column is its default.
 
 \begin{center}\small
 \begin{longtable}{@{}l l l@{}}
-\textbf{Name} & \textbf{Profile} & \textbf{Shows} \\ \hline
+\toprule
+\textbf{Name} & \textbf{Profile} & \textbf{Shows} \\ \midrule
 \endhead
 \texttt{gpio0\_blink}    & light-tasking & GPIO output; the minimal app \\
 \texttt{heartbeat}       & light-tasking & a periodic task \\
@@ -78,5 +83,6 @@ profile column is its default.
 \texttt{sd\_spi}, \texttt{sdmmc}, \texttt{ext4} & embedded & SD cards + ext4 filesystem \\
 \texttt{intr\_levels}    & embedded & interrupt levels/priorities \\
 \texttt{full\_tasking}, \texttt{rendezvous}, \texttt{full\_intr} & full & rendezvous, dynamic tasking \\
+\bottomrule
 \end{longtable}
 \end{center}

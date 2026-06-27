@@ -141,7 +141,8 @@ inside the clone, while \texttt{esp32-ada build} operates on the project folder 
 are standing in:
 
 \begin{longtable}{p{0.46\linewidth} p{0.48\linewidth}}
-\textbf{Command} & \textbf{What it does} \\ \hline
+\toprule
+\textbf{Command} & \textbf{What it does} \\ \midrule
 \endhead
 \texttt{esp32-ada init [\textit{dir}]} & Scaffold a project in \textit{dir} (or the current folder). \\
 \texttt{esp32-ada build [-P \textit{prof}]} & Build to \texttt{app.bin}. \textit{prof} = \texttt{light-tasking} (default), \texttt{embedded}, or \texttt{full}. \\
@@ -153,7 +154,8 @@ are standing in:
 \texttt{esp32-ada debug [-p \textit{port}]} & On-chip debug (OpenOCD + GDB), halting at \texttt{Main}. \\
 \texttt{esp32-ada kill-openocd} & Kill every OpenOCD (release captured USB-JTAG ports). \\
 \texttt{esp32-ada install-ide} & Install the VS Code extension (committed \texttt{.vsix}). \\
-\texttt{esp32-ada install-vim} & Symlink the Vim/Neovim plugin. \\ \hline
+\texttt{esp32-ada install-vim} & Symlink the Vim/Neovim plugin. \\ \midrule
+\bottomrule
 \end{longtable}
 
 \noindent\texttt{-p}/\texttt{--port} defaults to \texttt{\$ESPPORT} or

@@ -16,7 +16,8 @@ The ESP32-S3's Xtensa LX7 has six maskable interrupt levels plus a non-maskable
 one, and two of those levels are special:
 
 \begin{longtable}{p{2.2cm} p{10.5cm}}
-\textbf{Level} & \textbf{Role on this port} \\ \hline
+\toprule
+\textbf{Level} & \textbf{Role on this port} \\ \midrule
 \endhead
 1     & The general \emph{exception} vector (synchronous faults). No async
         interrupt is assigned here. \\
@@ -29,6 +30,7 @@ one, and two of those levels are special:
 6     & \texttt{DEBUGLEVEL} --- debug exceptions: breakpoints and the
         \texttt{DBREAK} data watchpoints (used for stack-overflow detection). \\
 7     & \texttt{NMILEVEL} --- non-maskable; not used. \\
+\bottomrule
 \end{longtable}
 
 Two architectural constants shape everything below. \texttt{XCHAL\_EXCM\_LEVEL}
