@@ -65,8 +65,22 @@ begin
    FTP_Client.Delete_File (S, "uploaded.txt", St);
    Check ("DELE uploaded.txt", St = FTP_Client.OK);
 
+   --  Robustness: a server refusal (5xx) must NOT tear the session down -- the
+   --  control link is intact, so the session stays usable for the next command.
+   Reset_Acc;
+   FTP_Client.Retrieve (S, "does-not-exist.txt",
+                        Append_Sink'Access, System.Null_Address, St);
+   Check ("RETR missing -> Server_Error", St = FTP_Client.Server_Error);
+   Check ("session survives Server_Error", FTP_Client.Is_Open (S));
+   FTP_Client.File_Size (S, "hello.txt", Sz, St);
+   Check ("command still works after Server_Error",
+          St = FTP_Client.OK and then Sz = 30);
+
+   --  And after Quit, the session is closed and further ops report Not_Connected.
    FTP_Client.Quit (S);
    Check ("Quit closes session", not FTP_Client.Is_Open (S));
+   FTP_Client.File_Size (S, "hello.txt", Sz, St);
+   Check ("op on closed session -> Not_Connected", St = FTP_Client.Not_Connected);
 
    New_Line;
    if Fail_Count = 0 then

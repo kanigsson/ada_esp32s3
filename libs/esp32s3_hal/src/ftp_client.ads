@@ -28,9 +28,13 @@ package FTP_Client is
    --  server session.  Quit / a failed op leaves it closed.
    type Session is limited private;
 
-   --  Outcome of an operation.  All but OK leave any data connection closed; the
-   --  control session stays usable after Server_Error / Timed_Out (retry another
-   --  command), but is closed after Connect_Failed / Auth_Failed / Protocol_Error.
+   --  Outcome of an operation.  Any data connection is always left closed.  The
+   --  control session stays open (Is_Open => True, reuse it) only after OK or
+   --  Server_Error -- a complete 4xx/5xx reply, where the server refused but the
+   --  control link is intact and in sync.  Every other failure (Connect_Failed /
+   --  Timed_Out / Protocol_Error / Data_Failed / Auth_Failed) may leave control
+   --  closed, hung or out of sync, so the session is TORN DOWN (Is_Open => False);
+   --  recover by Connecting again.
    type Status is
      (OK,               --  completed (server gave the expected 2xx)
       Connect_Failed,   --  could not open / greet on the control connection
@@ -71,7 +75,9 @@ package FTP_Client is
    --  Send QUIT (best effort) and close the control connection.  Idempotent.
    procedure Quit (S : in out Session);
 
-   --  True once Connect has succeeded and Quit has not run.
+   --  True while the control connection is up: from a successful Connect until
+   --  Quit, or until an operation fails in a way that tears the session down (see
+   --  Status above).  When it reads False, Connect again before using S.
    function Is_Open (S : Session) return Boolean;
 
    ----------------------------------------------------------------------------

@@ -336,6 +336,25 @@ package body FTP_Client is
 
    function Is_Open (S : Session) return Boolean is (S.Open);
 
+   --  Set the final Result and, when the failure may have left the control stream
+   --  closed, hung or out of sync, tear the session down so Is_Open is truthful.
+   --  Only OK and Server_Error (a complete 4xx/5xx reply -- the link is fine, the
+   --  server just refused) keep the session; every other failure (Connect_Failed,
+   --  Timed_Out, Protocol_Error, Data_Failed, Auth_Failed) drops it.  Recover with
+   --  a fresh Connect.
+   procedure Finish (S : in out Session; St : Status; Result : out Status) is
+   begin
+      if S.Open and then St not in OK | Server_Error | Not_Connected then
+         begin
+            Close_Socket (S.Control);
+         exception
+            when Socket_Error => null;
+         end;
+         S.Open := False;
+      end if;
+      Result := St;
+   end Finish;
+
    ---------------------------------------------------------------------------
    --  Transfers
    ---------------------------------------------------------------------------
@@ -357,13 +376,14 @@ package body FTP_Client is
       if not S.Open then Result := Not_Connected; return; end if;
 
       Open_Passive (S, Data, St);
-      if St /= OK then Result := St; return; end if;
+      if St /= OK then Finish (S, St, Result); return; end if;
 
       Command (S, Cmd, Code, St);
-      if St /= OK then Close_Socket (Data); Result := St; return; end if;
+      if St /= OK then Close_Socket (Data); Finish (S, St, Result); return; end if;
       if Code not in 100 .. 199 then            --  expect 150 / 125
          Close_Socket (Data);
-         Result := (if Code in 400 .. 599 then Server_Error else Protocol_Error);
+         Finish (S, (if Code in 400 .. 599 then Server_Error else Protocol_Error),
+                 Result);
          return;
       end if;
 
@@ -371,7 +391,8 @@ package body FTP_Client is
          begin
             Receive_Socket (Data, Scratch, RLast);
          exception
-            when Socket_Error => Close_Socket (Data); Result := Timed_Out; return;
+            when Socket_Error =>
+               Close_Socket (Data); Finish (S, Timed_Out, Result); return;
          end;
          exit when RLast < Scratch'First;       --  EOF (server closed)
          declare
@@ -386,10 +407,11 @@ package body FTP_Client is
       Close_Socket (Data);
 
       Read_Reply (S, Code, St);                 --  expect 226 / 250
-      Result := (if St /= OK then St
-                 elsif Code in 200 .. 299 then OK
-                 elsif Code in 400 .. 599 then Server_Error
-                 else Protocol_Error);
+      Finish (S, (if St /= OK then St
+                  elsif Code in 200 .. 299 then OK
+                  elsif Code in 400 .. 599 then Server_Error
+                  else Protocol_Error),
+              Result);
    end Stream_In;
 
    procedure Retrieve (S      : in out Session;
@@ -430,13 +452,14 @@ package body FTP_Client is
       if not S.Open then Result := Not_Connected; return; end if;
 
       Open_Passive (S, Data, St);
-      if St /= OK then Result := St; return; end if;
+      if St /= OK then Finish (S, St, Result); return; end if;
 
       Command (S, "STOR " & Path, Code, St);
-      if St /= OK then Close_Socket (Data); Result := St; return; end if;
+      if St /= OK then Close_Socket (Data); Finish (S, St, Result); return; end if;
       if Code not in 100 .. 199 then
          Close_Socket (Data);
-         Result := (if Code in 400 .. 599 then Server_Error else Protocol_Error);
+         Finish (S, (if Code in 400 .. 599 then Server_Error else Protocol_Error),
+                 Result);
          return;
       end if;
 
@@ -451,15 +474,18 @@ package body FTP_Client is
             end loop;
             Send_All (Data, Out_Buf, Sent);
          end;
-         if not Sent then Close_Socket (Data); Result := Data_Failed; return; end if;
+         if not Sent then
+            Close_Socket (Data); Finish (S, Data_Failed, Result); return;
+         end if;
       end loop;
       Close_Socket (Data);                      --  EOF to the server
 
       Read_Reply (S, Code, St);
-      Result := (if St /= OK then St
-                 elsif Code in 200 .. 299 then OK
-                 elsif Code in 400 .. 599 then Server_Error
-                 else Protocol_Error);
+      Finish (S, (if St /= OK then St
+                  elsif Code in 200 .. 299 then OK
+                  elsif Code in 400 .. 599 then Server_Error
+                  else Protocol_Error),
+              Result);
    end Store;
 
    ---------------------------------------------------------------------------
@@ -472,7 +498,7 @@ package body FTP_Client is
    begin
       if not S.Open then Result := Not_Connected; return; end if;
       Command (S, Text, Code, St);
-      Result := Simple_Result (Code, St);
+      Finish (S, Simple_Result (Code, St), Result);
    end Simple;
 
    procedure Change_Dir (S : in out Session; Path : String; Result : out Status) is
@@ -508,18 +534,18 @@ package body FTP_Client is
       Size := 0;
       if not S.Open then Result := Not_Connected; return; end if;
       Command_Line (S, "SIZE " & Path, Code, Line, Last, St);
-      if St /= OK then Result := St; return; end if;
+      if St /= OK then Finish (S, St, Result); return; end if;
       if Code = 213 then
          for I in Line'First + 4 .. Line'First + Last - 1 loop
             if Line (I) in '0' .. '9' then
                Size := Size * 10 + (Character'Pos (Line (I)) - Character'Pos ('0'));
             end if;
          end loop;
-         Result := OK;
+         Finish (S, OK, Result);
       elsif Code in 400 .. 599 then
-         Result := Server_Error;
+         Finish (S, Server_Error, Result);
       else
-         Result := Protocol_Error;
+         Finish (S, Protocol_Error, Result);
       end if;
    end File_Size;
 
