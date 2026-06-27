@@ -503,31 +503,60 @@ metal, the board is the test.
 
 The other half of FTP is the server, and it joins the two halves of this book: it
 serves the \emph{ext4-on-flash} filesystem of Chapter~\ref{ch:storage} over the
-network. \texttt{FTP\_Server.Run} takes a mounted \texttt{ESP32S3.Ext4.FS.Mount}
-and runs the accept loop --- one client at a time, a control connection plus one
-passive data connection per transfer:
+network --- and, through a small mount table, any other ext4 volume alongside it in
+one tree.
+
+\subsection{One namespace for several volumes: the VFS}
+\label{ch:net:vfs}\index{VFS}\index{mount point}
+
+A board may have more than one place to keep files --- the on-board SPI flash and
+an SD card, say. Both already reduce to the same abstraction: each is a
+\texttt{Block\_Dev.Device} (the flash through the wear-levelling FTL, the card
+through \texttt{Block\_Dev.SDMMC\_Source}), and each mounts as an
+\texttt{ESP32S3.Ext4.FS.Mount}. What is left is to \emph{name} them and route a path
+to the right one. That is all \texttt{ESP32S3.Ext4.VFS} does --- a tiny mount table:
 
 \begin{lstlisting}
-procedure Run (FS          : not null access ESP32S3.Ext4.FS.Mount;
-               Local_IP    : String;                       -- advertised in PASV
-               Server_Name : String := "Ada ESP32-S3";     -- the 220 greeting
-               Port        : Port_Type := 21;
-               Data_Port   : Port_Type := 50_000;
-               Read_Only   : Boolean := False);
+ESP32S3.Ext4.VFS.Add ("flash", Flash_M'Access);   -- appears at /flash
+ESP32S3.Ext4.VFS.Add ("sd",    SD_M'Access);       -- appears at /sd   (optional)
 \end{lstlisting}
 
-The server side of the socket API is \texttt{Bind\_Socket} / \texttt{Listen\_%
-Socket} / \texttt{Accept\_Socket} (the echo example, \S\ref{ch:net:examples}); each
-FTP command then maps onto an ext4 operation --- \texttt{LIST} onto
-\texttt{Iterate} (plus \texttt{Stat} for the \texttt{ls -l} columns),
-\texttt{RETR} onto the offset \texttt{Read\_File}, \texttt{STOR} onto
-\texttt{Create\_File} + \texttt{Append} + \texttt{Commit}, \texttt{DELE} /
-\texttt{MKD} / \texttt{RMD} onto \texttt{Unlink} / \texttt{Mkdir} / \texttt{Rmdir}.
-The filesystem's \texttt{Ada.IO\_Exceptions} are caught and turned into FTP
-\texttt{550} replies, so a bad request never takes the server down; \texttt{Read\_%
-Only} refuses the mutating commands. A desktop client --- \texttt{ftp}, FileZilla,
-a browser, Python \texttt{ftplib} --- can then browse, download, upload and manage
-the board's flash.
+Each \texttt{Add} registers a mounted filesystem under a top-level name. A path is
+then resolved by its first component: \texttt{Resolve ("/flash/docs/a.txt")} returns
+the flash mount and the remainder \texttt{"/docs/a.txt"}; the bare root \texttt{"/"}
+is \emph{virtual} --- it belongs to no device and simply lists the registered names.
+This is the Unix mount-point model in miniature, and the storage analogue of the
+chip-neutral NIC registry of \S\ref{ch:net:netdevice}: a neutral device interface
+(\texttt{Block\_Dev.Device}) plus a small table mapping a name to a backend. With
+one device registered the tree is just \texttt{/flash}; adding the SD card later is
+the single \texttt{Add} line above --- nothing in the server changes.
+
+\texttt{FTP\_Server.Run} therefore carries no filesystem of its own; it serves
+whatever has been registered:
+
+\begin{lstlisting}
+ESP32S3.Ext4.VFS.Add ("flash", Flash_FS.M'Access);
+FTP_Server.Run (Local_IP    => "192.168.1.50",   -- advertised in PASV
+                Server_Name => "Ada ESP32-S3",    -- the 220 greeting
+                Read_Only   => False);
+\end{lstlisting}
+
+It runs the accept loop --- one client at a time, a control connection plus one
+passive data connection per transfer. The server side of the socket API is
+\texttt{Bind\_Socket} / \texttt{Listen\_Socket} / \texttt{Accept\_Socket} (the echo
+example, \S\ref{ch:net:examples}). Each command first resolves its path through the
+VFS, then maps onto an ext4 operation on the chosen mount --- \texttt{LIST} onto
+\texttt{Iterate} (plus \texttt{Stat} for the \texttt{ls -l} columns), \texttt{RETR}
+onto the offset \texttt{Read\_File}, \texttt{STOR} onto \texttt{Create\_File} +
+\texttt{Append} + \texttt{Commit}, \texttt{DELE} / \texttt{MKD} / \texttt{RMD} onto
+\texttt{Unlink} / \texttt{Mkdir} / \texttt{Rmdir} --- while \texttt{LIST} of the
+virtual root just enumerates the mount names. The filesystem's
+\texttt{Ada.IO\_Exceptions} are caught and turned into FTP \texttt{550} replies, so
+a bad request never takes the server down; \texttt{Read\_Only} refuses the mutating
+commands. A desktop client --- \texttt{ftp}, FileZilla, a browser, Python
+\texttt{ftplib} --- then sees \texttt{/flash} (and \texttt{/sd}, when present) as
+directories at the root, and can browse, download, upload and manage the board's
+storage beneath them.
 
 \textbf{The board faulted on the first run --- and that was the language working.}
 Flashed and booted, the server printed its greeting and then died:
@@ -569,6 +598,14 @@ package Flash_FS is                       -- library level: lives for the progra
 end Flash_FS;
 \end{lstlisting}
 
+The \texttt{Mnt := FS} store shown above belonged to the original single-mount
+server; the move to the VFS of \S\ref{ch:net:vfs} did not retire the rule, only
+relocated it. \texttt{VFS.Add} keeps each mount's access in its table, so a
+registered filesystem must outlive the server just the same --- which is exactly
+why the example passes \texttt{Flash\_FS.M'Access}, a library-level object, and not
+a \texttt{Mount} local to \texttt{Main}. The accessibility check guards the new
+shape as faithfully as it guarded the old.
+
 In C the same mistake is a silent use-after-scope that corrupts something later, far
 from the cause. Here it was a clean exception at the assignment that made it. The
 two FTP halves bracket the lesson nicely: the client's bugs were properties of the
@@ -576,6 +613,9 @@ hardware that no amount of reading the source could reveal; the server's was a
 property of the \emph{program} that the language caught before it could do harm.
 
 \noindent\textbf{Example:} \texttt{examples/esp32s3\_ftp\_server} --- formats a
-fresh ext4 on the W25Q flash, then serves it; HW-verified against \texttt{ftplib}
-(login, \texttt{LIST}, \texttt{RETR}/\texttt{SIZE}, \texttt{STOR} with a byte-exact
-read-back, \texttt{MKD}, \texttt{DELE}).
+fresh ext4 on the W25Q flash, registers it at \texttt{/flash}, then serves it;
+HW-verified against \texttt{ftplib} (\texttt{NLST "/"} returns \texttt{flash};
+\texttt{LIST}, \texttt{RETR}/\texttt{SIZE}, \texttt{STOR} with a byte-exact
+read-back, \texttt{MKD}, \texttt{DELE} all under \texttt{/flash}). An SD card would
+join the tree at \texttt{/sd} with one more \texttt{VFS.Add} call and no change to
+the server.
