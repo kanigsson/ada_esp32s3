@@ -26,4 +26,11 @@ package body ESP32S3.Block_Dev is
       Dev.Write (Dev.Ctx, LBA, Data);
    end Write_Sector;
 
+   procedure Erase_Sectors (Dev : Device; First, Count : Sector_Index) is
+   begin
+      if Dev.Erase /= null then        --  no-op on a device without the capability
+         Dev.Erase (Dev.Ctx, First, Count);
+      end if;
+   end Erase_Sectors;
+
 end ESP32S3.Block_Dev;

@@ -33,6 +33,12 @@ with Interfaces;
 --  per Update_Rate writes), which is their wear cost -- raise Update_Rate to
 --  trade wear-leveling aggressiveness for less move/config overhead.
 --
+--  A move erases the destination (hole) block in one shot via the lower device's
+--  optional Erase capability (Block_Dev.Erase_Sectors) before copying, so the
+--  copy programs into erased space -- ONE erase per move.  Over a device without
+--  that capability the erase is a no-op and the copy read-modify-writes instead;
+--  either way the result is identical.
+--
 --  Layering:  ext4  ->  Block_Dev.WL  ->  Block_Dev.W25Q_Source  ->  ESP32S3.W25Q
 --
 --  Single-threaded use, like the rest of the ext4 stack.

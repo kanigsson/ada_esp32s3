@@ -176,6 +176,12 @@ package body ESP32S3.Block_Dev.WL is
       Dst  : constant Sector_Index := Sector_Index ((T + D - 1) mod D) * SPB;
       Buf  : Sector;
    begin
+      --  Clear the destination (the hole) in one erase so the sector writes
+      --  below program into erased space (no read-modify-write per sector).  A
+      --  no-op on a device without the capability -- the writes then RMW as
+      --  before.  Crash-safe: Dst is the hole, so erasing it loses nothing, and
+      --  the source is untouched until the config commit that follows.
+      Erase_Sectors (V.Lower, Dst, SPB);
       for Off in Sector_Index range 0 .. SPB - 1 loop
          Read_Sector  (V.Lower, Src + Off, Buf);
          Write_Sector (V.Lower, Dst + Off, Buf);
@@ -279,7 +285,8 @@ package body ESP32S3.Block_Dev.WL is
       return (Ctx   => V.all'Address,
               Read  => Do_Read'Access,
               Write => (if V.Lower.Write /= null then Do_Write'Access else null),
-              Count => Do_Count'Access);
+              Count => Do_Count'Access,
+              Erase => null);   --  the FS above does not erase logical ranges
    end Make;
 
 end ESP32S3.Block_Dev.WL;

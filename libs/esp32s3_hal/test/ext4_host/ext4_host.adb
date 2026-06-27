@@ -46,7 +46,8 @@ procedure Ext4_Host is
      (Ctx   => System.Null_Address,
       Read  => FRead'Unrestricted_Access,
       Write => FWrite'Unrestricted_Access,
-      Count => FCount'Unrestricted_Access);
+      Count => FCount'Unrestricted_Access,
+      Erase => null);
 
    M        : ESP32S3.Ext4.FS.Mount;
    Scenario : constant String := (if Argument_Count >= 2 then Argument (2) else "two");

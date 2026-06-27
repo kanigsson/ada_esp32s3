@@ -114,6 +114,30 @@ package body ESP32S3.Block_Dev.W25Q_Source is
       return S.Count;
    end Do_Count;
 
+   --  Erase every 4 KB flash sector that the run [First, First+Count) touches
+   --  (one erase op each).  A subsequent write into the erased space is a
+   --  clear-only program, so a caller that rewrites the whole block pays one
+   --  erase instead of a read-modify-write per 512-byte sector.
+   procedure Do_Erase (Ctx   : System.Address;
+                       First : Sector_Index;
+                       Count : Sector_Index)
+   is
+      S          : constant Source_Access := To_Source (Ctx);
+      Per_Erase  : constant Sector_Index := W25Q.Sector_Size / Sector_Bytes;  --  8
+      First_Blk  : constant Sector_Index := First / Per_Erase;
+      Last_Blk   : constant Sector_Index := (First + Count - 1) / Per_Erase;
+   begin
+      if Count = 0 then
+         return;
+      end if;
+      if First + Count > S.Count then
+         raise Ada.IO_Exceptions.Device_Error with "W25Q erase out of range";
+      end if;
+      for Blk in First_Blk .. Last_Blk loop
+         W25Q.Erase_Sector (S.Flash, W25Q.Address (Blk) * W25Q.Sector_Size);
+      end loop;
+   end Do_Erase;
+
    ----------------------------------------------------------------------------
    --  Construction
    ----------------------------------------------------------------------------
@@ -132,7 +156,8 @@ package body ESP32S3.Block_Dev.W25Q_Source is
       return (Ctx   => Src.all'Address,
               Read  => Do_Read'Access,
               Write => Do_Write'Access,
-              Count => Do_Count'Access);
+              Count => Do_Count'Access,
+              Erase => Do_Erase'Access);
    end Make;
 
 end ESP32S3.Block_Dev.W25Q_Source;

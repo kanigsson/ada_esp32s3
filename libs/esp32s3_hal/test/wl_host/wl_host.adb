@@ -29,6 +29,9 @@ procedure Wl_Host is
    --  Per-physical-block write histogram (to show wear spreading).
    Hist : array (0 .. Phys_Blocks - 1) of Natural := (others => 0);
 
+   --  Count erase-capability calls (one per move when the fast path is used).
+   Erase_Calls : Natural := 0;
+
    procedure R_Read (Ctx : System.Address; LBA : Sector_Index; Data : out Sector)
    is
       pragma Unreferenced (Ctx);
@@ -49,11 +52,24 @@ procedure Wl_Host is
       return Phys_Sectors;
    end R_Count;
 
+   --  Erase capability: clear the run to 0xFF (the NOR erased value) and count
+   --  it -- so the WL fast path (erase the hole, then clear-only writes) runs.
+   procedure R_Erase (Ctx : System.Address; First : Sector_Index;
+                      Count : Sector_Index) is
+      pragma Unreferenced (Ctx);
+   begin
+      for I in Natural (First) .. Natural (First + Count) - 1 loop
+         Ram (I) := (others => 16#FF#);
+      end loop;
+      Erase_Calls := Erase_Calls + 1;
+   end R_Erase;
+
    Lower : constant Device :=
      (Ctx   => System.Null_Address,
       Read  => R_Read'Unrestricted_Access,
       Write => R_Write'Unrestricted_Access,
-      Count => R_Count'Unrestricted_Access);
+      Count => R_Count'Unrestricted_Access,
+      Erase => R_Erase'Unrestricted_Access);
 
    --  Reference model: the last bytes written to each logical sector.
    Vol     : aliased WL.Volume;
@@ -161,6 +177,7 @@ begin
    --  pin them all to one).  D = Phys_Blocks - 2 data+spare blocks here.
    Ram  := (others => (others => 16#FF#));
    Hist := (others => 0);
+   Erase_Calls := 0;
    declare
       Vol3   : aliased WL.Volume;
       Dev3   : Device;
@@ -192,6 +209,12 @@ begin
              "wear not spread: only" & Distinct'Image & " physical blocks used");
       Check (Max_Blk <= Hammer / 4,
              "wear concentrated: one block took" & Max_Blk'Image & " writes");
+      --  Fast path: exactly one block erase per move (the hole), not per sector.
+      Put_Line ("wl_host: fast-path erases =" & Erase_Calls'Image
+                & " for" & WL.Move_Count (Vol3)'Image & " moves");
+      Check (Erase_Calls = Natural (WL.Move_Count (Vol3)),
+             "fast-path erase count" & Erase_Calls'Image
+             & " /= move count" & WL.Move_Count (Vol3)'Image);
    end;
 
    if WL_Failures = 0 then
