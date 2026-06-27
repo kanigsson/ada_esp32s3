@@ -52,6 +52,16 @@ procedure Main is
    use type FTP_Client.Status;
    use type ESP32S3.W5500.IPv4_Address;
 
+   --  How the board gets its address.  Default: DHCP (router supplies IP /
+   --  gateway / DNS).  For a static address instead, replace this with e.g.:
+   --    Net_Config : constant W5500_Dev.IP_Settings :=
+   --      (Use_DHCP => False,
+   --       IP      => ESP32S3.W5500.IPv4 (192, 168, 1, 50),
+   --       Subnet  => ESP32S3.W5500.IPv4 (255, 255, 255, 0),
+   --       Gateway => ESP32S3.W5500.IPv4 (192, 168, 1, 1),
+   --       DNS     => ESP32S3.W5500.IPv4 (8, 8, 8, 8));
+   Net_Config : constant W5500_Dev.IP_Settings := W5500_Dev.DHCP_Config;
+
    Host       : constant String         := "speedtest.tele2.net";
    FTP_Port   : constant Port_Type       := 21;
    User       : constant String          := "anonymous";
@@ -75,14 +85,14 @@ begin
    delay until Clock + Milliseconds (200);
    Put_Line ("[ftp] real-world FTP client -> " & Host & " (anonymous)");
 
-   --  DHCP brings up the link AND supplies the gateway + DNS (no static config).
-   if not W5500_Dev.Bring_Up (Lease) then
+   --  Bring up the link per Net_Config (DHCP by default; static if you set it).
+   if not W5500_Dev.Bring_Up (Net_Config, Lease) then
       loop
          delay until Clock + Park;
       end loop;
    end if;
 
-   --  Use the DHCP-provided resolver; fall back to public DNS if none was given.
+   --  Use the lease's resolver (DHCP- or statically-set); fall back to public DNS.
    DNS_Server := (if Lease.DNS = No_Address then Inet_Addr ("8.8.8.8")
                   else Inet_Addr (W5500_Dev.Image (Lease.DNS)));
 

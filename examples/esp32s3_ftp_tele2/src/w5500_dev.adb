@@ -23,7 +23,10 @@ package body W5500_Dev is
      (Img (Natural (A (0))) & "." & Img (Natural (A (1))) & "."
       & Img (Natural (A (2))) & "." & Img (Natural (A (3))));
 
-   function Bring_Up (Lease : out DHCP.Lease_Info) return Boolean is
+   function Bring_Up
+     (Settings : IP_Settings := DHCP_Config;
+      Lease    : out DHCP.Lease_Info) return Boolean
+   is
       Ok : Boolean;
    begin
       Net.Setup (Dev, Sclk => 1, Mosi => 4, Miso => 45, Cs => 39,
@@ -44,17 +47,28 @@ package body W5500_Dev is
          return False;
       end if;
 
-      --  DHCP DORA: on success the chip is programmed with the leased IP /
-      --  subnet / gateway, and Lease carries them (plus the DNS server).
-      if not DHCP.Acquire_Lease (Dev'Access, MAC, Lease) then
-         Put_Line ("[w5500] DHCP: no lease (is there a DHCP server?)");
-         return False;
+      if Settings.Use_DHCP then
+         --  DORA: on success the chip is programmed with the leased IP / subnet /
+         --  gateway, and Lease carries them (plus the DNS server).
+         if not DHCP.Acquire_Lease (Dev'Access, MAC, Lease) then
+            Put_Line ("[w5500] DHCP: no lease (is there a DHCP server?)");
+            return False;
+         end if;
+      else
+         --  Static: program the given address and echo it into Lease so the
+         --  caller reads Lease.DNS the same way as for DHCP.
+         Net.Configure (Dev, MAC => MAC, IP => Settings.IP,
+                        Subnet => Settings.Subnet, Gateway => Settings.Gateway);
+         Lease := (IP => Settings.IP, Subnet => Settings.Subnet,
+                   Gateway => Settings.Gateway, DNS => Settings.DNS,
+                   Lease_Seconds => 0);
       end if;
 
       ESP32S3.W5500.Net_Device.Register_Default (Dev'Access);
-      Put_Line ("[w5500] link up; DHCP IP " & Image (Lease.IP)
+      Put_Line ("[w5500] link up; IP " & Image (Lease.IP)
                 & " gw " & Image (Lease.Gateway)
-                & " dns " & Image (Lease.DNS));
+                & " dns " & Image (Lease.DNS)
+                & (if Settings.Use_DHCP then " (DHCP)" else " (static)"));
       return True;
    end Bring_Up;
 end W5500_Dev;

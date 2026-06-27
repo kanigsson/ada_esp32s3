@@ -9,12 +9,27 @@ with ESP32S3.W5500.DHCP;
 package W5500_Dev is
    Dev : aliased ESP32S3.W5500.Device;
 
-   --  Bring the link up and acquire a DHCP lease.  False if the chip is absent,
-   --  the link never comes up, or no DHCP server answers.  On True the chip is
-   --  configured and registered with GNAT.Sockets, and Lease holds the assigned
-   --  IP / subnet / gateway / DNS.
+   --  How the board gets its address: either DHCP (the router assigns IP / subnet
+   --  / gateway / DNS), or a static configuration you supply.
+   type IP_Settings (Use_DHCP : Boolean := True) is record
+      case Use_DHCP is
+         when True  => null;
+         when False =>
+            IP, Subnet, Gateway, DNS : ESP32S3.W5500.IPv4_Address;
+      end case;
+   end record;
+
+   --  The default: ask a DHCP server for everything.
+   DHCP_Config : constant IP_Settings := (Use_DHCP => True);
+
+   --  Bring the link up using Settings.  False if the chip is absent, the link
+   --  never comes up, or (DHCP) no server answers.  On True the chip is configured
+   --  and registered with GNAT.Sockets, and Lease holds the address in effect --
+   --  the DHCP lease, or the static values echoed back -- so the caller reads
+   --  Lease.DNS the same way either way.
    function Bring_Up
-     (Lease : out ESP32S3.W5500.DHCP.Lease_Info) return Boolean;
+     (Settings : IP_Settings := DHCP_Config;
+      Lease    : out ESP32S3.W5500.DHCP.Lease_Info) return Boolean;
 
    --  Dotted-decimal text of an IPv4 address, e.g. "192.168.1.50".
    function Image (A : ESP32S3.W5500.IPv4_Address) return String;

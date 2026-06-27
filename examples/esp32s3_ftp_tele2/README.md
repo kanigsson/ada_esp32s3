@@ -27,6 +27,19 @@ gets its IP, gateway and DNS from the router (no editing needed). Make sure
 outbound FTP (port 21, passive data) is permitted on your network — some
 networks/firewalls block FTP.
 
+**DHCP or static.** `Bring_Up` takes a `W5500_Dev.IP_Settings`; `main.adb`
+defaults to `W5500_Dev.DHCP_Config`. For a fixed address, set it to a static
+config instead (the alternative is shown commented at the top of `main.adb`):
+
+```ada
+Net_Config : constant W5500_Dev.IP_Settings :=
+  (Use_DHCP => False,
+   IP      => ESP32S3.W5500.IPv4 (192, 168, 1, 50),
+   Subnet  => ESP32S3.W5500.IPv4 (255, 255, 255, 0),
+   Gateway => ESP32S3.W5500.IPv4 (192, 168, 1, 1),
+   DNS     => ESP32S3.W5500.IPv4 (8, 8, 8, 8));
+```
+
 ## Expected output (abridged)
 
 ```
