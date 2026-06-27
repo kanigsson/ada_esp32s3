@@ -15,13 +15,18 @@ with Net_Devices;
 --
 --  Liveness is injected (Configure) rather than wired to a specific stack, so the
 --  table is pure logic and host-testable with a mock up-state.
-package Net_Routes is
+package Net_Routes with SPARK_Mode => On is
 
    subtype Interface_Id is Net_Devices.Interface_Id;
 
    --  Is interface Id usable right now?  Supplied by the caller -- the facade wires
    --  this to Net_Devices.Device.Is_Up through its registry.  Must be library-level
    --  and closure-free (bare-metal callback rules).
+   --
+   --  SPARK models the callback as a pure function of Id (an access-to-function
+   --  has no side effects), so within a single Resolve the up-state is fixed --
+   --  which is what lets Resolve's selection be reasoned about (a route's liveness
+   --  does not change mid-walk).
    type Up_Query is access function (Id : Interface_Id) return Boolean;
 
    procedure Configure (Is_Up : Up_Query);

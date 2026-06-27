@@ -41,6 +41,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | `cert_verify_proof.gpr` | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | **proved** (0 unproved, `--no-subprojects`) |
 | `chain_verify_proof.gpr` | `Chain_Verify` (chain walk, null-safe derefs) | **proved** (63/63 VCs) |
 | `aes_gcm_proof.gpr` | `AES.GCM` GHASH authenticator (`GF_Mul`/`GHASH`) | **proved** (17/17 VCs) |
+| `net_routes_proof.gpr` | `Net_Routes` (IPv4 longest-prefix routing table) | **proved** (54/54 VCs, 0 justified) — AoRTE **+ `Resolve` functional postcondition**; see `ROADMAP-net.md` #1 |
 
 Tier-A AoRTE is complete across all five attacker-facing units. The reusable
 proof patterns and the deferred optional functional properties are recorded in

@@ -70,6 +70,38 @@ by contract — see "Proving across the hardware boundary" below.
   loop already proved it valid, the prover needs an explicit `if Top.Valid then`
   around the re-parse to re-derive `Well_Formed (TB, Top)` for the `Sig_OK` call.
   Same move as threading `Parse`'s `Post` through each link's consumers.
+- **Indirect call (access-to-function) under a terminating context.** An
+  *expression function* (or any function) that calls through an
+  `access function (...) return Boolean` whose body the prover can't see fails its
+  implicit `Always_Terminates` ("call via access-to-subprogram might be
+  nonterminating"). `Global`/`Always_Terminates` aspects are *not* placeable on the
+  access-to-subprogram type ("incorrect placement of aspect"). Fix without a
+  justification: **lift the indirect call out of the function and into an assertion
+  context that has no termination obligation.** In `Net_Routes`, the liveness
+  predicate `Qualifies (R, D, Live : Boolean)` takes the bit as a *parameter* (so it
+  trivially terminates), and the actual `Up = null or else Up (R.Iface)` call appears
+  only inline in `Resolve`'s loop invariants / `Refined_Post` — a `procedure`'s
+  assertions carry no `Always_Terminates` VC, so the indirect call never demands one.
+  SPARK still models the access-to-function as a deterministic mathematical function,
+  so the inline call and the real loop guard unify and the functional proof goes
+  through (54/54, 0 justified).
+- **Best-so-far selection: a ghost witness index makes the existential inductive.**
+  Proving `Resolve`'s "chosen `Iface` is that of a best qualifying route" needs the
+  postcondition's `for some W in 1 .. N => …` to be carried through the loop. State
+  it as a `Refined_Post` over the body state and maintain a `Witness : Route_Count
+  with Ghost` updated in lockstep with `(Iface, Best_Len, Best_Metric)`; the loop
+  invariant then reads `(if Found then Witness in 1 .. I and then
+  Qualifies (Table (Witness), …) and then Prefix_Len (Table (Witness).Mask) =
+  Best_Len and then Table (Witness).Metric = Best_Metric and then
+  Table (Witness).Iface = Iface)` alongside a `for all K in 1 .. I` dominance clause.
+  The explicit witness spares the prover from inventing one and the existential
+  closes immediately at loop exit.
+- **A `while x /= 0` shift-loop has no iteration cap the prover can see.**
+  `Net_Routes.Prefix_Len`'s `while V /= 0 loop N := N + (V and 1); V := V >> 1`
+  popcount left `N`'s `+` an unbounded-overflow VC (the prover can't bound the trip
+  count). Recast as a bounded `for I in 0 .. 31` bit-scan with invariant
+  `N <= I + 1`: the add is then provably `<= 32`. Same lesson as the limb-arithmetic
+  bullet — give bounded loops an explicit index the prover can count on.
 - **Guard a contract's length precondition at the call.** `Sig_OK` feeds
   cert slices to `RSA_PKCS1_SHA256` (which needs `TBS'Length >= 1`). Rather than
   strengthen `Well_Formed`, short-circuit on `Length (Child.TBS) >= 1 and then …`:
