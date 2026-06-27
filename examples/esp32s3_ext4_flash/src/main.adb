@@ -13,9 +13,12 @@
 --      2. INSTALLS the image by writing every filesystem sector through the WL
 --         device (the embedded non-zero sectors, zeros elsewhere) -- so it lands
 --         remapped+wear-leveled on the flash,
---      3. MOUNTS it read-only with ESP32S3.Ext4 over the same WL device and reads
---         /hello.txt and /docs/readme.txt back, proving the full path: ext4
---         superblock/inode/dir/file parsing -> WL remap -> SPI NOR.
+--      3. MOUNTS it read-WRITE with ESP32S3.Ext4 over the same WL device: reads
+--         /hello.txt and /docs/readme.txt, then CREATES + writes /written.txt and
+--         commits it.  The image has no journal, so Commit takes the FS's direct
+--         flush path (no JBD2) -- the ext4 journal-off gate in action.
+--      4. REMOUNTS and reads /written.txt back, proving the write reached flash
+--         through the full path: ext4 -> WL remap -> SPI NOR.
 --
 --    This ERASES + WRITES the flash.  Safe here: the flash is dedicated to this
 --    experiment and holds no other filesystem.
@@ -28,12 +31,16 @@
 --    [ext4f] flash ef 40 19, 4-byte mode: OK
 --    [ext4f] installing ext4 image: 512 sectors (31 non-zero)...
 --    [ext4f] installed; WL moves during install: 8
---    [ext4f] mounted ext4 read-only; block size 4096
+--    [ext4f] mounted ext4 read-write (no journal); block size 4096
 --    [ext4f] /hello.txt (55 bytes):
 --    hello from pure-Ada ext4 on wear-leveled SPI NOR flash!
 --    [ext4f] /docs/readme.txt (127 bytes):
 --    This file lives in a real ext4 image installed on a W25Q256FV
 --    over the Block_Dev.WL wear-leveling FTL, read by ESP32S3.Ext4.
+--    [ext4f] created + committed /written.txt; WL moves now: 9
+--    [ext4f] remounted read-only; the file just written:
+--    [ext4f] /written.txt (47 bytes):
+--    written on-device, no-journal commit to flash!
 --    [ext4f] done.
 --
 --  Hardware
@@ -128,6 +135,16 @@ procedure Main is
       end if;
    end Print_Text;
 
+   --  A Byte_Array holding the bytes of Str (for Write_File).
+   function To_Bytes (Str : String) return Byte_Array is
+      B : Byte_Array (0 .. Str'Length - 1);
+   begin
+      for I in B'Range loop
+         B (I) := Interfaces.Unsigned_8 (Character'Pos (Str (Str'First + I)));
+      end loop;
+      return B;
+   end To_Bytes;
+
    --  Read one file by path and print its contents.
    procedure Show_File (M : in out FS.Mount; Path : String) is
       Info : ESP32S3.Ext4.Inode.Info;
@@ -195,22 +212,46 @@ begin
       Log.Put_Unsigned (Unsigned_32 (WL.Move_Count (Vol)));
       Log.New_Line;
 
-      --  Mount the freshly-installed filesystem read-only and read it back.
+      --  Mount the freshly-installed filesystem READ-WRITE: read the existing
+      --  files, then create + write a new one and Commit.  The image has no
+      --  journal, so Commit takes the FS's direct flush path (no JBD2).
       declare
-         Mnt : FS.Mount;
+         Mnt  : FS.Mount;
+         Note : ESP32S3.Ext4.Inode_Number;
       begin
-         Mnt.Open (Dev, Read_Only => True);
-         Log.Put ("[ext4f] mounted ext4 read-only; block size ");
+         Mnt.Open (Dev, Read_Only => False);
+         Log.Put ("[ext4f] mounted ext4 read-write (no journal); block size ");
          Log.Put_Unsigned (Unsigned_32 (Mnt.Block_Size));
          Log.New_Line;
 
          Show_File (Mnt, "/hello.txt");
          Show_File (Mnt, "/docs/readme.txt");
 
+         Note := Mnt.Create_File ("/", "written.txt");
+         Mnt.Write_File
+           (Note, To_Bytes ("written on-device, no-journal commit to flash!"
+                            & ASCII.LF));
+         Mnt.Commit;
+         Mnt.Close;
+         Log.Put ("[ext4f] created + committed /written.txt; WL moves now: ");
+         Log.Put_Unsigned (Unsigned_32 (WL.Move_Count (Vol)));
+         Log.New_Line;
+      exception
+         when others =>
+            Log.Put_Line ("[ext4f] mount/write FAILED");
+      end;
+
+      --  Remount and read the just-written file back, proving it reached flash.
+      declare
+         Mnt : FS.Mount;
+      begin
+         Mnt.Open (Dev, Read_Only => True);
+         Log.Put_Line ("[ext4f] remounted read-only; the file just written:");
+         Show_File (Mnt, "/written.txt");
          Mnt.Close;
       exception
          when others =>
-            Log.Put_Line ("[ext4f] mount/read FAILED");
+            Log.Put_Line ("[ext4f] remount/read FAILED");
       end;
    else
       Log.Put_Line ("[ext4f] flash not ready -- check wiring / CS on IO21");

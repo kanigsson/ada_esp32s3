@@ -13,12 +13,16 @@ ESP32S3.Ext4  →  Block_Dev.WL  →  Block_Dev.W25Q_Source  →  ESP32S3.W25Q
 [ext4f] flash ef 40 19, 4-byte mode: OK
 [ext4f] installing ext4 image: 512 sectors (31 non-zero)...
 [ext4f] installed; WL moves during install: 8
-[ext4f] mounted ext4 read-only; block size 4096
+[ext4f] mounted ext4 read-write (no journal); block size 4096
 [ext4f] /hello.txt (56 bytes):
 hello from pure-Ada ext4 on wear-leveled SPI NOR flash!
 [ext4f] /docs/readme.txt (125 bytes):
 This file lives in a real ext4 image installed on a W25Q256FV
 over the Block_Dev.WL wear-leveling FTL, read by ESP32S3.Ext4.
+[ext4f] created + committed /written.txt; WL moves now: 8
+[ext4f] remounted read-only; the file just written:
+[ext4f] /written.txt (47 bytes):
+written on-device, no-journal commit to flash!
 [ext4f] done.
 ```
 
@@ -41,16 +45,24 @@ sectors are stored (`src/flash_image.ads`, ~15 KB). Regenerate it with
    device — the stored non-zero sectors, zeros for the rest — so it lands
    remapped and wear-leveled on the flash. (Writing zeros is a clear-only program
    on NOR, so the install stays fast.) A few WL **moves** happen along the way.
-3. **Mounts** the result read-only with `ESP32S3.Ext4` over the same WL device
-   and reads both files back — proving the full path: ext4 superblock / inode /
-   directory / file parsing → WL remap → SPI NOR.
+3. **Mounts** the result read-**write** with `ESP32S3.Ext4` over the same WL
+   device: reads both files, then **creates + writes `/written.txt` and commits**
+   it. The image has no journal, so `Commit` takes the FS's *direct flush* path
+   (cache + superblock straight to the device) instead of JBD2 — the ext4
+   **journal-off gate**.
+4. **Remounts** and reads `/written.txt` back — proving the write reached flash
+   through the full path: ext4 → WL remap → SPI NOR.
 
 This **erases and writes** the flash. Safe here: the flash is dedicated to this
 experiment and holds no other filesystem.
 
-Read-only by design: the pure-Ada FS journals every write (JBD2), and a journaled
-image is far larger to embed; the `esp32s3_ext4_write` example exercises the
-write path on a (journaled) SD card.
+The image is built `-O ^has_journal,^metadata_csum`: the pure-Ada FS writes a
+no-journal volume via the direct-flush commit (a journaled image is far larger to
+embed), and refuses to write `metadata_csum` volumes. The journal-off commit has
+no atomic barrier, so an interrupted commit can leave the volume inconsistent
+(the price of `^has_journal`); the `esp32s3_ext4_write` example exercises the
+journaled write path on an SD card. Both paths are host-tested
+(`libs/esp32s3_hal/test/ext4_host/run.sh`, e2fsck-clean).
 
 ## Hardware
 
