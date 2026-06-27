@@ -1,6 +1,10 @@
 with X509.DER;
 
-package body X509 is
+--  SPARK_Mode is Off on this body for now: upstream's expanded parser (EC/Ed25519
+--  key extraction, basicConstraints/keyUsage/extKeyUsage) is not yet proved.  The
+--  spec is SPARK_Mode On (types + the DER lemma's consumers); proving this body
+--  (Parse establishes Well_Formed) is the next phase.
+package body X509 with SPARK_Mode => Off is
 
    use type Interfaces.Unsigned_8;
 

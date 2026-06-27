@@ -5,15 +5,20 @@ with Interfaces;
 --  The parser is strictly bounds-checked: it parses attacker-controlled data, so
 --  every read is validated and any malformation yields Valid = False rather than an
 --  out-of-range access.
-package X509 is
+package X509 with SPARK_Mode => On is
 
    subtype U8 is Interfaces.Unsigned_8;
    type Byte_Array is array (Natural range <>) of U8;
 
+   --  Indices into a (finite) certificate buffer.  Capping just below Natural'Last
+   --  lets a slice length (Last - First + 1) be computed without overflow; real DER
+   --  buffers are a few KiB, nowhere near this bound.
+   subtype Buffer_Index is Natural range 0 .. Natural'Last - 1;
+
    --  An index range into the certificate buffer (empty when First > Last).
    type Slice is record
-      First : Natural := 1;
-      Last  : Natural := 0;
+      First : Buffer_Index := 1;
+      Last  : Buffer_Index := 0;
    end record;
    function Length (S : Slice) return Natural is
      (if S.Last >= S.First then S.Last - S.First + 1 else 0);
@@ -36,7 +41,9 @@ package X509 is
    function Pack_Time (Year, Month, Day, Hour, Minute, Second : Natural)
                        return Time_64 is
      (((((Time_64 (Year) * 100 + Time_64 (Month)) * 100 + Time_64 (Day)) * 100
-        + Time_64 (Hour)) * 100 + Time_64 (Minute)) * 100 + Time_64 (Second));
+        + Time_64 (Hour)) * 100 + Time_64 (Minute)) * 100 + Time_64 (Second))
+   with Pre => Year <= 9999 and then Month <= 99 and then Day <= 99
+               and then Hour <= 99 and then Minute <= 99 and then Second <= 99;
 
    --  The fields we extract from a certificate.  All are index ranges into the
    --  original buffer (no copying); TBS is the exact signed region (the full DER of
