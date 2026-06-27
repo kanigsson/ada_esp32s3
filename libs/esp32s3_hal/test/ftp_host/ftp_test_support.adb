@@ -1,3 +1,5 @@
+with Interfaces;
+
 package body FTP_Test_Support is
 
    Max_Acc     : constant := 65536;
@@ -50,5 +52,46 @@ package body FTP_Test_Support is
          Upload_Done := True;
       end if;
    end Upload_Source;
+
+   --  Position-dependent pattern byte, so a round-trip is verifiable.
+   function Pattern (I : Natural) return Interfaces.Unsigned_8 is
+     (Interfaces.Unsigned_8 (I mod 251));   --  251 = prime, decorrelates from 256
+
+   Big_Sent  : Natural := 0;
+   Big_Got   : Natural := 0;
+   Big_Match : Boolean := True;
+
+   procedure Big_Reset is
+   begin
+      Big_Sent := 0; Big_Got := 0; Big_Match := True;
+   end Big_Reset;
+
+   procedure Big_Source (Ctx  : System.Address;
+                         Buf  : out FTP_Client.Byte_Array;
+                         Last : out Natural) is
+      pragma Unreferenced (Ctx);
+   begin
+      Last := 0;
+      while Big_Sent < Big_Bytes and then Last < Buf'Length loop
+         Buf (Buf'First + Last) := Pattern (Big_Sent);
+         Big_Sent := Big_Sent + 1;
+         Last := Last + 1;
+      end loop;
+   end Big_Source;
+
+   procedure Big_Verify (Ctx : System.Address; Chunk : FTP_Client.Byte_Array) is
+      pragma Unreferenced (Ctx);
+      use type Interfaces.Unsigned_8;
+   begin
+      for B of Chunk loop
+         if B /= Pattern (Big_Got) then
+            Big_Match := False;
+         end if;
+         Big_Got := Big_Got + 1;
+      end loop;
+   end Big_Verify;
+
+   function Big_Count return Natural is (Big_Got);
+   function Big_OK    return Boolean is (Big_Match);
 
 end FTP_Test_Support;

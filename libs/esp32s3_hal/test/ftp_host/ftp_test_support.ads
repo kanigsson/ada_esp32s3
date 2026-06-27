@@ -21,6 +21,18 @@ package FTP_Test_Support is
 
    Upload_Text : constant String;
 
+   --  Large-transfer round-trip: stream Big_Bytes of a position-dependent pattern
+   --  for STOR (Big_Source), and check a download matches it (Big_Verify) -- so a
+   --  multi-chunk upload + read-back can be verified byte-exact without buffering.
+   Big_Bytes : constant := 1_048_576;     --  1 MiB
+   procedure Big_Reset;
+   procedure Big_Source (Ctx  : System.Address;
+                         Buf  : out FTP_Client.Byte_Array;
+                         Last : out Natural);
+   procedure Big_Verify (Ctx : System.Address; Chunk : FTP_Client.Byte_Array);
+   function  Big_Count return Natural;     --  bytes checked by Big_Verify
+   function  Big_OK    return Boolean;     --  all matched the pattern
+
 private
    Upload_Text : constant String :=
      "uploaded via ftp_client round-trip" & ASCII.LF;

@@ -12,8 +12,8 @@ package FTP_Print is
    procedure Put_Chunk (Ctx : System.Address; Chunk : FTP_Client.Byte_Array);
 
    --  Upload SOURCE: supply Upload_Bytes of a deterministic test pattern, once
-   --  (for the STOR send test).
-   Upload_Bytes : constant := 512;
+   --  (for the STOR send test).  Streamed in chunks, so the size needs no buffer.
+   Upload_Bytes : constant := 1_048_576;     --  1 MiB
    procedure Reset_Source;
    procedure Test_Source (Ctx  : System.Address;
                           Buf  : out FTP_Client.Byte_Array;

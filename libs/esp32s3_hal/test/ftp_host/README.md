@@ -40,10 +40,25 @@ anonymous login, `SIZE`, `RETR` (byte-counted), `NLST`. This needs network acces
 short of the board itself; only the W5500 socket backend (two simultaneous TCP
 sockets) is then untested.
 
+## Large-transfer test
+
+`ftp_big.adb` STORs a **1 MiB** generated file, RETRs it back, and verifies it
+byte-exact — exercising the multi-chunk send + receive paths the small `ftp_host`
+transfers don't. Run it against an upload-capable server:
+
+```
+python3 ftp_server.py 2121 &           # or pyftpdlib
+./ftp_big 127.0.0.1 2121 demo password
+```
+
+Confirmed byte-exact (1 048 576 bytes) against both the bundled stdlib server and
+`pyftpdlib`.
+
 ## Files
 
 - `ftp_host.adb` — the offline test driver (checks + exit status).
 - `ftp_real.adb` — the real-server smoke-test driver (args: ip port path …).
+- `ftp_big.adb` — the 1 MiB STOR/RETR round-trip driver (args: ip port user pass).
 - `ftp_test_support.{ads,adb}` — the library-level (closure-free) sink/source
   callbacks the API requires; they can't be nested in the driver.
 - `ftp_server.py` — minimal passive-mode FTP server (stdlib only).

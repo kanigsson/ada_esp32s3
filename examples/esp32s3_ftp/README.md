@@ -5,9 +5,9 @@ An **FTP client** over the WIZnet W5500, driven through the portable
 same code runs on desktop GNAT.Sockets and on the bare-metal W5500 alike).
 
 It logs in, prints a file's `SIZE`, downloads it (`RETR`), lists the directory
-(`NLST`), then **tests sending**: it uploads a generated 512-byte file (`STOR`),
+(`NLST`), then **tests sending**: it uploads a generated 1 MiB file (`STOR`),
 reads it back (`RETR`) and verifies it byte-exact — a full upload round-trip from
-the board. **Passive mode, binary** (only outbound connections, so it needs no
+the board (streamed in chunks, so the 1 MiB needs no buffer). **Passive mode, binary** (only outbound connections, so it needs no
 listening socket and works behind NAT). This is the example to use for a
 **board send test**, since it writes to a local server you control (unlike
 `esp32s3_ftp_inet`, which targets an anonymous read-only public server).
@@ -43,8 +43,8 @@ hello from the ftp host test
 [ftp] --- NLST ---
 hello.txt
 [ftp] --- STOR + read-back round-trip ---
-[ftp] STOR /from_board.bin (512 bytes): OK
-[ftp] read-back 512 bytes: round-trip VERIFIED
+[ftp] STOR /from_board.bin (1048576 bytes): OK
+[ftp] read-back 1048576 bytes: round-trip VERIFIED
 [ftp] done.
 ```
 
