@@ -1,4 +1,4 @@
-name = "esp32s3_ftp"
+name = "esp32s3_ftp_tele2"
 description = "Bare-metal Ada ESP32-S3 application"
 version = "0.1.0-dev"
 licenses = "Apache-2.0"

@@ -1,0 +1,57 @@
+# esp32s3_ftp_tele2 — real-world FTP over the W5500
+
+A real-world `FTP_Client` run against the public **Tele2 speedtest** FTP server
+(`speedtest.tele2.net`, anonymous **vsftpd**). It's the FTP analogue of
+`esp32s3_tls_weather`: same static-IP + public-DNS bring-up, plain FTP instead of
+HTTPS.
+
+It:
+1. resolves `speedtest.tele2.net` via public DNS (8.8.8.8),
+2. logs in **anonymously**,
+3. `SIZE` + `RETR` a small test file (`/1KB.zip`) — counting bytes, since it's a
+   binary `.zip`,
+4. `STOR` a 256-byte test file to `/upload/` (the server auto-deletes it),
+5. `NLST` the root directory, and `QUIT`.
+
+Passive mode, binary — the embedded-friendly profile (only outbound
+connections).
+
+## Run
+
+```
+./x run esp32s3_ftp_tele2
+```
+
+The board takes static IP **192.168.1.50** (/24); **edit the gateway in
+`w5500_dev.adb`** to your LAN's internet gateway, and make sure outbound FTP
+(port 21, passive data) is permitted on your network — some networks/firewalls
+block FTP.
+
+## Expected output (abridged)
+
+```
+[ftp] real-world FTP client -> speedtest.tele2.net (anonymous)
+[w5500] link up, IP 192.168.1.50
+[ftp] resolving speedtest.tele2.net ...
+[ftp] speedtest.tele2.net = 90.130.70.73
+[ftp] logged in.
+[ftp] SIZE /1KB.zip = 1024 bytes
+[ftp] RETR /1KB.zip: 1024 bytes received, result OK
+[ftp] STOR /upload/esp32s3_ftp_test.bin (256 bytes): OK
+[ftp] --- NLST / ---
+1KB.zip
+1MB.zip
+...
+[ftp] done.
+```
+
+## Verification status
+
+The `FTP_Client` protocol is verified on the host against a real, RFC-compliant
+server (see `libs/esp32s3_hal/test/ftp_host` — also runnable against `pyftpdlib`,
+which is what `vsftpd`-class servers behave like). This example is the same code
+over the W5500 backend and **builds for the target**; the live run against tele2
+needs a board on a network that permits outbound FTP (it can't be exercised from
+a sandboxed CI, where port 21 is typically blocked). The plain-LAN
+`esp32s3_ftp` example pairs with the bundled local test server for a
+self-contained run.
