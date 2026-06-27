@@ -27,6 +27,8 @@ package body FTP_Server is
    DPort    : Port_Type := 50_000;
    Host_IP  : String (1 .. 15);            --  dotted IP advertised in PASV
    Host_Len : Natural := 0;
+   Name     : String (1 .. 64);            --  server name for the 220 greeting
+   Name_Len : Natural := 0;
 
    Ctrl     : Socket_Type;                 --  the control connection
    Cwd      : String (1 .. 1024);          --  current directory (absolute)
@@ -476,7 +478,7 @@ package body FTP_Server is
    begin
       In_Head := 0; In_Tail := 0; Have_Pasv := False;
       Cwd_Len := 1; Cwd (1) := '/';
-      Reply ("220", "ESP32-S3 ext4 FTP");
+      Reply ("220", Name (1 .. Name_Len) & " FTP server ready");
       loop
          exit when not Get_Line (Line, Last);
          declare
@@ -527,11 +529,12 @@ package body FTP_Server is
    ---------------------------------------------------------------------------
 
    procedure Run
-     (FS        : not null access ESP32S3.Ext4.FS.Mount;
-      Local_IP  : String;
-      Port      : GNAT.Sockets.Port_Type := 21;
-      Data_Port : GNAT.Sockets.Port_Type := 50_000;
-      Read_Only : Boolean := False)
+     (FS          : not null access ESP32S3.Ext4.FS.Mount;
+      Local_IP    : String;
+      Server_Name : String := "Ada ESP32-S3";
+      Port        : GNAT.Sockets.Port_Type := 21;
+      Data_Port   : GNAT.Sockets.Port_Type := 50_000;
+      Read_Only   : Boolean := False)
    is
       Listener : Socket_Type;
       Peer     : Sock_Addr_Type;
@@ -541,6 +544,8 @@ package body FTP_Server is
       DPort    := Data_Port;
       Host_Len := Natural'Min (Local_IP'Length, 15);
       Host_IP (1 .. Host_Len) := Local_IP (Local_IP'First .. Local_IP'First + Host_Len - 1);
+      Name_Len := Natural'Min (Server_Name'Length, 64);
+      Name (1 .. Name_Len) := Server_Name (Server_Name'First .. Server_Name'First + Name_Len - 1);
 
       loop
          Create_Socket (Listener, Family_Inet, Socket_Stream);
