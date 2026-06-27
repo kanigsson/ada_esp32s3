@@ -126,13 +126,23 @@
 
 \mainmatter
 
+%  Part I -- the language and the lay of the land before any hardware.
+\part{Ada on Bare Metal}
 \input{ch_foundations}
 \input{ch_getting_started}
 \input{ch_anatomy}
 \input{ch_debugging}
-%  Language + hardware techniques BEFORE the HAL that uses them, then the
-%  encapsulation features the drivers are built from.
 \input{ch_lang}
+
+%  Part II -- why there is a runtime at all, and what it costs, BEFORE the
+%  peripherals and applications that live on top of it.
+\part{The Runtime}
+\input{ch_gnarl_gnull}
+\input{ch_limitations}
+
+%  Part III -- hardware techniques and the HAL built from them, then the
+%  concurrency features the drivers use.
+\part{Talking to Hardware}
 \input{ch_hardware}
 \input{ch_encapsulation}
 \input{ch_hal}
@@ -141,20 +151,23 @@
 \input{ch_driver_design}
 \input{ch_tasking}
 \input{ch_suspension}
+
+%  Part IV -- the crescendo: full subsystems built on everything above.
+\part{Building Real Systems}
 \input{ch_storage}
 \input{ch_networking}
 \input{ch_tls}
-\input{ch_acats_sweep}
-%  Under-the-hood: how the runtime is built, how the chip boots, then the
-%  scheduler internals it all leads into.
+
+%  Part V -- under the hood: how the runtime is built, how the chip boots, the
+%  scheduler internals, and conformance.  Reference-grade, after the journey.
+\part{Under the Hood}
 \input{ch_runtime_build}
 \input{ch_bootloader}
 \input{ch_psram}
 \input{ch_heap}
-\input{ch_gnarl_gnull}
 \input{ch_context_switch}
 \input{ch_interrupts}
-\input{ch_limitations}
+\input{ch_acats_sweep}
 
 \appendix
 \input{ch_appendix}
