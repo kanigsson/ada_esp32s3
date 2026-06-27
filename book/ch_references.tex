@@ -7,15 +7,15 @@ time of writing.
 \section{The Ada language and its profiles}
 
 \begin{itemize}
-\item \textbf{Ada Reference Manual} --- the standard itself.
+\item \textbf{Ada Reference Manual} -- the standard itself.
   \url{http://ada-auth.org/standards/ada22.html}. The most relevant corners for
   this book: \emph{D.13} (the Ravenscar and Jorvik profiles), \emph{D.2.3}
   (priority and dispatching policies), \emph{C.6} (\texttt{Volatile} and
   \texttt{Atomic}), \emph{13.3}/\emph{13.5} (address and record-representation
   clauses), and \emph{7.6} / \texttt{Ada.Finalization} (controlled types).
-\item \textbf{John Barnes, \emph{Programming in Ada 2012}} --- the standard
+\item \textbf{John Barnes, \emph{Programming in Ada 2012}} -- the standard
   textbook for the language as a whole.
-\item \textbf{AdaCore learn.adacore.com} --- free courses, including
+\item \textbf{AdaCore learn.adacore.com} -- free courses, including
   \emph{Introduction to Embedded Systems Programming} and the
   \emph{Ada for the C++/Java developer} guide. \url{https://learn.adacore.com}.
 \end{itemize}
@@ -23,47 +23,47 @@ time of writing.
 \section{The runtime and the toolchain}
 
 \begin{itemize}
-\item \textbf{\texttt{bb-runtimes}} --- AdaCore's bareboard runtime generator that
+\item \textbf{\texttt{bb-runtimes}} -- AdaCore's bareboard runtime generator that
   this project's runtime is ported from.
   \url{https://github.com/AdaCore/bb-runtimes}. The ESP32-S3 board lives in the
   fork \url{https://github.com/rowsail/bb-runtimes} (branch
   \texttt{xtensa-esp32s3-port}).
-\item \textbf{\texttt{svd2ada}} --- generates the typed register packages from an
+\item \textbf{\texttt{svd2ada}} -- generates the typed register packages from an
   SVD. \url{https://github.com/AdaCore/svd2ada}.
-\item \textbf{Alire} --- the Ada package manager that supplies the toolchain.
+\item \textbf{Alire} -- the Ada package manager that supplies the toolchain.
   \url{https://alire.ada.dev}.
-\item \textbf{GNAT GPL / GNAT Pro documentation} --- for \texttt{pragma
+\item \textbf{GNAT GPL / GNAT Pro documentation} -- for \texttt{pragma
   Restrictions}, the bareboard runtime structure, and \texttt{gprbuild}.
 \end{itemize}
 
 \section{The silicon}
 
 \begin{itemize}
-\item \textbf{ESP32-S3 Technical Reference Manual} --- the authoritative register
+\item \textbf{ESP32-S3 Technical Reference Manual} -- the authoritative register
   reference; every peripheral chapter in this book traces back to it.
   \url{https://www.espressif.com/sites/default/files/documentation/esp32-s3_technical_reference_manual_en.pdf}.
-\item \textbf{ESP32-S3 Datasheet} --- pin-out, electrical characteristics, the
+\item \textbf{ESP32-S3 Datasheet} -- pin-out, electrical characteristics, the
   GPIO matrix.
-\item \textbf{Espressif SVD files} --- the register descriptions consumed by
+\item \textbf{Espressif SVD files} -- the register descriptions consumed by
   \texttt{svd2ada}. \url{https://github.com/espressif/svd}.
 \item \textbf{Xtensa Instruction Set Architecture (LX7)} and the
-  \emph{Windowed Register Option} --- background for the context-switch and boot
+  \emph{Windowed Register Option} -- background for the context-switch and boot
   chapters (Cadence/Tensilica documentation).
 \end{itemize}
 
 \section{Conformance and high-integrity Ada}
 
 \begin{itemize}
-\item \textbf{ACATS} --- the Ada Conformity Assessment Test Suite.
+\item \textbf{ACATS} -- the Ada Conformity Assessment Test Suite.
   \url{http://www.ada-auth.org/acats.html}.
 \item \textbf{The Ravenscar Profile for Real-Time Systems} (Burns, Dobbing,
-  Vardanega) --- the rationale behind the restricted tasking profiles.
+  Vardanega) -- the rationale behind the restricted tasking profiles.
 \end{itemize}
 
 \section{This project}
 
 \begin{itemize}
-\item \textbf{Source repository} ---
+\item \textbf{Source repository} --
   \url{https://github.com/rowsail/ada_esp32s3}. The
   \texttt{QUICKSTART.md} and \texttt{TOOLING.md} there cover setup and the
   developer tooling; the \LaTeX{} source of this book is under \texttt{book/}.
