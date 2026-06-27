@@ -120,9 +120,9 @@ package X509 with SPARK_Mode => On is
    --  slices are filled; on any structural problem Result.Valid is False.
    --
    --  The Well_Formed postcondition is the contract Chain_Verify / Cert_Verify
-   --  build on.  X509's body is still SPARK_Mode (Off), so this postcondition is
-   --  ASSUMED here (the parser body is proved to establish it in a later phase);
-   --  the consuming proofs are sound relative to that assumption.
+   --  build on: every slice a valid certificate carries lies within Cert.  The
+   --  parser body proves it (SPARK_Mode On), so the consumers' indexing is in
+   --  bounds without any assumption.
    procedure Parse (Cert : Byte_Array; Result : out Certificate)
      with Pre  => Indexable (Cert),
           Post => (if Result.Valid then Well_Formed (Cert, Result));
