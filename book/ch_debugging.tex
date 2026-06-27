@@ -229,3 +229,56 @@ examples call the ROM \texttt{esp\_rom\_printf}, which is always available. When
 two cores -- or an interrupt handler and a task -- might print at once, funnel
 output through one task: interleaved single-character writes have themselves been
 mistaken for bugs more than once.
+
+\section{Decoding the compiler's bare-metal complaints}
+\index{No\_Implicit\_Dynamic\_Code}\index{accessibility check}\index{restrictions}
+
+The bare-metal profiles forbid things a hosted program takes for granted, and the
+compiler enforces the bans. The messages are precise but terse, and the first time
+one stops a build it can be baffling. Here are the ones you are most likely to meet
+coming from C, what each really means, and the fix.
+
+\paragraph{\texttt{subprogram must not be deeper than access type}.}
+You took \texttt{'Access} of a \emph{nested} subprogram -- one declared inside
+another subprogram -- to use as a callback. On a hosted target the compiler would
+build a \emph{trampoline} (a scrap of code on the stack) to carry the enclosing
+frame; the \texttt{No\_Implicit\_Dynamic\_Code} restriction forbids writing code to
+the stack at all, and on this chip such a trampoline faults outright. \emph{Fix:}
+move the callback to library level (the top of a package) and pass any state it
+needs through a context parameter rather than capturing it -- closure-free. This is
+why every callback in this book is a library-level, \texttt{Ctx}-carrying
+subprogram (\S\ref{ch:ada-primer} introduces subprograms; the HAL callbacks follow
+this rule throughout).
+
+\paragraph{\texttt{accessibility check failed} (a \texttt{Program\_Error} at run
+time), or \texttt{non-local pointer cannot point to local object} (at compile
+time).} You stored an \texttt{'Access} of an object into something that outlives it
+-- a library-level variable, a registry, a longer-lived record. Once the object's
+scope ends the stored pointer would dangle, so Ada rejects it: at compile time when
+it can prove the lifetimes, at run time otherwise. \emph{Fix:} give the object the
+lifetime the pointer assumes, which usually means declaring it at library level.
+(This is exactly the bug behind the FTP server that stored a \texttt{Main}-local
+filesystem mount in a library-level handler, cured by moving the mount into a
+library-level package.)
+
+\paragraph{\texttt{violation of restriction No\_X}.}
+You used a feature the chosen runtime profile bans -- a heap allocator, a second
+task entry, an exception handler under a no-propagation profile, and so on. The
+profile is a contract, and the compiler holds you to it. \emph{Fix:} either avoid
+the feature, or build under a richer profile (light-tasking $\rightarrow$ embedded
+$\rightarrow$ full) that permits it; Chapter~\ref{ch:profiles} maps features to
+profiles.
+
+\paragraph{\texttt{Constraint\_Error} (a range or validity check).}
+A value left the range its (sub)type allows -- an index past the end of an array,
+an out-of-range assignment, a bad enumeration read from external data. Unlike the
+above, this is almost always a genuine bug in your data or arithmetic rather than a
+profile rule. \emph{Fix:} find the offending value; the type told you its range, so
+the check is doing its job. Build with checks on (\texttt{-gnata}) while developing
+-- a release build may have them off, turning the same mistake into silent
+corruption.
+
+The throughline is that each message names a guarantee the bare-metal target makes
+-- no stack-written code, no dangling pointers, no banned features, no out-of-range
+values -- and points at the one place you broke it. They read as obstacles at first
+and as a safety net soon after.
