@@ -2,13 +2,17 @@ with Ada.Streams;          use Ada.Streams;
 with GNAT.Sockets;         use GNAT.Sockets;
 with Interfaces;           use Interfaces;
 with ESP32S3.Ext4;
+with ESP32S3.Ext4.FS;
 with ESP32S3.Ext4.Inode;
+with ESP32S3.Ext4.VFS;
 
 package body FTP_Server is
 
    package E4  renames ESP32S3.Ext4;
    package FSP renames ESP32S3.Ext4.FS;
+   package VFS renames ESP32S3.Ext4.VFS;
    use type E4.Inode_Number;
+   use type VFS.Mount_Ref;
 
    subtype SEA is Stream_Element_Array;
    subtype SEO is Stream_Element_Offset;
@@ -22,7 +26,11 @@ package body FTP_Server is
    --  (Iterate's Visit callback has no Ctx, which forces this anyway).
    ---------------------------------------------------------------------------
 
-   Mnt      : access FSP.Mount;
+   --  The mount the current command resolved to, and whether the path was the
+   --  virtual root "/".  Set by Resolve_Path; commands then act on Active_M.
+   Active_M : VFS.Mount_Ref;
+   At_Root  : Boolean   := False;
+
    RO       : Boolean   := False;
    DPort    : Port_Type := 50_000;
    Host_IP  : String (1 .. 15);            --  dotted IP advertised in PASV
@@ -196,6 +204,23 @@ package body FTP_Server is
       end if;
    end Split;
 
+   --  Route an absolute VFS path to its backing mount.  Sets Active_M and At_Root
+   --  (globals) and returns the path WITHIN that mount.  For the virtual root "/"
+   --  or an unknown volume, Active_M is null (At_Root distinguishes the two) and
+   --  the result is "".
+   function Resolve_Path (Path : String) return String is
+      SF, SL  : Natural;
+      Found   : Boolean;
+   begin
+      VFS.Resolve (Path, Active_M, SF, SL, Found, At_Root);
+      if Found then
+         return (if SL >= SF then Path (SF .. SL) else "/");
+      else
+         Active_M := null;
+         return "";
+      end if;
+   end Resolve_Path;
+
    ---------------------------------------------------------------------------
    --  Passive data connection
    ---------------------------------------------------------------------------
@@ -272,13 +297,52 @@ package body FTP_Server is
       end if;
    end Record_Entry;
 
+   --  Send one listing line ("<name>\r\n", or an "ls -l"-style line when Long).
+   procedure Send_Entry (Conn : Socket_Type; Nm : String; Long, Is_Dir : Boolean;
+                         Size : Natural) is
+      Line : String (1 .. 320);
+      L    : Natural := 0;
+      procedure Put (S : String) is
+      begin Line (L + 1 .. L + S'Length) := S; L := L + S'Length; end Put;
+   begin
+      if Long then
+         Put (if Is_Dir then "drwxr-xr-x" else "-rw-r--r--");
+         Put (" 1 ftp ftp ");
+         Put (Img (Size));
+         Put (" Jan  1 00:00 ");
+      end if;
+      Put (Nm);
+      Put (Character'Val (13) & Character'Val (10));
+      declare
+         B : SEA (1 .. SEO (L));
+      begin
+         for I in 1 .. L loop
+            B (SEO (I)) := Stream_Element (Character'Pos (Line (I)));
+         end loop;
+         Send_All (Conn, B);
+      end;
+   end Send_Entry;
+
    procedure Do_List (Arg : String; Long : Boolean) is
       Conn : Socket_Type;
       Path : constant String := Abs_Path (Arg);
+      Sub  : constant String := Resolve_Path (Path);
       Dir  : E4.Inode.Info;
    begin
+      --  The virtual root "/" lists the mounted volumes ("flash", "sd", ...).
+      if At_Root then
+         if not Accept_Data (Conn) then return; end if;
+         for I in 1 .. VFS.Count loop
+            Send_Entry (Conn, VFS.Name (I), Long, Is_Dir => True, Size => 0);
+         end loop;
+         Close_Data (Conn);
+         Reply ("226", "directory send OK");
+         return;
+      end if;
+      if Active_M = null then Reply ("550", "no such directory"); return; end if;
+
       begin
-         FSP.Stat (Mnt.all, FSP.Lookup (Mnt.all, Path), Dir);
+         FSP.Stat (Active_M.all, FSP.Lookup (Active_M.all, Sub), Dir);
       exception
          when others => Reply ("550", "no such directory"); return;
       end;
@@ -287,38 +351,17 @@ package body FTP_Server is
       end if;
 
       N_Entries := 0;
-      FSP.Iterate (Mnt.all, Dir, Record_Entry'Access);
+      FSP.Iterate (Active_M.all, Dir, Record_Entry'Access);
 
       if not Accept_Data (Conn) then return; end if;
       for K in 1 .. N_Entries loop
          declare
             Nm   : constant String := Entries (K).Name (1 .. Entries (K).Len);
             Info : E4.Inode.Info;
-            Line : String (1 .. 320);
-            L    : Natural := 0;
-            procedure Put (S : String) is
-            begin Line (L + 1 .. L + S'Length) := S; L := L + S'Length; end Put;
          begin
-            FSP.Stat (Mnt.all, Entries (K).Ino, Info);
-            if Long then
-               if E4.Inode.Is_Dir (Info) then Put ("drwxr-xr-x");
-               elsif E4.Inode.Is_Symlink (Info) then Put ("lrwxrwxrwx");
-               else Put ("-rw-r--r--");
-               end if;
-               Put (" 1 ftp ftp ");
-               Put (Img (Natural (Info.Size)));
-               Put (" Jan  1 00:00 ");
-            end if;
-            Put (Nm);
-            Put (Character'Val (13) & Character'Val (10));
-            declare
-               B : SEA (1 .. SEO (L));
-            begin
-               for I in 1 .. L loop
-                  B (SEO (I)) := Stream_Element (Character'Pos (Line (I)));
-               end loop;
-               Send_All (Conn, B);
-            end;
+            FSP.Stat (Active_M.all, Entries (K).Ino, Info);
+            Send_Entry (Conn, Nm, Long, E4.Inode.Is_Dir (Info),
+                        Natural (Info.Size));
          end;
       end loop;
       Close_Data (Conn);
@@ -332,13 +375,15 @@ package body FTP_Server is
    procedure Do_Retr (Arg : String) is
       Conn   : Socket_Type;
       Path   : constant String := Abs_Path (Arg);
+      Sub    : constant String := Resolve_Path (Path);
       Info   : E4.Inode.Info;
       Offset : Interfaces.Unsigned_64 := 0;
       Buf    : E4.Byte_Array (0 .. Data_Chunk - 1);
       Last   : Natural;
    begin
+      if Active_M = null then Reply ("550", "no such file"); return; end if;
       begin
-         FSP.Stat (Mnt.all, FSP.Lookup (Mnt.all, Path), Info);
+         FSP.Stat (Active_M.all, FSP.Lookup (Active_M.all, Sub), Info);
       exception
          when others => Reply ("550", "no such file"); return;
       end;
@@ -347,7 +392,7 @@ package body FTP_Server is
       end if;
       if not Accept_Data (Conn) then return; end if;
       loop
-         FSP.Read_File (Mnt.all, Info, Offset, Buf, Last);
+         FSP.Read_File (Active_M.all, Info, Offset, Buf, Last);
          exit when Last = 0;
          declare
             B : SEA (0 .. SEO (Last - 1));
@@ -370,6 +415,7 @@ package body FTP_Server is
    procedure Do_Stor (Arg : String) is
       Conn     : Socket_Type;
       Path     : constant String := Abs_Path (Arg);
+      Sub      : constant String := Resolve_Path (Path);
       Dir      : String (1 .. 1024);  Dir_Len  : Natural;
       Name     : String (1 .. 255);   Name_Len : Natural;
       Ino      : E4.Inode_Number;
@@ -377,14 +423,15 @@ package body FTP_Server is
       RLast    : SEO;
    begin
       if RO then Reply ("532", "read-only server"); return; end if;
-      Split (Path, Dir, Dir_Len, Name, Name_Len);
+      if Active_M = null then Reply ("550", "no such path"); return; end if;
+      Split (Sub, Dir, Dir_Len, Name, Name_Len);
       --  Overwrite: truncate an existing file, else create it.
       begin
-         Ino := FSP.Lookup (Mnt.all, Path);
-         FSP.Truncate (Mnt.all, Ino, 0);
+         Ino := FSP.Lookup (Active_M.all, Sub);
+         FSP.Truncate (Active_M.all, Ino, 0);
       exception
          when others =>
-            Ino := FSP.Create_File (Mnt.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
+            Ino := FSP.Create_File (Active_M.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
       end;
       if not Accept_Data (Conn) then return; end if;
       loop
@@ -400,11 +447,11 @@ package body FTP_Server is
             for I in D'Range loop
                D (I) := E4.U8 (Scratch (Scratch'First + SEO (I)));
             end loop;
-            FSP.Append (Mnt.all, Ino, D);
+            FSP.Append (Active_M.all, Ino, D);
          end;
       end loop;
       Close_Data (Conn);
-      FSP.Commit (Mnt.all);
+      FSP.Commit (Active_M.all);
       Reply ("226", "transfer complete");
    exception
       when others =>
@@ -418,9 +465,17 @@ package body FTP_Server is
 
    procedure Do_Cwd (Arg : String) is
       Path : constant String := Abs_Path (Arg);
+      Sub  : constant String := Resolve_Path (Path);
       Info : E4.Inode.Info;
    begin
-      FSP.Stat (Mnt.all, FSP.Lookup (Mnt.all, Path), Info);
+      --  "/" (the virtual root) and a mount point's own root are always dirs.
+      if At_Root then
+         Cwd_Len := 1; Cwd (1) := '/';
+         Reply ("250", "directory changed");
+         return;
+      end if;
+      if Active_M = null then Reply ("550", "no such directory"); return; end if;
+      FSP.Stat (Active_M.all, FSP.Lookup (Active_M.all, Sub), Info);
       if E4.Inode.Is_Dir (Info) then
          Cwd_Len := Path'Length;
          Cwd (1 .. Cwd_Len) := Path;
@@ -433,9 +488,12 @@ package body FTP_Server is
    end Do_Cwd;
 
    procedure Do_Size (Arg : String) is
+      Path : constant String := Abs_Path (Arg);
+      Sub  : constant String := Resolve_Path (Path);
       Info : E4.Inode.Info;
    begin
-      FSP.Stat (Mnt.all, FSP.Lookup (Mnt.all, Abs_Path (Arg)), Info);
+      if Active_M = null then Reply ("550", "no such file"); return; end if;
+      FSP.Stat (Active_M.all, FSP.Lookup (Active_M.all, Sub), Info);
       if E4.Inode.Is_Reg (Info) then
          Reply ("213", Img (Natural (Info.Size)));
       else
@@ -448,17 +506,19 @@ package body FTP_Server is
    --  MKD / RMD / DELE share the split-and-act shape.
    procedure Path_Op (Arg : String; Op : Character) is
       Path : constant String := Abs_Path (Arg);
+      Sub  : constant String := Resolve_Path (Path);
       Dir  : String (1 .. 1024);  Dir_Len  : Natural;
       Name : String (1 .. 255);   Name_Len : Natural;
    begin
       if RO then Reply ("532", "read-only server"); return; end if;
-      Split (Path, Dir, Dir_Len, Name, Name_Len);
+      if Active_M = null then Reply ("550", "operation failed"); return; end if;
+      Split (Sub, Dir, Dir_Len, Name, Name_Len);
       case Op is
-         when 'M' => FSP.Mkdir  (Mnt.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
-         when 'R' => FSP.Rmdir  (Mnt.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
-         when others => FSP.Unlink (Mnt.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
+         when 'M' => FSP.Mkdir  (Active_M.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
+         when 'R' => FSP.Rmdir  (Active_M.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
+         when others => FSP.Unlink (Active_M.all, Dir (1 .. Dir_Len), Name (1 .. Name_Len));
       end case;
-      FSP.Commit (Mnt.all);
+      FSP.Commit (Active_M.all);
       if Op = 'M' then
          Reply ("257", """" & Path & """ created");
       else
@@ -529,8 +589,7 @@ package body FTP_Server is
    ---------------------------------------------------------------------------
 
    procedure Run
-     (FS          : not null access ESP32S3.Ext4.FS.Mount;
-      Local_IP    : String;
+     (Local_IP    : String;
       Server_Name : String := "Ada ESP32-S3";
       Port        : GNAT.Sockets.Port_Type := 21;
       Data_Port   : GNAT.Sockets.Port_Type := 50_000;
@@ -539,7 +598,6 @@ package body FTP_Server is
       Listener : Socket_Type;
       Peer     : Sock_Addr_Type;
    begin
-      Mnt      := FS;
       RO       := Read_Only;
       DPort    := Data_Port;
       Host_Len := Natural'Min (Local_IP'Length, 15);

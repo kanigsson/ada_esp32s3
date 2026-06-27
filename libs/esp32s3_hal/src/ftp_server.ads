@@ -1,31 +1,41 @@
 with GNAT.Sockets;
-with ESP32S3.Ext4.FS;
 
---  A small anonymous FTP server (RFC 959, passive mode) that exposes an ext4
---  filesystem -- e.g. the ext4-on-W25Q-flash volume -- over the network, so a
---  desktop FTP client can browse, download, upload and manage the board's files.
+--  A small anonymous FTP server (RFC 959, passive mode) that exposes one or more
+--  ext4 filesystems -- e.g. the ext4-on-W25Q-flash volume, and an SD card -- over
+--  the network, so a desktop FTP client can browse, download, upload and manage
+--  the board's files.
 --
---  Written against GNAT.Sockets (so the same source would run on a desktop) plus
---  ESP32S3.Ext4.FS for the storage.  It serves ONE client at a time: a persistent
---  control connection plus one PASSIVE data connection per transfer, on a fixed
---  data port (a single-client embedded server needs no port range).  PASV only --
---  the client always connects out to the server, which is all a desktop client
---  needs and keeps the socket model simple.
+--  The filesystems are presented through ESP32S3.Ext4.VFS: register each one under
+--  a name BEFORE calling Run, and they appear as top-level directories in a single
+--  tree (e.g. "/flash", "/sd").  The virtual root "/" lists the mount names.  With
+--  one mount registered there is just a single "/flash" at the root; adding a
+--  second storage device later is one more VFS.Add call -- nothing here changes.
+--
+--    ESP32S3.Ext4.VFS.Add ("flash", Flash_M'Access);   -- library-level mounts
+--    ESP32S3.Ext4.VFS.Add ("sd",    SD_M'Access);       -- (optional, later)
+--    FTP_Server.Run (Local_IP => "192.168.1.50");
+--
+--  Written against GNAT.Sockets (so the same source would run on a desktop).  It
+--  serves ONE client at a time: a persistent control connection plus one PASSIVE
+--  data connection per transfer, on a fixed data port (a single-client embedded
+--  server needs no port range).  PASV only -- the client always connects out to
+--  the server, which is all a desktop client needs and keeps the socket model
+--  simple.
 --
 --  Run blocks forever in the calling task, accepting clients in turn.  Needs the
 --  embedded or full profile (GNAT.Sockets + the ext4 FS).
 package FTP_Server is
 
-   --  Serve FS over anonymous FTP until the program ends.  Local_IP is the
-   --  board's own dotted-decimal address (e.g. "192.168.1.50"); it is what PASV
-   --  advertises for the data connection, so it must be the address the client
-   --  reaches the board on.  Any username/password is accepted (anonymous).  With
-   --  Read_Only set, the mutating commands (STOR/DELE/MKD/RMD) are refused.
-   --  Server_Name is announced in the 220 greeting on connect (what a client
-   --  shows as the server's identity, e.g. "220 Ada ESP32-S3 FTP server ready").
+   --  Serve the registered VFS mounts over anonymous FTP until the program ends.
+   --  Local_IP is the board's own dotted-decimal address (e.g. "192.168.1.50");
+   --  it is what PASV advertises for the data connection, so it must be the
+   --  address the client reaches the board on.  Any username/password is accepted
+   --  (anonymous).  With Read_Only set, the mutating commands (STOR/DELE/MKD/RMD)
+   --  are refused.  Server_Name is announced in the 220 greeting on connect (what
+   --  a client shows as the server's identity, e.g. "220 Ada ESP32-S3 FTP server
+   --  ready").
    procedure Run
-     (FS          : not null access ESP32S3.Ext4.FS.Mount;
-      Local_IP    : String;
+     (Local_IP    : String;
       Server_Name : String := "Ada ESP32-S3";
       Port        : GNAT.Sockets.Port_Type := 21;
       Data_Port   : GNAT.Sockets.Port_Type := 50_000;

@@ -31,6 +31,7 @@ with ESP32S3.Block_Dev.WL;
 with ESP32S3.Ext4;                  use ESP32S3.Ext4;
 with ESP32S3.Ext4.Mkfs;
 with ESP32S3.Ext4.FS;
+with ESP32S3.Ext4.VFS;
 with ESP32S3.W5500.DHCP;
 with W5500_Dev;
 with FTP_Server;
@@ -113,9 +114,16 @@ begin
    M.Mkdir ("/", "uploads");
    M.Commit;
 
-   Put_Line ("[ftpd] serving on " & W5500_Dev.Image (Lease.IP)
-             & ":21  (anonymous, read-write)");
+   --  4. Mount the flash at "/flash" in the FTP server's namespace.  To expose a
+   --  second device later (e.g. an SD card on Block_Dev.SDMMC_Source), bring it up
+   --  the same way and add one line: ESP32S3.Ext4.VFS.Add ("sd", SD_M'Access);
+   --  -- the mount objects must be library-level (Flash_FS), so their access can
+   --  be stored in the VFS table that outlives this procedure.
+   ESP32S3.Ext4.VFS.Add ("flash", M'Access);
 
-   --  4. Serve forever.
-   FTP_Server.Run (M'Access, Local_IP => W5500_Dev.Image (Lease.IP));
+   Put_Line ("[ftpd] serving on " & W5500_Dev.Image (Lease.IP)
+             & ":21  (anonymous, read-write)  ->  /flash");
+
+   --  5. Serve forever.
+   FTP_Server.Run (Local_IP => W5500_Dev.Image (Lease.IP));
 end Main;
