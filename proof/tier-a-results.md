@@ -188,6 +188,71 @@ VCs are proved separately in `sparknacl_proof.gpr` and are out of phase-3 scope.
   pre-existing `K = 0 ⇒ return False` outcome, and `BE_To_Words` computes the
   identical little-endian words.
 
-## Phases 4–5 — pending
+## Phase 4 — `Chain_Verify`  ✅ complete
 
-See `ROADMAP-tier-a.md`: `Chain_Verify`, `AES.GCM` GHASH.
+`Chain_Verify` (spec + body) is `SPARK_Mode => On` and **fully proved** — AoRTE
+(including **null-safe access dereferences** of every certificate reference) plus
+termination of the chain walk. Run with `./proof/prove.sh -P
+proof/chain_verify_proof.gpr -j0 --level=2 --report=all`.
+
+```
+SPARK Analysis results        Total        Flow                             Provers   Unproved
+Initialization                    5           5                                    .          .
+Run-time Checks                  40           .                            40 (CVC5)          .
+Functional Contracts             10           .    10 (CVC5 91%, Z3 8%, altergo 1%)          .
+Termination                       8           8                                    .          .
+Total                            63    13 (21%)                            50 (79%)          .
+```
+
+**63 / 63 VCs discharged, 0 unproved, 0 warnings** at `--level=2`. The run-time
+checks include **17 pointer-dereference checks** (every `Chain (I).Data.all` /
+`Anchors (A).Data.all` proven non-null) and the index/precondition checks for the
+per-link `Parse` → `Valid_At` / `Host_Matches` / `Sig_OK` calls.
+
+### Contract-only dependency surface (fast run)
+
+`chain_verify_proof.gpr` lists only the **specs** below `Chain_Verify`, so no
+bodies — and hence no SPARKNaCl or RSA — are pulled in (the run is seconds, no
+`--no-subprojects` needed):
+
+- **`X509`** — `Parse`'s `Well_Formed` postcondition, the `Valid_At` /
+  `Host_Matches` preconditions, and the ghost glue (`Indexable` / `Slice_In` /
+  `Well_Formed` / `Length`, all expression functions defined in the spec).
+- **`Cert_Verify`** — `RSA_PKCS1_SHA256`'s precondition (proved in phase 3).
+
+### The proof shape
+
+- **`All_Parsable (L : Cert_List)`** (ghost, in the spec): every reference is
+  non-null and `Indexable`. It is the precondition of `Validate`; real DER buffers
+  (a few KiB, library-level aliased) satisfy it, and it lets the body dereference
+  and `X509.Parse` each cert without a run-time error. The matching contract glue
+  to phases 1–3, lifted to a list of certificates.
+- **`Well_Formed` threading.** After each `X509.Parse`, the (checked) `Valid` flag
+  gives `Well_Formed` via `Parse`'s postcondition; that flows into `Valid_At`,
+  `Host_Matches`, and `Sig_OK` (whose precondition is `Indexable` + `Well_Formed`
+  for both the child and issuer buffers).
+- **`Sig_OK`** guards `Length (…) >= 1` on the four cert slices before calling
+  `RSA_PKCS1_SHA256`, discharging its `TBS'Length >= 1` precondition and tying each
+  non-empty slice's `'Last` to the `Indexable` headroom bound.
+
+### Source changes (behaviour-preserving)
+
+1. **Named access type.** `Cert_Ref.Data` changed from an anonymous
+   `access constant X509.Byte_Array` (rejected by SPARK as an anonymous-access
+   record component) to a named `type Cert_Data is access constant
+   X509.Byte_Array`. Source-compatible with the callers' `(Data => X'Access)`
+   aggregates.
+2. **`Top.Valid` guard.** The anchor loop is wrapped in `if Top.Valid then` after
+   the top cert is re-parsed, so `Well_Formed (TB, Top)` is available for `Sig_OK`
+   (the main loop already established the top is valid, so behaviour is unchanged).
+
+### Regression / compatibility
+
+`libs/tls/tls.gpr` and the `Chain_Verify` examples (`esp32s3_x509_chain`,
+`esp32s3_tls_hello`, `esp32s3_tls_weather`) all build (embedded). The named-access
+and precondition changes are transparent at the call sites — the pinned anchors and
+received chains are non-null, Indexable buffers, so `All_Parsable` holds at runtime.
+
+## Phase 5 — pending
+
+See `ROADMAP-tier-a.md`: `AES.GCM` `GF_Mul` / `GHASH` (independent, AoRTE trivial).

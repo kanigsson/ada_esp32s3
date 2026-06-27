@@ -1,16 +1,32 @@
 with Cert_Verify;
 
-package body Chain_Verify is
+package body Chain_Verify with SPARK_Mode => On is
 
    --  Does Child's signature verify under Issuer's RSA public key?
+   --
+   --  The four slices are taken from Well_Formed buffers, so each lies within its
+   --  buffer (Slice_In) and, since the buffers are Indexable, each slice's 'Last is
+   --  below Natural'Last - 1.  We require all four to be non-empty before calling
+   --  RSA_PKCS1_SHA256: that discharges its TBS'Length >= 1 precondition and, for a
+   --  non-empty slice, ties 'Last to buffer'Last (the headroom bound).  A
+   --  certificate missing any of these fields cannot carry a valid signature, so
+   --  returning False (treated as Bad_Signature upstream) is the correct outcome.
    function Sig_OK (Child_Buf : X509.Byte_Array; Child : X509.Certificate;
                     Iss_Buf : X509.Byte_Array; Iss : X509.Certificate)
                     return Boolean is
-     (Cert_Verify.RSA_PKCS1_SHA256
+     (X509.Length (Child.TBS) >= 1
+      and then X509.Length (Child.Signature) >= 1
+      and then X509.Length (Iss.RSA_Modulus) >= 1
+      and then X509.Length (Iss.RSA_Exponent) >= 1
+      and then Cert_Verify.RSA_PKCS1_SHA256
         (TBS       => Child_Buf (Child.TBS.First .. Child.TBS.Last),
          Signature => Child_Buf (Child.Signature.First .. Child.Signature.Last),
          Modulus   => Iss_Buf (Iss.RSA_Modulus.First .. Iss.RSA_Modulus.Last),
-         Exponent  => Iss_Buf (Iss.RSA_Exponent.First .. Iss.RSA_Exponent.Last)));
+         Exponent  => Iss_Buf (Iss.RSA_Exponent.First .. Iss.RSA_Exponent.Last)))
+     with Pre => X509.Indexable (Child_Buf)
+                 and then X509.Well_Formed (Child_Buf, Child)
+                 and then X509.Indexable (Iss_Buf)
+                 and then X509.Well_Formed (Iss_Buf, Iss);
 
    function Validate
      (Chain, Anchors : Cert_List;
@@ -72,18 +88,20 @@ package body Chain_Verify is
          TB  : X509.Byte_Array renames Chain (Chain'Last).Data.all;
          Top : X509.Certificate;
       begin
-         X509.Parse (TB, Top);                  --  re-parse (already known valid)
-         for A in Anchors'Range loop
-            declare
-               AB : X509.Byte_Array renames Anchors (A).Data.all;
-               Ac : X509.Certificate;
-            begin
-               X509.Parse (AB, Ac);
-               if Ac.Valid and then Sig_OK (TB, Top, AB, Ac) then
-                  return Valid;
-               end if;
-            end;
-         end loop;
+         X509.Parse (TB, Top);                  --  re-parse (the loop above already
+         if Top.Valid then                      --  proved Chain'Last valid; the
+            for A in Anchors'Range loop          --  guard makes Well_Formed (TB, Top)
+               declare                           --  available for Sig_OK below)
+                  AB : X509.Byte_Array renames Anchors (A).Data.all;
+                  Ac : X509.Certificate;
+               begin
+                  X509.Parse (AB, Ac);
+                  if Ac.Valid and then Sig_OK (TB, Top, AB, Ac) then
+                     return Valid;
+                  end if;
+               end;
+            end loop;
+         end if;
       end;
       return Untrusted_Root;
    end Validate;
