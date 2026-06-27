@@ -146,8 +146,11 @@ the proof forces you to address:
 
 Bottom-up, each phase green before the next:
 
-1. **`X509.DER`** — add the `Read` postcondition, fix finding #1, prove AoRTE +
-   the postcondition. Smallest unit, unblocks everything.
+1. **`X509.DER`** ✅ **DONE** (see `tier-a-results.md`) — `SPARK_Mode On`, `Read`
+   postcondition added and proved, AoRTE clean (28/28 VCs). Fixed the long-form
+   length overflow (finding #1), plus three more the proof surfaced: an empty-
+   content `P+1` overflow, and `Length`/`Pack_Time` overflows in the `X509` spec.
+   The `X509` spec is now `SPARK_Mode On` (body Off until phase 2).
 2. **`X509`** — add `Slice_In` / `Well_Formed`, the `Parse` postcondition,
    consumer preconditions; prove AoRTE. Address findings #2–#4.
 3. **`Cert_Verify`** — wire the contract-only RSA/SHA deps; prove AoRTE across

@@ -37,7 +37,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | Project | Covers | Status |
 |---------|--------|--------|
 | `sparknacl_proof.gpr` | vendored SPARKNaCl crypto primitives | **replays (cross)** — see below |
-| _(planned)_ `x509_proof.gpr` | `X509`, `X509.DER`, `Cert_Verify`, `Chain_Verify` | see `ROADMAP-tier-a.md` |
+| `x509_proof.gpr` | `X509.DER` + `X509` spec (phase 1); `Cert_Verify`, `Chain_Verify` later | **phase 1 proved** — see `tier-a-results.md` |
 
 ## Running
 

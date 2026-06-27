@@ -1,6 +1,9 @@
 with X509.DER;
 
-package body X509 is
+--  Body proof is Tier-A phase 2 (see proof/ROADMAP-tier-a.md); until then the
+--  spec is SPARK_Mode On (so X509.DER and other clients are in-subset) but the
+--  body stays Off so it is not yet pulled into proof.
+package body X509 with SPARK_Mode => Off is
 
    use type Interfaces.Unsigned_8;
 
