@@ -6,7 +6,7 @@ with SPARKNaCl.Hashing.SHA512;
 with SPARKNaCl.Sign;
 with P256;
 
-package body Cert_Verify is
+package body Cert_Verify with SPARK_Mode => On is
 
    use type X509.U8;
    subtype U8 is X509.U8;
@@ -25,32 +25,50 @@ package body Cert_Verify is
       16#01#, 16#65#, 16#03#, 16#04#, 16#02#, 16#03#, 16#05#, 16#00#, 16#04#, 16#40#);
 
    --  Big-endian bytes -> little-endian 32-bit words (word 0 least significant).
-   --  W may hold more words than B fills; the high words are zeroed.
-   procedure BE_To_Words (B : Byte_Array; W : out ESP32S3.RSA.Word_Array) is
+   --  W may hold more words than B fills; the high words are zeroed.  At most
+   --  128 words (the RSA accelerator's ceiling) keeps the index arithmetic in
+   --  range.  Iterating over W'Range makes the full initialization of W obvious.
+   procedure BE_To_Words (B : Byte_Array; W : out ESP32S3.RSA.Word_Array)
+     with Pre => W'Length <= 128 and then B'Last < Natural'Last - 1
+   is
       use ESP32S3.RSA;
+      Len : constant Natural := B'Length;
    begin
-      for J in 0 .. W'Length - 1 loop
+      for J in W'Range loop
+         --  W'Length <= 128, so the 0-based word index stays <= 127; this lets
+         --  the prover bound Base = 4 * Idx and the Base + k byte offsets below.
+         pragma Loop_Invariant (J - W'First <= 127);
          declare
-            P   : constant Integer := Integer (B'Last) - 4 * J;   --  LSB of word J
-            Acc : Word := 0;
+            Idx  : constant Natural := J - W'First;       --  0-based word #, <= 127
+            Base : constant Natural := 4 * Idx;           --  LSB byte offset, <= 508
+            Acc  : Word := 0;
          begin
-            if P     >= Integer (B'First) then Acc := Acc + Word (B (P)); end if;
-            if P - 1 >= Integer (B'First) then Acc := Acc + Word (B (P - 1)) * 16#100#; end if;
-            if P - 2 >= Integer (B'First) then Acc := Acc + Word (B (P - 2)) * 16#1_0000#; end if;
-            if P - 3 >= Integer (B'First) then Acc := Acc + Word (B (P - 3)) * 16#100_0000#; end if;
-            W (W'First + J) := Acc;
+            --  Word Idx covers the bytes Base .. Base + 3 counted back from the
+            --  LSB end of B (which is B'Last).  All arithmetic stays in Natural:
+            --  Base + k < Len guarantees B'Last - Base - k >= B'First.
+            if Base     < Len then Acc := Acc + Word (B (B'Last - Base)); end if;
+            if Base + 1 < Len then Acc := Acc + Word (B (B'Last - Base - 1)) * 16#100#; end if;
+            if Base + 2 < Len then Acc := Acc + Word (B (B'Last - Base - 2)) * 16#1_0000#; end if;
+            if Base + 3 < Len then Acc := Acc + Word (B (B'Last - Base - 3)) * 16#100_0000#; end if;
+            W (J) := Acc;
          end;
       end loop;
    end BE_To_Words;
 
-   --  Little-endian words -> big-endian bytes (EM'Length must be 4 * W'Length).
-   procedure Words_To_BE (W : ESP32S3.RSA.Word_Array; EM : out Byte_Array) is
+   --  Little-endian words -> big-endian bytes.  EM must be exactly 4 * W'Length
+   --  bytes; the (others => 0) prefill discharges full initialization despite the
+   --  strided writes (the loop overwrites every byte anyway).
+   procedure Words_To_BE (W : ESP32S3.RSA.Word_Array; EM : out Byte_Array)
+     with Pre => W'Length <= 128 and then EM'Length = 4 * W'Length
+   is
       use ESP32S3.RSA;
    begin
-      for J in 0 .. W'Length - 1 loop
+      EM := (others => 0);
+      for J in W'Range loop
          declare
-            Wd : constant Word    := W (W'First + J);
-            P  : constant Natural := EM'Last - 4 * J;             --  LSB of word J
+            Idx : constant Natural := J - W'First;
+            Wd  : constant Word    := W (J);
+            P   : constant Natural := EM'Last - 4 * Idx;       --  LSB of word J
          begin
             EM (P)     := U8 (Wd mod 16#100#);
             EM (P - 1) := U8 ((Wd / 16#100#)     mod 16#100#);
@@ -60,14 +78,18 @@ package body Cert_Verify is
       end loop;
    end Words_To_BE;
 
-   --  Big-endian SHA digests of Data, as Byte_Array (full length per variant).
-   function SHA256_BA (Data : Byte_Array) return Byte_Array is
+   --  Big-endian SHA digests of Data, as a fixed-length Byte_Array (index 0 ..).
+   function SHA256_BA (Data : Byte_Array) return Byte_Array
+     with Pre  => Data'Length >= 1 and then Data'Last < Natural'Last - 1,
+          Post => SHA256_BA'Result'First = 0
+                  and then SHA256_BA'Result'Last = 31
+   is
       Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
       Dg  : SPARKNaCl.Hashing.SHA256.Digest;
       R   : Byte_Array (0 .. 31);
    begin
-      for I in 0 .. Data'Length - 1 loop
-         Msg (SPARKNaCl.N32 (I)) := SPARKNaCl.Byte (Data (Data'First + I));
+      for I in Msg'Range loop
+         Msg (I) := SPARKNaCl.Byte (Data (Data'First + Natural (I)));
       end loop;
       Dg := SPARKNaCl.Hashing.SHA256.Hash (Msg);
       for I in R'Range loop
@@ -76,13 +98,17 @@ package body Cert_Verify is
       return R;
    end SHA256_BA;
 
-   function SHA384_BA (Data : Byte_Array) return Byte_Array is
+   function SHA384_BA (Data : Byte_Array) return Byte_Array
+     with Pre  => Data'Length >= 1 and then Data'Last < Natural'Last - 1,
+          Post => SHA384_BA'Result'First = 0
+                  and then SHA384_BA'Result'Last = 47
+   is
       Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
       Dg  : SPARKNaCl.Hashing.SHA384.Digest;
       R   : Byte_Array (0 .. 47);
    begin
-      for I in 0 .. Data'Length - 1 loop
-         Msg (SPARKNaCl.N32 (I)) := SPARKNaCl.Byte (Data (Data'First + I));
+      for I in Msg'Range loop
+         Msg (I) := SPARKNaCl.Byte (Data (Data'First + Natural (I)));
       end loop;
       Dg := SPARKNaCl.Hashing.SHA384.Hash (Msg);
       for I in R'Range loop
@@ -91,13 +117,17 @@ package body Cert_Verify is
       return R;
    end SHA384_BA;
 
-   function SHA512_BA (Data : Byte_Array) return Byte_Array is
+   function SHA512_BA (Data : Byte_Array) return Byte_Array
+     with Pre  => Data'Length >= 1 and then Data'Last < Natural'Last - 1,
+          Post => SHA512_BA'Result'First = 0
+                  and then SHA512_BA'Result'Last = 63
+   is
       Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
       Dg  : SPARKNaCl.Hashing.SHA512.Digest;
       R   : Byte_Array (0 .. 63);
    begin
-      for I in 0 .. Data'Length - 1 loop
-         Msg (SPARKNaCl.N32 (I)) := SPARKNaCl.Byte (Data (Data'First + I));
+      for I in Msg'Range loop
+         Msg (I) := SPARKNaCl.Byte (Data (Data'First + Natural (I)));
       end loop;
       Dg := SPARKNaCl.Hashing.SHA512.Hash (Msg);
       for I in R'Range loop
@@ -108,14 +138,29 @@ package body Cert_Verify is
 
    --  RSASSA-PKCS1-v1.5 verify with a precomputed digest Hash and its matching
    --  DigestInfo prefix DI: recover EM = Signature^Exponent mod Modulus and
-   --  constant-time compare it to 00 01 FF..FF 00 || DI || Hash.
+   --  constant-time compare it to 00 01 FF..FF 00 || DI || Hash.  The block is
+   --  built at fixed offsets (the 0x00 separator after the FF padding is left by
+   --  the prefill), so every Want write is provably in [0 .. K - 1].
    function RSA_PKCS1_Core
      (Hash, DI, Signature, Modulus, Exponent : Byte_Array) return Boolean
+     with Pre => Hash'Length <= 64 and then DI'Length <= 32
+                 and then Hash'Last      < Natural'Last - 1
+                 and then DI'Last        < Natural'Last - 1
+                 and then Signature'Last < Natural'Last - 1
+                 and then Modulus'Last   < Natural'Last - 1
+                 and then Exponent'Last  < Natural'Last - 1
    is
-      M_First : Natural := Modulus'First;
+      M_First : Natural;
    begin
+      --  A zero-length modulus can never carry a signature; reject it up front so
+      --  that Modulus'First below is a valid (non-negative) index -- for an empty
+      --  array the prover only knows the bounds in the index base type.
+      if Modulus'Length = 0 then
+         return False;
+      end if;
       --  Drop a single leading 0x00 (DER positive-sign byte) from the modulus.
-      if Modulus'Length >= 1 and then Modulus (Modulus'First) = 0 then
+      M_First := Modulus'First;
+      if Modulus (Modulus'First) = 0 then
          M_First := Modulus'First + 1;
       end if;
       declare
@@ -135,10 +180,10 @@ package body Cert_Verify is
             N             : constant Natural := K / 4;
             Nm, Sg, Ex, Z : Word_Array (0 .. N - 1);
             Ok            : Boolean;
-            EM, Want      : Byte_Array (0 .. K - 1);
+            EM            : Byte_Array (0 .. K - 1);
+            Want          : Byte_Array (0 .. K - 1) := (others => 0);
             PS_Len        : constant Natural := K - 3 - (DI'Length + Hash'Length);
             Diff          : U8 := 0;
-            Pos           : Natural;
          begin
             BE_To_Words (Modulus (M_First .. Modulus'Last), Nm);
             BE_To_Words (Signature, Sg);
@@ -149,22 +194,18 @@ package body Cert_Verify is
             end if;
             Words_To_BE (Z, EM);
 
+            --  Build the expected block: 00 01 FF..FF 00 || DigestInfo || hash.
+            --  The 0x00 separator at index 2 + PS_Len is left by the prefill.
             Want (0) := 16#00#;
             Want (1) := 16#01#;
-            Pos := 2;
             for I in 0 .. PS_Len - 1 loop
-               Want (Pos + I) := 16#FF#;
+               Want (2 + I) := 16#FF#;
             end loop;
-            Pos := Pos + PS_Len;
-            Want (Pos) := 16#00#;
-            Pos := Pos + 1;
-            for I in DI'Range loop
-               Want (Pos) := DI (I);
-               Pos := Pos + 1;
+            for I in 0 .. DI'Length - 1 loop
+               Want (3 + PS_Len + I) := DI (DI'First + I);
             end loop;
-            for I in Hash'Range loop
-               Want (Pos) := Hash (I);
-               Pos := Pos + 1;
+            for I in 0 .. Hash'Length - 1 loop
+               Want (3 + PS_Len + DI'Length + I) := Hash (Hash'First + I);
             end loop;
 
             for I in EM'Range loop                --  constant-time compare
@@ -191,15 +232,26 @@ package body Cert_Verify is
    --  RSASSA-PSS (MGF1-SHA-256, salt length 32).  SHA256_BA is defined above.
    ---------------------------------------------------------------------------
 
-   --  MGF1 with SHA-256.
-   function MGF1 (Seed : Byte_Array; Mask_Len : Natural) return Byte_Array is
-      R   : Byte_Array (0 .. Mask_Len - 1);
+   --  MGF1 with SHA-256.  Mask_Len is small in practice (<= the modulus size),
+   --  bounded here so the Pos arithmetic cannot overflow; Seed is a hash (32
+   --  bytes), comfortably within the headroom bound.
+   function MGF1 (Seed : Byte_Array; Mask_Len : Natural) return Byte_Array
+     with Pre  => Mask_Len <= 4096 and then Seed'Last < Natural'Last - 6,
+          Post => MGF1'Result'First = 0
+                  and then MGF1'Result'Length = Mask_Len
+   is
+      R   : Byte_Array (0 .. Mask_Len - 1) := (others => 0);
       Pos : Natural := 0;
       Cnt : Natural := 0;
    begin
       while Pos < Mask_Len loop
+         pragma Loop_Invariant (Pos <= Mask_Len + 31);
+         --  Pos and Cnt advance in lock-step (Pos += 32, Cnt += 1 each block),
+         --  so Cnt = Pos / 32 stays small (<= 128) -- Cnt + 1 cannot overflow.
+         pragma Loop_Invariant (Pos = 32 * Cnt);
+         pragma Loop_Variant (Increases => Pos);
          declare
-            In_Buf : Byte_Array (0 .. Seed'Length + 3);
+            In_Buf : Byte_Array (0 .. Seed'Length + 3) := (others => 0);
             H      : Byte_Array (0 .. 31);
          begin
             for I in 0 .. Seed'Length - 1 loop
@@ -223,9 +275,15 @@ package body Cert_Verify is
    function RSA_PSS_SHA256 (Message, Signature, Modulus, Exponent : Byte_Array)
       return Boolean
    is
-      M_First : Natural := Modulus'First;
+      M_First : Natural;
    begin
-      if Modulus'Length >= 1 and then Modulus (Modulus'First) = 0 then
+      --  Reject a zero-length modulus up front: it makes Modulus'First below a
+      --  valid non-negative index.
+      if Modulus'Length = 0 then
+         return False;
+      end if;
+      M_First := Modulus'First;
+      if Modulus (Modulus'First) = 0 then
          M_First := Modulus'First + 1;
       end if;
       declare
@@ -246,7 +304,7 @@ package body Cert_Verify is
             hLen          : constant := 32;
             sLen          : constant := 32;
             Topb          : Natural := 0;
-            Tt            : U8 := Modulus (M_First);
+            Top           : constant U8 := Modulus (M_First);
          begin
             BE_To_Words (Modulus (M_First .. Modulus'Last), Nm);
             BE_To_Words (Signature, Sg);
@@ -256,18 +314,25 @@ package body Cert_Verify is
                return False;
             end if;
             Words_To_BE (Z, EMb);
-            while Tt /= 0 loop Topb := Topb + 1; Tt := Tt / 2; end loop;
+
+            --  Bit length of the modulus' top byte (0 .. 8), highest set bit + 1.
+            for Bit in reverse 0 .. 7 loop
+               if (Top and U8 (2 ** Bit)) /= 0 then
+                  Topb := Bit + 1;
+                  exit;
+               end if;
+            end loop;
+            pragma Assert (Topb <= 8);
+
             declare
                ModBits  : constant Natural := (K - 1) * 8 + Topb;
                EmBits   : constant Natural := ModBits - 1;
                EmLen    : constant Natural := (EmBits + 7) / 8;
                LeadBits : constant Natural := 8 * EmLen - EmBits;
                EM_Off   : constant Natural := K - EmLen;
-               DBLen    : constant Natural := EmLen - hLen - 1;
-               ZeroN    : constant Natural := EmLen - hLen - sLen - 2;
-               mHash    : constant Byte_Array := SHA256_BA (Message);
-               H        : Byte_Array (0 .. hLen - 1);
             begin
+               pragma Assert (EmLen <= K);
+               pragma Assert (LeadBits <= 7);
                if EmLen < hLen + sLen + 2 or else EM_Off + EmLen /= K then
                   return False;
                end if;
@@ -279,45 +344,53 @@ package body Cert_Verify is
                then
                   return False;
                end if;
-               for I in 0 .. hLen - 1 loop
-                  H (I) := EMb (EM_Off + DBLen + I);
-               end loop;
+
                declare
-                  DBMask : constant Byte_Array := MGF1 (H, DBLen);
-                  DB     : Byte_Array (0 .. DBLen - 1);
-                  Salt   : Byte_Array (0 .. sLen - 1);
-                  Mp     : Byte_Array (0 .. 8 + hLen + sLen - 1) := (others => 0);
-                  Hp     : Byte_Array (0 .. hLen - 1);
-                  Good   : Boolean := True;
+                  DBLen : constant Natural := EmLen - hLen - 1;
+                  ZeroN : constant Natural := EmLen - hLen - sLen - 2;
+                  mHash : constant Byte_Array := SHA256_BA (Message);
+                  H     : Byte_Array (0 .. hLen - 1);
                begin
-                  for I in 0 .. DBLen - 1 loop
-                     DB (I) := EMb (EM_Off + I) xor DBMask (I);
-                  end loop;
-                  if LeadBits > 0 then
-                     DB (0) := DB (0) and U8 (2 ** (8 - LeadBits) - 1);
-                  end if;
-                  for I in 0 .. ZeroN - 1 loop
-                     if DB (I) /= 0 then Good := False; end if;
-                  end loop;
-                  if DB (ZeroN) /= 16#01# then            --  PS || 0x01 || salt
-                     Good := False;
-                  end if;
-                  if not Good then
-                     return False;
-                  end if;
-                  for I in 0 .. sLen - 1 loop
-                     Salt (I) := DB (DBLen - sLen + I);
-                  end loop;
-                  --  M' = (0x00)*8 || mHash || salt ; H' = SHA-256(M')
-                  for I in 0 .. hLen - 1 loop Mp (8 + I) := mHash (I); end loop;
-                  for I in 0 .. sLen - 1 loop Mp (8 + hLen + I) := Salt (I); end loop;
-                  Hp := SHA256_BA (Mp);
                   for I in 0 .. hLen - 1 loop
-                     if Hp (I) /= H (I) then
+                     H (I) := EMb (EM_Off + DBLen + I);
+                  end loop;
+                  declare
+                     DBMask : constant Byte_Array := MGF1 (H, DBLen);
+                     DB     : Byte_Array (0 .. DBLen - 1);
+                     Salt   : Byte_Array (0 .. sLen - 1);
+                     Mp     : Byte_Array (0 .. 8 + hLen + sLen - 1) := (others => 0);
+                     Hp     : Byte_Array (0 .. hLen - 1);
+                     Good   : Boolean := True;
+                  begin
+                     for I in DB'Range loop
+                        DB (I) := EMb (EM_Off + I) xor DBMask (I);
+                     end loop;
+                     if LeadBits > 0 then
+                        DB (0) := DB (0) and U8 (2 ** (8 - LeadBits) - 1);
+                     end if;
+                     for I in 0 .. ZeroN - 1 loop
+                        if DB (I) /= 0 then Good := False; end if;
+                     end loop;
+                     if DB (ZeroN) /= 16#01# then            --  PS || 0x01 || salt
+                        Good := False;
+                     end if;
+                     if not Good then
                         return False;
                      end if;
-                  end loop;
-                  return True;
+                     for I in 0 .. sLen - 1 loop
+                        Salt (I) := DB (DBLen - sLen + I);
+                     end loop;
+                     --  M' = (0x00)*8 || mHash || salt ; H' = SHA-256(M')
+                     for I in 0 .. hLen - 1 loop Mp (8 + I) := mHash (I); end loop;
+                     for I in 0 .. sLen - 1 loop Mp (8 + hLen + I) := Salt (I); end loop;
+                     Hp := SHA256_BA (Mp);
+                     for I in 0 .. hLen - 1 loop
+                        if Hp (I) /= H (I) then
+                           return False;
+                        end if;
+                     end loop;
+                     return True;
+                  end;
                end;
             end;
          end;
@@ -325,12 +398,17 @@ package body Cert_Verify is
    end RSA_PSS_SHA256;
 
    ---------------------------------------------------------------------------
-   --  ECDSA / P-256
+   --  ECDSA / P-256 and Ed25519.  These bottom out in the pure-Ada P256 and
+   --  SPARKNaCl.Sign primitives; their bodies are SPARK_Mode (Off) -- the same
+   --  out-of-scope boundary as the silicon RSA accelerator (proving the elliptic
+   --  curve / EdDSA group laws is not in Tier A's functional scope).
    ---------------------------------------------------------------------------
 
    --  SHA-384 of Data, left-truncated to 32 bytes (ECDSA uses the leftmost
    --  256 bits of the digest with a 256-bit group order).
-   function SHA384_BA_32 (Data : Byte_Array) return Byte_Array is
+   function SHA384_BA_32 (Data : Byte_Array) return Byte_Array
+     with SPARK_Mode => Off
+   is
       Msg : SPARKNaCl.Byte_Seq (0 .. SPARKNaCl.N32 (Data'Length - 1));
       Dg  : SPARKNaCl.Hashing.SHA384.Digest;
       R   : Byte_Array (0 .. 31);
@@ -345,7 +423,9 @@ package body Cert_Verify is
       return R;
    end SHA384_BA_32;
 
-   function To_P256 (B : Byte_Array) return P256.Bytes_32 is
+   function To_P256 (B : Byte_Array) return P256.Bytes_32
+     with SPARK_Mode => Off
+   is
       R : P256.Bytes_32;
    begin
       for I in 0 .. 31 loop
@@ -357,7 +437,9 @@ package body Cert_Verify is
    --  Read a DER INTEGER at Pos (tag 0x02), big-endian, into a 32-byte right-aligned
    --  value (leading zero sign byte dropped, short values left-padded).  Advances Pos.
    procedure DER_Int (Buf : Byte_Array; Pos : in out Natural; Last : Natural;
-                      Out32 : out P256.Bytes_32; Ok : in out Boolean) is
+                      Out32 : out P256.Bytes_32; Ok : in out Boolean)
+     with SPARK_Mode => Off
+   is
       Len, First, Vlen : Natural;
    begin
       Out32 := (others => 0);
@@ -386,6 +468,7 @@ package body Cert_Verify is
    --  (Pub_X, Pub_Y).  Sig_DER = SEQUENCE { r INTEGER, s INTEGER }.
    function ECDSA_Core (Hash32 : Byte_Array; Sig_DER, Pub_X, Pub_Y : Byte_Array)
                         return Boolean
+     with SPARK_Mode => Off
    is
       Pos    : Natural;
       Ok     : Boolean := True;
@@ -406,22 +489,27 @@ package body Cert_Verify is
    end ECDSA_Core;
 
    function ECDSA_P256_SHA256
-     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean is
-     (ECDSA_Core (SHA256_BA (Message), Sig_DER, Pub_X, Pub_Y));
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean
+     with SPARK_Mode => Off
+   is
+   begin
+      return ECDSA_Core (SHA256_BA (Message), Sig_DER, Pub_X, Pub_Y);
+   end ECDSA_P256_SHA256;
 
    function ECDSA_P256_SHA384
-     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean is
-     (ECDSA_Core (SHA384_BA_32 (Message), Sig_DER, Pub_X, Pub_Y));
-
-   ---------------------------------------------------------------------------
-   --  Ed25519 (RFC 8032)
-   ---------------------------------------------------------------------------
+     (Message, Sig_DER, Pub_X, Pub_Y : X509.Byte_Array) return Boolean
+     with SPARK_Mode => Off
+   is
+   begin
+      return ECDSA_Core (SHA384_BA_32 (Message), Sig_DER, Pub_X, Pub_Y);
+   end ECDSA_P256_SHA384;
 
    --  Detached verify: NaCl exposes the combined form (signature || message), so
    --  reconstruct SM = Signature || Message, run Open (which cryptographically
    --  verifies), and confirm it recovered exactly Message.
    function Ed25519_Verify (Message, Signature, Pub_Key : X509.Byte_Array)
                             return Boolean
+     with SPARK_Mode => Off
    is
       use type SPARKNaCl.I32;
       use type SPARKNaCl.Byte;

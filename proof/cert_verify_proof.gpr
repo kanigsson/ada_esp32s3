@@ -27,7 +27,9 @@ project Cert_Verify_Proof is
    for Source_Files use
      ("cert_verify.ads", "cert_verify.adb",     --  unit under proof
       "x509.ads",                               --  Byte_Array / U8 types only
-      "esp32s3.ads", "esp32s3-rsa.ads");        --  RSA accelerator SPEC only
+      "esp32s3.ads", "esp32s3-rsa.ads",         --  RSA accelerator SPEC only
+      "p256.ads");                              --  ECDSA P-256 SPEC only (EC body
+                                                --  is SPARK_Mode Off, contract-only)
    for Object_Dir use "obj-cert-verify";
 
    package Builder is
