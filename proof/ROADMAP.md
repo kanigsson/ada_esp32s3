@@ -1,0 +1,186 @@
+# Roadmap — remaining SPARK proof / conversion targets
+
+Tier A (the crypto / X.509 certificate-verification core) and the whole
+post-merge **networking** triage are proved end-to-end. What landed:
+
+- **Proved units** (AoRTE, several with functional contracts): `X509` / `X509.DER`,
+  `Cert_Verify`, `Chain_Verify`, `AES.GCM`, `SPARKNaCl`, **`Net_Routes`** (+ `Resolve`
+  functional postcondition), **`FTP_Replies`** (PASV/reply parse — found & fixed a real
+  integer-overflow bug), **`FTP_Paths`** (path-traversal guard + functional no-escape
+  postcondition). Per-unit VC counts are in `README.md`; the reusable proof techniques
+  are in `proof-patterns.md`; Tier-A phase tables and the bugs proof found are in
+  `tier-a-results.md`.
+
+This file now triages the *next* wave: code in the tree that is **not yet in SPARK**.
+It is a *static* triage from reading the sources — no gnatprove run yet. Targets are
+ordered by **value-per-effort** against the project's proof profile (attacker-facing,
+heap-free, no controlled types / `Ada.Finalization`, no secondary stack,
+target-portable). The mechanics (cross-target via `target.atp`, contract-only deps,
+the in-buffer-predicate / workhorse-lemma patterns, the factor-the-pure-parser
+refactor) are all in `proof-patterns.md` — reuse them.
+
+---
+
+## ▶ STATUS
+
+| # | Target | Tier | Shape | Value | Effort |
+|--:|--------|------|-------|-------|--------|
+| 1 | `DNS_Client` reply parse | A (AoRTE) | factor pure parser out of the socket `Resolve` | **highest** — attacker-facing, likely finds real OOB bugs | small once factored |
+| 2 | DHCP reply option walk (`ESP32S3.W5500.DHCP.Parse_Reply`) | A (AoRTE) | factor pure parser out of the socket loop | high — attacker-facing TLV walk | small–medium |
+| 3 | `NTP_Client` timestamp parse | A (AoRTE) | factor / annotate | medium | small |
+| 4 | `ESP32S3.GPS.NMEA` | A (AoRTE) | **already pure** — annotate in place | medium-high (free win) | very small |
+| 5 | `Modbus` frame `Process` (slave/master PDUs) | A (AoRTE) | factor out of socket `Serve` | medium — bus-facing | medium |
+| 6 | ext4 `crc32c` / `bitmap` / `mkfs`, `Block_Dev.WL` | A (AoRTE) | **already host-tested / pure** | medium (FS + flash integrity) | medium |
+| 7 | `P256` (TLS ECDH field arithmetic) | A (AoRTE + functional) | SPARKNaCl-style proof project | high (TLS key exchange) | large |
+| — | TLV2556 + SPI/`*-engine` / `w25q` / `w5500` / `sd_spi` register churn | B (register drivers) | folds into the Tier-B bucket | — | — |
+| — | Socket-coupled FTP/DNS/Modbus control flow, `gnat-sockets`, `ext4-vfs` | C (`SPARK_Mode Off`) | out of subset — controlled handles | n/a | n/a |
+
+---
+
+## 1. `DNS_Client` reply parsing — the standout new target ⭐
+
+`libs/esp32s3_hal/src/dns_client.{ads,adb}`, ~150 LOC. A textbook attacker-facing
+parser, and a static read already turns up **concrete AoRTE bugs** — the same payoff
+shape as the PASV overflow `FTP_Replies` caught:
+
+- **`Skip_Name` (line 59) advances unbounded.** The loop reads `Resp (Pos)` and does
+  `Pos := Pos + 1 + Len` with **no upper-bound check on `Pos`**. A hostile reply (a
+  label run, or a label whose length overshoots) walks `Pos` past `Resp'Last` → an
+  out-of-bounds read / `Constraint_Error`. (DNS compression pointers also invite a
+  pointer *loop*, the classic resolver bug — worth a bounded-iteration invariant.)
+- **The A-record read can index past the buffer.** The answer loop guards only
+  `Pos + 10 > RLast` (line 101), but then reads `Resp (RData .. RData + 3)` with
+  `RData = Pos + 10` (line 110). With `Pos = RLast - 10` and `RLast` near the end,
+  `RData + 3` reaches `Resp'Last + 3 (= 514 > 511)` → **out-of-bounds read**.
+- **Header fields read before length is checked.** `U16 (Resp'First + 6)` (answer
+  count, line 94) and the subsequent `Skip_Name`/`+4` walk read bytes that a short
+  reply never delivered — uninitialised-data / bounds flow issues.
+
+**Refactor (the established pattern).** The parse is currently inline in `Resolve`,
+interleaved with `GNAT.Sockets` I/O (Tier C). Factor a pure
+`Parse_Reply (Resp, RLast; Addr : out Inet_Addr_Type; Ok : out Boolean)` — or a
+small `DNS_Parse` package over a `Stream_Element_Array` slice + length — mark it
+`SPARK_Mode On`, and prove AoRTE: every `Resp (..)` index in range, `Skip_Name`
+bounded and loop-free, `RData + 3 <= RLast`, fail-closed on a truncated reply. The
+socket-driving `Resolve` stays `SPARK_Mode Off` and calls it.
+
+**Value: highest — real attacker surface (the resolver answer steers every later
+connection) and the proof will almost certainly surface live bugs. Effort: small
+once factored; the buffer shape matches `FTP_Replies`.**
+
+---
+
+## 2. DHCP reply option parsing — attacker-facing TLV walk
+
+`libs/esp32s3_hal/src/esp32s3-w5500-dhcp.adb`, `Parse_Reply`. The option scan
+(`Len := Natural (RX (P + 1))`, then `RX (P + 2 + I)` for the 4-byte address
+options 1/3/6/54, then `P := P + 2 + Len`) is driven by **server-supplied lengths**.
+The `while P <= Count - 1` guard bounds `P` but **not** the inner reads `RX (P + 2 + I)`
+(reach `P + 5`) against the received length / `RX'Last` — a crafted option near the
+end of the datagram reads past the data. Same factor-the-pure-parser refactor: lift
+the option walk into a `SPARK_Mode On` helper taking the `RX` slice + `Count`, prove
+every index in range and the advance monotone (so the outer loop terminates), leave
+the socket `Do_Acquire` / `Renew` flow `SPARK_Mode Off`.
+
+**Value: high (a rogue DHCP server controls gateway/DNS/subnet the device adopts).
+Effort: small–medium.**
+
+---
+
+## 3. `NTP_Client` — server timestamp parse
+
+`libs/esp32s3_hal/src/ntp_client.{ads,adb}`, ~120 LOC total. Small. Parses a
+server-supplied 64-bit NTP timestamp out of a fixed-offset packet and converts to a
+`Time`/`Duration`. Factor the fixed-offset field extraction + the seconds/fraction
+arithmetic (watch the `* 1000` / epoch-offset conversions for overflow) into a pure
+helper and prove AoRTE. Low effort; modest but real attacker surface (clock skew).
+
+---
+
+## 4. `ESP32S3.GPS.NMEA` — a near-free win 🎯
+
+`libs/esp32s3_hal/src/esp32s3-gps-nmea.{ads,adb}`, ~510 LOC. The file header already
+states it: *"pure logic, no UART, no tasking, so it is directly testable… no
+secondary stack: all return scalars or work on slices of the caller's Sentence."*
+It is **already shaped exactly like the proved `FTP_Replies` / `FTP_Paths`** — no
+refactor, just add `SPARK_Mode On` and discharge AoRTE.
+
+The accumulators are the obvious VCs: `To_Nat` (`Acc := Acc * 10 + digit`) and
+`Frac` run over attacker-influenceable digit runs with **no overflow guard** → a long
+field overflows `Natural`. `Field` / `Hex_Val` and the XOR-checksum slice walk are
+index-in-range obligations. Capping the accumulators (the `FTP_Replies` `Parse_Pasv`
+fix) closes them.
+
+**Value: medium-high relative to its cost — biggest win for least effort. Effort:
+very small (annotate in place).**
+
+---
+
+## 5. `Modbus` frame processing — bus-facing PDU handling
+
+`libs/esp32s3_hal/src/modbus*.{ads,adb}`. The request/response **PDU builders and
+parsers** (`Modbus.Slave.Process`, the `Get_U16` / `Put_U16` helpers, the
+quantity-driven `Buf (9 + 2*I)` register loops) index a frame buffer by a
+**client-supplied quantity / byte-count** — classic index-overflow surface on an
+industrial bus. Already **host-tested** (`test/modbus*`), so the logic is
+hardware-decoupled. Factor the PDU encode/decode away from the socket `Serve` /
+`Recv_Exact` loop (Tier C) and prove AoRTE: every `Buf` index bounded by the declared
+quantity, quantities clamped to the Modbus limits (≤ 125 registers / ≤ 2000 coils).
+
+**Value: medium (bus-facing, safety-adjacent). Effort: medium.**
+
+---
+
+## 6. ext4 integrity primitives + wear levelling
+
+`libs/esp32s3_hal/src/ext4/`. Several units are pure block/index arithmetic and
+**already host-tested** (`test/ext4_host`, `test/mkfs_host`, `test/wl_host`):
+- `ESP32S3.Ext4.CRC32C` — table/loop checksum, pure, trivially in subset.
+- `ESP32S3.Ext4.Bitmap` — block/inode bitmap bit math (alloc/free), index-heavy.
+- `ESP32S3.Ext4.MkFs` — superblock / group-descriptor layout arithmetic.
+- `ESP32S3.Block_Dev.WL` — wear-levelling sector remap (logical→physical index math).
+
+These are **integrity**, not attacker-facing, targets: AoRTE on the index/offset
+arithmetic (no out-of-range block, no overflow in the remap), with `CRC32C` the
+cleanest first step. The `Ext4.FS` / `Ext4.File` / `ext4-vfs` layers depend on
+controlled handles and stay Tier C.
+
+**Value: medium (filesystem + flash integrity). Effort: medium, incremental
+unit-by-unit.**
+
+---
+
+## 7. `P256` — TLS ECDH field arithmetic
+
+`libs/tls/src/p256.{ads,adb}`, ~630 LOC. P-256 scalar multiplication over big-endian
+`Bytes`, the secp256r1 field arithmetic behind the TLS key exchange. This is a real
+**proof project**, the natural successor to the SPARKNaCl GF(2²⁵⁵-19) replay: the
+same carry-chain / limb-range invariant style, AoRTE plus (ideally) the functional
+"output is the reduced field element" postcondition. High value — it is the live key
+exchange in `TLS_Client` — but heavy; schedule it as its own effort, not a quick AoRTE
+pass.
+
+---
+
+## Out of scope (recorded so it isn't re-triaged)
+
+- **Tier B — register drivers.** `esp32s3-tlv2556` and the SPI / `*-engine` /
+  `w25q` / `w5500*` / `sd_spi` register churn. These belong to the standing Tier-B
+  register-driver effort (SPARK subset + AoRTE with target-faithful representation),
+  not this roadmap.
+- **Tier C — `SPARK_Mode Off`.** Socket-coupled control flow (FTP/DNS/NTP/Modbus
+  `Resolve` / `Serve` / session layers), the `gnat-sockets` facade, and `ext4-vfs`
+  rely on controlled handles / `Ada.Finalization` and stay out of the subset by
+  design. Each proof target above keeps its socket/VFS driver here and exposes a
+  pure, proved parser/primitive to it.
+
+---
+
+## Recommended order
+
+1. **`DNS_Client`** — highest security value, will likely surface real OOB bugs,
+   fits the factor-the-parser precedent. Start here.
+2. **`NMEA`** — nearly free (already pure); annotate in place for a fast second win.
+3. **DHCP** then **NTP** — finish the attacker-facing network-parser sweep.
+4. **Modbus PDU** / **ext4 `CRC32C` + bitmap + WL** — integrity targets, incremental.
+5. **`P256`** — schedule as a dedicated crypto-proof project.

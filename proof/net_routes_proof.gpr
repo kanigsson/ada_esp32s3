@@ -3,7 +3,7 @@
 --  target via target.atp (-gnateT), runtime pulled in lazily, driven by
 --  ./proof/prove.sh -P proof/net_routes_proof.gpr.
 --
---  Net_Routes is the cleanest new SPARK target post-merge (ROADMAP-net.md #1):
+--  Net_Routes is the cleanest new SPARK target post-merge (see proof/README.md):
 --  a bounded array (1 .. 16) of Route, U32/Prefix_Len bit-twiddling and a
 --  longest-prefix + lowest-metric selection in Resolve.  Net_Devices supplies
 --  the IPv4_Address / Interface_Id types only (no body); its Device interface's

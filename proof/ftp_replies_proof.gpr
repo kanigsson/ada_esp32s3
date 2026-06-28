@@ -3,7 +3,7 @@
 --  xtensa-esp32-elf target via target.atp (-gnateT), runtime pulled in lazily,
 --  driven by ./proof/prove.sh -P proof/ftp_replies_proof.gpr.
 --
---  ROADMAP-net.md #2: the attacker-facing FTP reply parse.  FTP_Replies is the
+--  The attacker-facing FTP reply parse (see proof/README.md).  FTP_Replies is the
 --  reply-line helpers (Code_Of / Is_Mid_Multiline / Is_Final_Line) plus the PASV
 --  octet/port extractor (Parse_Pasv), factored out of ftp_client.adb so the proof
 --  touches only String / Natural / Interfaces -- never GNAT.Sockets (controlled

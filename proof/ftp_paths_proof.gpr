@@ -3,7 +3,7 @@
 --  the real xtensa-esp32-elf target via target.atp (-gnateT), runtime pulled in
 --  lazily, driven by ./proof/prove.sh -P proof/ftp_paths_proof.gpr.
 --
---  ROADMAP-net.md #3: the FTP-server path-traversal guard.  FTP_Paths is the
+--  The FTP-server path-traversal guard (see proof/README.md).  FTP_Paths is the
 --  pure path normaliser (Abs_Path -- collapses "." / ".." / "//" so the result
 --  is always rooted at "/" and cannot escape above it) plus Split (parent dir /
 --  last name), factored out of ftp_server.adb so the proof touches only String /
