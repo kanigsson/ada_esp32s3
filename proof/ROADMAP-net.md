@@ -24,7 +24,7 @@ in-buffer-predicate / workhorse-lemma patterns, the hardware boundary) are all i
 |--:|--------|------|-------|
 | 1 | `Net_Routes` (whole package) | A-profile (AoRTE **+ functional**) | ✅ **proved** — AoRTE + `Resolve` functional postcondition, 54/54 VCs, 0 justified |
 | 2 | FTP client reply parsers (now `FTP_Replies`) | A-profile (AoRTE) | ✅ **proved** — factored out + AoRTE, 56/56 VCs, 0 justified; found & fixed a PASV overflow bug |
-| 3 | FTP server path resolution (now `FTP_Paths`: `Abs_Path` / `Split`) | A-profile (AoRTE) | ✅ **proved** — refactored into a pure bounded-buffer unit + AoRTE, 169/169 VCs, 0 unproved / 0 justified / 0 warnings. Functional no-escape contract deferred |
+| 3 | FTP server path resolution (now `FTP_Paths`: `Abs_Path` / `Split`) | A-profile (AoRTE **+ functional no-escape**) | ✅ **proved** — refactored into a pure bounded-buffer unit; AoRTE **+ the functional no-escape postcondition** (`No_Parent_Ref (Result)`: the normalised path holds no `..` component, so it cannot climb above the root), 230/230 VCs, 0 unproved / 0 justified / 0 warnings |
 | — | TLV2556 + SPI/`*-engine` / `w25q` / `w5500` / `sd_spi` churn | B (register drivers) | ⬜ folds into the existing Tier-B bucket |
 | — | Socket-coupled FTP flow, `gnat-sockets`, `ext4-vfs` | C (`SPARK_Mode Off`) | n/a — controlled handles, out of subset |
 
@@ -143,13 +143,32 @@ factored.**
 
 ---
 
-## 3. FTP server path resolution — highest security relevance ✅ PROVED (AoRTE)
+## 3. FTP server path resolution — highest security relevance ✅ PROVED (AoRTE + no-escape)
 
 **Result (2026-06-28).** Factored the pure path handling out of `ftp_server.adb`
 into a new standalone `FTP_Paths` (`ftp_paths.{ads,adb}`, touches only
 `String`/`Natural`/`Integer` — never the VFS or `GNAT.Sockets`) and proved it:
-`proof/ftp_paths_proof.gpr` at `--level=2`, **169/169 VCs, 0 unproved, 0 justified,
-0 warnings**, flow analysis clean.
+`proof/ftp_paths_proof.gpr` at `--level=2`, **230/230 VCs, 0 unproved, 0 justified,
+0 warnings**, flow analysis clean. This now includes the **functional no-escape
+postcondition**, not just AoRTE.
+
+**Functional no-escape contract (the path-traversal guarantee), proved.**
+`Abs_Path`'s postcondition now carries `No_Parent_Ref (Result (..))`: the
+normalised output contains no complete `..` path component, so a hostile
+`"../../../etc"` provably cannot climb above the root. The proof rests on three
+pieces in `ftp_paths.{ads,adb}`:
+- ghost predicates `Dot_Dot_At (S, K)` (a complete `..` component — two dots
+  bounded by `/` or the string ends) and `No_Parent_Ref (S)` (no such `K`);
+- a component-walk loop invariant `No_Parent_Ref (O (1 .. OLen))` carried through
+  every iteration — the `.`/append cases trivially preserve it (append adds a
+  single `/`-free name), and
+- a ghost lemma `Lemma_Trunc_Keeps_No_Parent (S, N, M)` for the `..` pop: it shows
+  truncating a no-`..` path on a component boundary (the bare root, or just before
+  a `/`) keeps the property, because any `..` newly exposed in the prefix would
+  already have been a `..` in the full path — contradicting the hypothesis.
+
+The deeper cosmetic normalisation (output also free of `.`/`//`) is not
+security-relevant and stays optional.
 
 - `Abs_Path` (125 checks) — the path-traversal guard: normalises a client-supplied
   `Arg` against `Cwd` into a caller-supplied buffer, collapsing `"."` / `".."` /
@@ -197,6 +216,7 @@ and calls into `FTP_Paths`.
 2. ✅ **FTP client PASV / reply parsers** — factored into `FTP_Replies` and proved
    (56/56 VCs, 0 justified); found & fixed a PASV integer-overflow bug.
 3. ✅ **FTP server path resolution** — refactored into the pure `FTP_Paths` unit
-   (`Abs_Path` / `Split`) and proved AoRTE (169/169 VCs, 0 justified). The
-   functional no-escape contract is deferred. **All three net-roadmap targets
-   are now AoRTE-proved.**
+   (`Abs_Path` / `Split`) and proved AoRTE **plus the functional no-escape
+   postcondition** (`No_Parent_Ref (Result)`), 230/230 VCs, 0 justified. **All
+   three net-roadmap targets are now proved — and the path-traversal guard goes
+   beyond AoRTE to a functional security property.**
