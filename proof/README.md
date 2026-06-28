@@ -43,11 +43,13 @@ You don't set any of this by hand — `prove.sh` does it.
 | `aes_gcm_proof.gpr` | `AES.GCM` GHASH authenticator (`GF_Mul`/`GHASH`) | **proved** (17/17 VCs) |
 | `net_routes_proof.gpr` | `Net_Routes` (IPv4 longest-prefix routing table) | **proved** (54/54 VCs, 0 justified) — AoRTE **+ `Resolve` functional postcondition**; see `ROADMAP-net.md` #1 |
 | `ftp_replies_proof.gpr` | `FTP_Replies` (FTP reply parsers + PASV `Parse_Pasv`) | **proved** (56/56 VCs, 0 justified) — AoRTE on the attacker-facing parse; found/fixed a PASV overflow bug; see `ROADMAP-net.md` #2 |
+| `ftp_paths_proof.gpr` | `FTP_Paths` (FTP-server path-traversal guard: `Abs_Path` / `Split`) | **proved** (169/169 VCs, 0 justified, 0 warnings) — AoRTE on the path normaliser; functional no-escape contract deferred; see `ROADMAP-net.md` #3 |
 
-Tier-A AoRTE is complete across all five attacker-facing units. The reusable
-proof patterns and the deferred optional functional properties are recorded in
-`proof-patterns.md`; the per-phase VC tables and the AoRTE bugs the proof found
-are in `tier-a-results.md`.
+Tier-A AoRTE is complete across all five attacker-facing units. The networking
+layer is now AoRTE-complete too — all three `ROADMAP-net.md` targets (`Net_Routes`,
+`FTP_Replies`, `FTP_Paths`) are proved. The reusable proof patterns and the
+deferred optional functional properties are recorded in `proof-patterns.md`; the
+per-phase VC tables and the AoRTE bugs the proof found are in `tier-a-results.md`.
 
 ## Running
 

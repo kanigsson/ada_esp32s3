@@ -24,7 +24,7 @@ in-buffer-predicate / workhorse-lemma patterns, the hardware boundary) are all i
 |--:|--------|------|-------|
 | 1 | `Net_Routes` (whole package) | A-profile (AoRTE **+ functional**) | ✅ **proved** — AoRTE + `Resolve` functional postcondition, 54/54 VCs, 0 justified |
 | 2 | FTP client reply parsers (now `FTP_Replies`) | A-profile (AoRTE) | ✅ **proved** — factored out + AoRTE, 56/56 VCs, 0 justified; found & fixed a PASV overflow bug |
-| 3 | FTP server path resolution (`Abs_Path` / `Resolve_Path`) | A-profile (AoRTE) | ⬜ not started — needs a bounded-buffer refactor — **start here** |
+| 3 | FTP server path resolution (now `FTP_Paths`: `Abs_Path` / `Split`) | A-profile (AoRTE) | ✅ **proved** — refactored into a pure bounded-buffer unit + AoRTE, 169/169 VCs, 0 unproved / 0 justified / 0 warnings. Functional no-escape contract deferred |
 | — | TLV2556 + SPI/`*-engine` / `w25q` / `w5500` / `sd_spi` churn | B (register drivers) | ⬜ folds into the existing Tier-B bucket |
 | — | Socket-coupled FTP flow, `gnat-sockets`, `ext4-vfs` | C (`SPARK_Mode Off`) | n/a — controlled handles, out of subset |
 
@@ -143,19 +143,36 @@ factored.**
 
 ---
 
-## 3. FTP server path resolution — highest security relevance, higher effort
+## 3. FTP server path resolution — highest security relevance ✅ PROVED (AoRTE)
 
-`libs/esp32s3_hal/src/ftp_server.adb`. `Abs_Path` and `Resolve_Path` decide whether
-a client-supplied path escapes its mount — i.e. **path-traversal on the board's
-flash** (`/flash/../../...`). That is the scariest attacker surface in the new code.
+**Result (2026-06-28).** Factored the pure path handling out of `ftp_server.adb`
+into a new standalone `FTP_Paths` (`ftp_paths.{ads,adb}`, touches only
+`String`/`Natural`/`Integer` — never the VFS or `GNAT.Sockets`) and proved it:
+`proof/ftp_paths_proof.gpr` at `--level=2`, **169/169 VCs, 0 unproved, 0 justified,
+0 warnings**, flow analysis clean.
 
-But these helpers `return String` (secondary stack) and are coupled to the VFS, so
-proving them requires a **bounded fixed-buffer refactor** first (return into a
-caller-supplied `String` + `Last`, the same move that took `Parse_Time` into the
-subset in Tier A). Worth doing eventually for the traversal guarantee; not a cheap
-win, so it trails #1 and #2.
+- `Abs_Path` (125 checks) — the path-traversal guard: normalises a client-supplied
+  `Arg` against `Cwd` into a caller-supplied buffer, collapsing `"."` / `".."` /
+  `"//"` / trailing `"/"`. The component walk applies every `".."` against the
+  output cursor, which can never back up past the leading `"/"`, so a hostile
+  `"../../../etc"` resolves back to `"/"`. The proof rests on a *keyed* loop
+  invariant relating the output cursor to the input cursor —
+  `OLen <= I - 1 - (1 if O (OLen) /= '/')` — funded by the leading `'/'` that is
+  copied but never re-counted; this is what bounds every output index write.
+- `Split` (35 checks) — breaks an absolute path into (parent dir, last name) by
+  scanning for the last `'/'`.
+- Both write into caller-supplied buffers (no `return String` / secondary stack),
+  the same bounded-buffer shape that took `Parse_Time` into the subset in Tier A —
+  the refactor this section anticipated.
 
-**Value: highest *security* relevance. Effort: medium (refactor-gated).**
+**Scope: AoRTE** (+ the spec's rooted-result postcondition `Result (Result'First) =
+'/'`). The deeper *functional* no-escape contract — proving the output is a fully
+normalised absolute path with no `..`/`.`/`//` component, the path-traversal
+guarantee the spec comments describe in full — is **deferred, not requested**
+(decided 2026-06-28). The socket-driving `FTP_Server` body stays `SPARK_Mode Off`
+and calls into `FTP_Paths`.
+
+**Value: highest *security* relevance. Effort: came in as estimated (refactor + AoRTE).**
 
 ---
 
@@ -179,5 +196,7 @@ win, so it trails #1 and #2.
    realistic functional spec.
 2. ✅ **FTP client PASV / reply parsers** — factored into `FTP_Replies` and proved
    (56/56 VCs, 0 justified); found & fixed a PASV integer-overflow bug.
-3. **FTP server path resolution** — bounded-buffer refactor, then prove no
-   mount escape. ← **next**
+3. ✅ **FTP server path resolution** — refactored into the pure `FTP_Paths` unit
+   (`Abs_Path` / `Split`) and proved AoRTE (169/169 VCs, 0 justified). The
+   functional no-escape contract is deferred. **All three net-roadmap targets
+   are now AoRTE-proved.**

@@ -218,3 +218,4 @@ infeasible) was scoped down to what carries its weight; the rest is deferred:
 | `Host_Matches` implements RFC 6125 matching | **Partial / spec-heavy** | ⬜ deferred — provable but the wildcard spec is fiddly; ~1 day |
 | `GF_Mul` = carry-less mult mod x¹²⁸+x⁷+x²+x+1 | **Yes but costly** | ⬜ deferred — needs a `Ghost` polynomial-arithmetic spec; high effort/value ratio |
 | `RSA_PKCS1/PSS` = "signature valid ⇔ …" | **No (by design)** | rests on `Mod_Exp` correctness, which is hardware. AoRTE + the constant-time-compare structural property are proved; functional RSA correctness is a documented silicon assumption |
+| `FTP_Paths.Abs_Path` output is normalised (no `..`/`.`/`//` component) — the path-traversal no-escape guarantee | **Yes** | ⬜ deferred (2026-06-28) — AoRTE + rooted-result postcondition proved; the full no-escape contract needs a ghost "is-normalised" predicate over the output and a strengthened component-walk invariant |
