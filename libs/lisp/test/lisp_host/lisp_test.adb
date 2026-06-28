@@ -3,6 +3,7 @@
 with Ada.Text_IO; use Ada.Text_IO;
 with Lisp;        use Lisp;
 with Lisp.Reader;
+with Lisp.Eval;
 
 procedure Lisp_Test is
    Passed, Failed : Natural := 0;
@@ -17,6 +18,21 @@ procedure Lisp_Test is
          Put_Line ("  FAIL " & Input & "  ->  " & Got & "  (want " & Want & ")");
       end if;
    end RT;
+
+   --  Read, evaluate (global env), print; compare.
+   procedure E (Input, Want : String) is
+      Got : constant String := Print (Lisp.Eval.Eval_Top (Lisp.Reader.Read (Input)));
+   begin
+      if Got = Want then
+         Passed := Passed + 1;  Put_Line ("  ok   " & Input & "  =>  " & Got);
+      else
+         Failed := Failed + 1;
+         Put_Line ("  FAIL " & Input & "  =>  " & Got & "  (want " & Want & ")");
+      end if;
+   exception
+      when Lisp_Error =>
+         Failed := Failed + 1;  Put_Line ("  FAIL " & Input & "  => <error>");
+   end E;
 
    procedure Check (Label : String; Cond : Boolean) is
    begin
@@ -47,6 +63,38 @@ begin
    Check ("(intern x) = (intern x)", Intern ("x") = Intern ("x"));
    Check ("(intern x) /= (intern y)", Intern ("x") /= Intern ("y"));
    Check ("nil is the empty list", Is_Nil (Lisp.Reader.Read ("()")));
+
+   New_Line;
+   Put_Line ("evaluator:");
+   E ("(+ 1 2 3)", "6");
+   E ("(* 2 3 4)", "24");
+   E ("(- 10 3 2)", "5");
+   E ("(- 5)", "-5");
+   E ("(/ 20 2 5)", "2");
+   E ("(< 1 2)", "#t");
+   E ("(> 1 2)", "#f");
+   E ("(if (< 1 2) 'yes 'no)", "yes");
+   E ("(if #f 1 2)", "2");
+   E ("(quote (a b))", "(a b)");
+   E ("(car '(1 2 3))", "1");
+   E ("(cdr '(1 2 3))", "(2 3)");
+   E ("(cons 1 2)", "(1 . 2)");
+   E ("(list 1 2 3)", "(1 2 3)");
+   E ("(null? '())", "#t");
+   E ("(length '(a b c))", "3");
+   E ("(eq? 'a 'a)", "#t");
+   E ("((lambda (x) (* x x)) 7)", "49");
+   E ("(let ((a 3) (b 4)) (+ a b))", "7");
+   E ("(cond ((< 2 1) 'a) ((> 2 1) 'b) (else 'c))", "b");
+   E ("(and 1 2 3)", "3");
+   E ("(and 1 #f 3)", "#f");
+   E ("(or #f 2 3)", "2");
+   E ("(begin (define x 5) (+ x 1))", "6");
+   E ("(begin (set! x 42) x)", "42");
+   E ("(begin (define (sq n) (* n n)) (sq 9))", "81");
+   E ("(begin (define (adder n) (lambda (k) (+ k n))) (define a5 (adder 5)) (a5 10))",
+      "15");
+   E ("(begin (define (fact n) (if (< n 2) 1 (* n (fact (- n 1))))) (fact 6))", "720");
 
    New_Line;
    Put_Line ("Lisp core:" & Natural'Image (Passed) & " passed,"

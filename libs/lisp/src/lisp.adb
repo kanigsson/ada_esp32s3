@@ -36,6 +36,17 @@ package body Lisp is
    function Make_Int (V : Long_Long_Integer) return Ref is
      (Alloc ((K => K_Int, I => V)));
 
+   function Make_Closure (Params, Code, Env : Ref) return Ref is
+     (Alloc ((K => K_Closure, Params => Params, Code => Code, Env => Env)));
+
+   function Int_Value (O : Ref) return Long_Long_Integer is
+   begin
+      if O = null or else O.K /= K_Int then
+         raise Lisp_Error with "expected an integer";
+      end if;
+      return O.I;
+   end Int_Value;
+
    --------------------------------------------------------------------------
    --  Interned symbols -- stored in their own table (not the arena), so a Reset
    --  of the arena leaves symbol identity intact.
@@ -71,6 +82,12 @@ package body Lisp is
 
    function Name_Of (Id : Symbol_Id) return String is
      (Symbols (Natural (Id)).Name (1 .. Symbols (Natural (Id)).Len));
+
+   function Make_Prim (Name : String; Fn : Prim_Fn) return Ref is
+      Sym : constant Ref := Intern (Name);   --  canonical symbol for the name
+   begin
+      return Alloc ((K => K_Prim, Fn => Fn, Fn_Name => Sym.Sym));
+   end Make_Prim;
 
    function Symbol_Name (O : Ref) return String is (Name_Of (O.Sym));
 

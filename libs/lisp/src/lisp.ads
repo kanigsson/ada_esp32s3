@@ -46,6 +46,12 @@ package Lisp is
    function Make_Bool (V : Boolean) return Ref;
    function Intern    (Name : String) return Ref;   --  the canonical symbol object
 
+   function Make_Prim    (Name : String; Fn : Prim_Fn) return Ref;
+   function Make_Closure (Params, Code, Env : Ref) return Ref;
+
+   --  Integer value of an Int object (Lisp_Error if it is not one).
+   function Int_Value (O : Ref) return Long_Long_Integer;
+
    --------------------------------------------------------------------------
    --  Accessors and predicates
    --------------------------------------------------------------------------
