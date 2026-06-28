@@ -2,6 +2,7 @@ with System;
 with Interfaces;                   use Interfaces;
 with Ada.Real_Time;                use Ada.Real_Time;
 with Ada.Synchronous_Task_Control; use Ada.Synchronous_Task_Control;
+with DHCP_Parse;
 
 package body ESP32S3.W5500.DHCP is
 
@@ -61,47 +62,39 @@ package body ESP32S3.W5500.DHCP is
 
    --  Poll S for a reply of type Want until Deadline; parse its options into
    --  Lease, and report the server id and the assigned address (yiaddr).
+   --  Copy the proved parser's Quad into a W5500 IPv4_Address (distinct Byte type).
+   function To_IP (Q : DHCP_Parse.Quad) return IPv4_Address is
+     (Byte (Q (0)), Byte (Q (1)), Byte (Q (2)), Byte (Q (3)));
+
    function Wait_Reply (S : in out WS.Socket; Want : Byte; Deadline : Time;
                         Lease : in out Lease_Info;
                         Server_Id, Yiaddr : out IPv4_Address) return Boolean is
-      FA           : IPv4_Address;
-      FP           : WS.Port_Number;
-      Count        : Natural;
-      Rst          : WS.Status;
-      P, Code, Len : Natural;
-      Msg          : Byte;
+      FA    : IPv4_Address;
+      FP    : WS.Port_Number;
+      Count : Natural;
+      Rst   : WS.Status;
+      PR    : DHCP_Parse.Parsed_Reply;
+      Buf   : DHCP_Parse.Byte_Array (RX'Range);
    begin
       Server_Id := Zero_IP;  Yiaddr := Zero_IP;
       loop
          WS.Receive_From (S, FA, FP, RX, Count, Rst);
          if Count >= 240 then
-            Msg := 0;  P := 240;
-            while P <= Count - 1 loop
-               Code := Natural (RX (P));
-               exit when Code = 255;
-               if Code = 0 then
-                  P := P + 1;
-               else
-                  Len := Natural (RX (P + 1));
-                  case Code is
-                     when 53 => Msg := RX (P + 2);
-                     when 54 => for I in 0 .. 3 loop Server_Id (I) := RX (P + 2 + I); end loop;
-                     when 1  => for I in 0 .. 3 loop Lease.Subnet  (I) := RX (P + 2 + I); end loop;
-                     when 3  => for I in 0 .. 3 loop Lease.Gateway (I) := RX (P + 2 + I); end loop;
-                     when 6  => for I in 0 .. 3 loop Lease.DNS     (I) := RX (P + 2 + I); end loop;
-                     when 51 =>
-                        Lease.Lease_Seconds :=
-                          Shift_Left (Unsigned_32 (RX (P + 2)), 24) or
-                          Shift_Left (Unsigned_32 (RX (P + 3)), 16) or
-                          Shift_Left (Unsigned_32 (RX (P + 4)), 8)  or
-                                      Unsigned_32 (RX (P + 5));
-                     when others => null;
-                  end case;
-                  P := P + 2 + Len;
-               end if;
-            end loop;
-            if Msg = Want then
-               for I in 0 .. 3 loop Yiaddr (I) := RX (16 + I); end loop;
+            --  Hand the received option area to the proved (AoRTE) parser: every
+            --  index into the server-controlled TLV stream is bounded there, so a
+            --  crafted option near the end of the datagram can neither read past
+            --  the data nor loop unbounded (the inline parse's bug).
+            for I in RX'Range loop Buf (I) := DHCP_Parse.Octet (RX (I)); end loop;
+            DHCP_Parse.Parse_Reply (Buf, Natural'Min (Count, Buf'Length), PR);
+
+            Server_Id := To_IP (PR.Server_Id);
+            if PR.Have_Subnet  then Lease.Subnet  := To_IP (PR.Subnet);  end if;
+            if PR.Have_Gateway then Lease.Gateway := To_IP (PR.Gateway); end if;
+            if PR.Have_DNS     then Lease.DNS     := To_IP (PR.DNS);     end if;
+            if PR.Have_Lease   then Lease.Lease_Seconds := PR.Lease_Seconds; end if;
+
+            if PR.Msg_Type = DHCP_Parse.Octet (Want) then
+               Yiaddr := To_IP (PR.Yiaddr);
                return True;
             end if;
          end if;

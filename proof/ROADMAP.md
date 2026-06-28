@@ -10,7 +10,10 @@ post-merge **networking** triage are proved end-to-end. What landed:
   postcondition), **`DNS_Parse`** (DNS A-record reply parser — closes the unbounded
   `Skip_Name` overrun and the A-record OOB read the inline `Resolve` carried),
   **`ESP32S3.GPS.NMEA`** (NMEA-0183 decoder — proved AoRTE in place; closes the
-  unguarded accumulator overflows and a GSV message-number `* 4` overflow).
+  unguarded accumulator overflows and a GSV message-number `* 4` overflow),
+  **`DHCP_Parse`** (DHCP reply option TLV walk — bounds the server-length-driven
+  option-value reads against the received count, closing the OOB read the inline
+  parse carried).
   Per-unit VC counts are in `README.md`; the reusable proof techniques
   are in `proof-patterns.md`; Tier-A phase tables and the bugs proof found are in
   `tier-a-results.md`.
@@ -30,7 +33,7 @@ refactor) are all in `proof-patterns.md` — reuse them.
 | # | Target | Tier | Shape | Value | Effort |
 |--:|--------|------|-------|-------|--------|
 | ✅ | ~~`DNS_Client` reply parse~~ | A (AoRTE) | **done** — `DNS_Parse.Parse_Reply` factored out, proved 41/41 VCs; see §1 | — | — |
-| 2 | DHCP reply option walk (`ESP32S3.W5500.DHCP.Parse_Reply`) | A (AoRTE) | factor pure parser out of the socket loop | high — attacker-facing TLV walk | small–medium |
+| ✅ | ~~DHCP reply option walk~~ | A (AoRTE) | **done** — `DHCP_Parse.Parse_Reply` factored out, proved 76/76 VCs; see §2 | — | — |
 | 3 | `NTP_Client` timestamp parse | A (AoRTE) | factor / annotate | medium | small |
 | ✅ | ~~`ESP32S3.GPS.NMEA`~~ | A (AoRTE) | **done** — annotated in place, proved 223/223 VCs; see §4 | — | — |
 | 5 | `Modbus` frame `Process` (slave/master PDUs) | A (AoRTE) | factor out of socket `Serve` | medium — bus-facing | medium |
@@ -93,20 +96,40 @@ once factored; the buffer shape matches `FTP_Replies`.**
 
 ---
 
-## 2. DHCP reply option parsing — attacker-facing TLV walk
+## 2. DHCP reply option parsing — ✅ DONE (`DHCP_Parse`, 76/76 VCs)
+
+**Resolved.** The inline option walk was factored into a pure `DHCP_Parse.Parse_Reply
+(RX, Count; Result)` over a plain `Byte_Array` slice (`dhcp_parse.{ads,adb}`,
+`SPARK_Mode On`), proved AoRTE at `--level=2` (`proof/dhcp_parse_proof.gpr`, 76/76
+VCs, 0 unproved / 0 justified / 0 warnings). The socket-driving
+`ESP32S3.W5500.DHCP.Wait_Reply` stays `SPARK_Mode Off`, copies the received bytes
+into the parser's `Byte_Array`, calls it, and applies each option (Subnet / Gateway /
+DNS / Lease_Seconds only when its `Have_*` flag is set, matching the original
+"update on present" behaviour). The proof closed exactly the bug the static read
+predicted:
+
+- **The length byte and option-value reads are now bounded against the received
+  count.** Every read is guarded against `Hi := RX'First + Count - 1` (the last
+  received byte): the length byte `RX (P + 1)` by `P + 1 > Hi`, and the four
+  option-value bytes (reaching `RX (P + 5)`) by `P + 5 <= Hi`. The old
+  `while P <= Count - 1` bounded only `P`, so `RX (P + 1)` and `RX (P + 2 + I)` read
+  past the data — the OOB read.
+- **The walk is provably bounded.** Recast as a fixed-trip-count `for Step in 0 ..
+  Count loop` (the `DNS_Parse.Skip_Name` idiom) with a top `exit when P > Hi`
+  fail-closed guard and a single `Pos >= RX'First + 240` loop invariant; each
+  iteration advances `P` by `>= 1`, so the walk terminates with no loop variant.
+- **A realistic-window precondition pins the arithmetic.** `RX'First >= 0`,
+  `RX'Last <= 16#FFFF#`, `Count <= RX'Length` give `Hi <= RX'Last <= 16#FFFF#`, so
+  every offset add (`P + 2 + Len` with `Len <= 255`) is trivially in `Natural`.
+
+The remainder of this section is kept for the record (what the static read found).
 
 `libs/esp32s3_hal/src/esp32s3-w5500-dhcp.adb`, `Parse_Reply`. The option scan
 (`Len := Natural (RX (P + 1))`, then `RX (P + 2 + I)` for the 4-byte address
 options 1/3/6/54, then `P := P + 2 + Len`) is driven by **server-supplied lengths**.
 The `while P <= Count - 1` guard bounds `P` but **not** the inner reads `RX (P + 2 + I)`
 (reach `P + 5`) against the received length / `RX'Last` — a crafted option near the
-end of the datagram reads past the data. Same factor-the-pure-parser refactor: lift
-the option walk into a `SPARK_Mode On` helper taking the `RX` slice + `Count`, prove
-every index in range and the advance monotone (so the outer loop terminates), leave
-the socket `Do_Acquire` / `Renew` flow `SPARK_Mode Off`.
-
-**Value: high (a rogue DHCP server controls gateway/DNS/subnet the device adopts).
-Effort: small–medium.**
+end of the datagram reads past the data.
 
 ---
 
@@ -217,7 +240,7 @@ pass.
 
 1. ~~**`DNS_Client`**~~ — ✅ done (`DNS_Parse`, 41/41 VCs); see §1.
 2. ~~**`NMEA`**~~ — ✅ done (annotated in place, 223/223 VCs); see §4.
-3. **DHCP** then **NTP** — finish the attacker-facing network-parser sweep.
-   **Start here next** (§2 — the DHCP reply option walk).
+3. ~~**DHCP**~~ — ✅ done (`DHCP_Parse`, 76/76 VCs); see §2. Then **NTP** — finish the
+   attacker-facing network-parser sweep. **Start here next** (§3 — the NTP timestamp parse).
 4. **Modbus PDU** / **ext4 `CRC32C` + bitmap + WL** — integrity targets, incremental.
 5. **`P256`** — schedule as a dedicated crypto-proof project.
