@@ -7,6 +7,17 @@ package body Lisp.Reader is
      (Is_Space (C) or else C = '(' or else C = ')'
       or else C = '''  or else C = ';');
 
+   function Is_Hex (C : Character) return Boolean is
+     (C in '0' .. '9' or else C in 'a' .. 'f' or else C in 'A' .. 'F');
+
+   function Hex_Val (C : Character) return Long_Long_Integer is
+   begin
+      if    C in '0' .. '9' then return Long_Long_Integer (Character'Pos (C) - Character'Pos ('0'));
+      elsif C in 'a' .. 'f' then return Long_Long_Integer (10 + Character'Pos (C) - Character'Pos ('a'));
+      else                       return Long_Long_Integer (10 + Character'Pos (C) - Character'Pos ('A'));
+      end if;
+   end Hex_Val;
+
    function Read (Source : String; Pos : in out Natural) return Ref is
 
       procedure Skip_Atmosphere is
@@ -102,6 +113,17 @@ package body Lisp.Reader is
                   begin
                      Pos := Pos + 2;
                      return Make_Bool (B);
+                  end;
+               elsif Pos < Source'Last and then Source (Pos + 1) = 'x' then
+                  Pos := Pos + 2;                            --  #xFF hex literal
+                  declare
+                     V : Long_Long_Integer := 0;
+                  begin
+                     while Pos <= Source'Last and then Is_Hex (Source (Pos)) loop
+                        V := V * 16 + Hex_Val (Source (Pos));
+                        Pos := Pos + 1;
+                     end loop;
+                     return Make_Int (V);
                   end;
                end if;
                raise Lisp_Error with "bad # literal";

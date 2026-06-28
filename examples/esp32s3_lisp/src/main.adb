@@ -83,6 +83,7 @@ begin
    Put_Line ("Ada-LISP on the ESP32-S3 -- a pure-Ada interpreter.");
    Put_Line ("Type S-expressions.  e.g. (define (sq n) (* n n))  then  (sq 12)");
    Put_Line ("Hardware: (gpio-out 2 #t) (gpio-toggle 2) (gpio-in 4) (adc-read 0)");
+   Put_Line ("  flash JEDEC id: (define s (spi-open)) (spi-xfer s (list #x9f 0 0 0))");
 
    loop
       Put ("lisp> ");
