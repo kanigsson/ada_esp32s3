@@ -397,6 +397,61 @@ begin
 \noindent\textbf{Example:} no dedicated example; the driver is a one-call read
 (\texttt{ESP32S3.RNG.Read}) usable directly from any profile, ZFP included.
 
+\section{MAC -- Factory Ethernet Address}\index{MAC driver}\index{MAC address}\index{eFuse}
+\label{app:int:mac}
+
+\texttt{ESP32S3.MAC} reads the MAC address Espressif programs into every part at
+the factory. The chip is allocated a \emph{block of four} universally-administered
+addresses: the eFuse base is the Wi-Fi station MAC, and soft-AP, Bluetooth and
+Ethernet are base $+\,1$, $+\,2$ and $+\,3$. The values live in eFuse shadow
+registers (\texttt{RD\_MAC\_SPI\_SYS\_0}/\texttt{\_1}) that the hardware latches at
+reset, so every routine is a \emph{pure read} -- no clock to gate, no controller to
+enable, no shared state and no protected object. Like \texttt{ESP32S3.RNG} it
+compiles in every runtime profile, ZFP included.
+
+The intended use is handing a W5500 a real, manufacturer-assigned address instead
+of a hand-picked one that might collide on the network (Chapter~\ref{ch:networking},
+\S\ref{ch:net:mac}): pass \texttt{Ethernet} to the driver's \texttt{Configure}. A
+board with two W5500s has only the one Ethernet slot, so the second NIC takes a
+\emph{locally-administered} address -- \texttt{Local (Derived (4))}, base $+\,4$
+with the local bit set -- which is guaranteed not to clash with a registered one.
+\texttt{MAC\_Address} is six bytes most-significant-first (\texttt{MAC (0)} is the
+OUI's first byte, the order the W5500 and DHCP expect).
+
+\begin{lstlisting}
+package ESP32S3.MAC is
+   type MAC_Address is array (0 .. 5) of Interfaces.Unsigned_8;
+
+   function Base          return MAC_Address;   --  factory base (= Wi-Fi station)
+   function Wi_Fi_Station return MAC_Address;   --  base + 0
+   function Wi_Fi_SoftAP  return MAC_Address;   --  base + 1
+   function Bluetooth     return MAC_Address;   --  base + 2
+   function Ethernet      return MAC_Address;   --  base + 3  (use for a W5500)
+
+   --  Base with Offset added to its last byte; 0 .. 3 are the universal MACs above.
+   function Derived (Offset : Interfaces.Unsigned_8) return MAC_Address;
+   --  Mark a MAC locally-administered + unicast (for addresses you assign).
+   function Local   (Addr   : MAC_Address)           return MAC_Address;
+   function Image   (Addr   : MAC_Address)           return String;  --  "aa:bb:..:ff"
+end ESP32S3.MAC;
+\end{lstlisting}
+
+A unique Ethernet MAC for one NIC, and a safe locally-administered one for a second:
+
+\begin{lstlisting}
+with ESP32S3.MAC; use ESP32S3;
+
+Eth0 : constant MAC.MAC_Address := MAC.Ethernet;             --  base + 3, universal
+Eth1 : constant MAC.MAC_Address := MAC.Local (MAC.Derived (4)); -- base + 4, local bit
+begin
+   --  W5500.Configure (Dev0, MAC => To_W5500 (Eth0), ...);   --  unique per chip
+   Put_Line (MAC.Image (Eth0));                               --  e.g. "7c:df:a1:..:..:.."
+\end{lstlisting}
+
+\noindent\textbf{Example:} \texttt{examples/esp32s3\_mac} prints all five (base, the
+three derived interface MACs, and a local one); \texttt{esp32s3\_multinic} seeds its
+two W5500s this way.
+
 \section{Temperature -- On-Chip Die Sensor}\index{Temperature driver}
 \label{app:int:temperature}
 
