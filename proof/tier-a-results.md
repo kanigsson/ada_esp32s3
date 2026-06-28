@@ -122,6 +122,50 @@ Full HAL and `libs/tls` still build (embedded, `-gnata`); `chain_verify` calls
 `Valid_At`/`Host_Matches` only after `Parse` + a validity check, so their new
 preconditions hold at runtime too.
 
+### Phase 2b — `Valid_At` functional postcondition  ✅ complete (2026-06-28)
+
+Lifted `Valid_At` from AoRTE to a **full functional contract** — the first of the
+deferred Tier-A functional properties (`proof-patterns.md`). Its postcondition now
+states the real validity-window semantics:
+
+```ada
+Post => Valid_At'Result =
+          (Time_Parses (Cert, C.Not_Before, C.NB_Tag)
+           and then Time_Parses (Cert, C.Not_After,  C.NA_Tag)
+           and then Now >= Decoded_Time (Cert, C.Not_Before, C.NB_Tag)
+           and then Now <= Decoded_Time (Cert, C.Not_After,  C.NA_Tag));
+```
+
+i.e. accept **iff** both validity times are well-formed ASCII times *and*
+`notBefore ≤ Now ≤ notAfter` — an expired or not-yet-valid cert, or one with a
+malformed validity field, is provably rejected.
+
+**The proof shape (ghost mirror of an imperative parser).** Naming "the parsed
+times" needs spec-level functions, so `x509.ads` gains ghost expression functions
+that replicate the `Parse_Time` body exactly: `TD`/`TTwo` (the BCD digit readers,
+mirroring local `D`/`Two`), `Time_Digits_OK` (a quantified version of the digit
+loop), `Time_Fields_OK` (the civil-range check), `Time_Parses` (well-formed
+UTCTime/GeneralizedTime), and `Decoded_Year`/`Decoded_Time` (the `Pack_Time`
+result). `Parse_Time` then carries `Post => Ok = Time_Parses (..) and then
+(if Ok then T = Decoded_Time (..))`, and `Valid_At`'s postcondition falls out by
+case analysis on the two `Ok` flags.
+
+Discharging `Parse_Time`'s postcondition needed bridging help, all proved:
+- a digit-loop `Loop_Invariant (for all J in 0 .. K - 1 => Is_Digit (J))`, so loop
+  completion gives `Time_Digits_OK` and an early exit gives its negation;
+- per-branch `pragma Assert (Base = Time_Base (Tag))` (while `Tag` is still known,
+  before the branches merge), and `Mon = TTwo (Cert, S, Base)` … for each field
+  (so the field-range `if` decides `Time_Fields_OK` — and thus `Time_Parses` — on
+  both arms);
+- one AoRTE fix to the new ghost: `Time_Fields_OK`'s precondition needed
+  `Base <= 4` so the `Base + 10 <= Length (S)` bound itself can't overflow.
+
+`x509_proof.gpr` now discharges **456/456 VCs at `--level=2`, 0 unproved, 0
+justified** (up from 328 — the functional contract added 128 VCs, all proved).
+`libs/tls` still semantic-checks clean (embedded, `-gnata`); the spec additions are
+ghost-only and `use type Interfaces.Unsigned_8` is not transitive, so no consumer
+(`chain_verify`/`cert_verify`/`tls_client`) is affected.
+
 ## Phase 3 — `Cert_Verify` (RSA PKCS#1 v1.5 / PSS)  ✅ complete
 
 `Cert_Verify` (spec + body) is `SPARK_Mode => On` and **fully proved** — AoRTE

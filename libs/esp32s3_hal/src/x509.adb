@@ -518,7 +518,9 @@ package body X509 with SPARK_Mode => On is
    --  S.Last); D is total so a non-digit byte can never underflow.
    procedure Parse_Time (Cert : Byte_Array; S : Slice; Tag : U8;
                          T : out Time_64; Ok : out Boolean)
-     with Pre => Slice_In (Cert, S)
+     with Pre  => Slice_In (Cert, S),
+          Post => Ok = Time_Parses (Cert, S, Tag)
+                  and then (if Ok then T = Decoded_Time (Cert, S, Tag))
    is
       F    : constant Natural := S.First;
       L    : constant Natural := Length (S);
@@ -541,33 +543,63 @@ package body X509 with SPARK_Mode => On is
       Ok := False;
       if Tag = 16#17# then                        --  UTCTime (13: YYMMDDHHMMSSZ)
          if L /= 13 or else Cert (F + 12) /= 16#5A# then
+            pragma Assert (not Time_Parses (Cert, S, Tag));
             return;
          end if;
          for K in 0 .. 11 loop
-            if not Is_Digit (K) then return; end if;
+            pragma Loop_Invariant (for all J in 0 .. K - 1 => Is_Digit (J));
+            if not Is_Digit (K) then
+               pragma Assert (not Time_Digits_OK (Cert, S, 12));
+               pragma Assert (not Time_Parses (Cert, S, Tag));
+               return;
+            end if;
          end loop;
+         pragma Assert (Time_Digits_OK (Cert, S, 12));
          Year := (if Two (0) < 50 then 2000 + Two (0) else 1900 + Two (0));
          Base := 2;
+         pragma Assert (Base = Time_Base (Tag));
       elsif Tag = 16#18# then                      --  GeneralizedTime (15)
          if L /= 15 or else Cert (F + 14) /= 16#5A# then
+            pragma Assert (not Time_Parses (Cert, S, Tag));
             return;
          end if;
          for K in 0 .. 13 loop
-            if not Is_Digit (K) then return; end if;
+            pragma Loop_Invariant (for all J in 0 .. K - 1 => Is_Digit (J));
+            if not Is_Digit (K) then
+               pragma Assert (not Time_Digits_OK (Cert, S, 14));
+               pragma Assert (not Time_Parses (Cert, S, Tag));
+               return;
+            end if;
          end loop;
+         pragma Assert (Time_Digits_OK (Cert, S, 14));
          Year := D (0) * 1000 + D (1) * 100 + D (2) * 10 + D (3);
          Base := 4;
+         pragma Assert (Base = Time_Base (Tag));
       else
+         pragma Assert (not Time_Parses (Cert, S, Tag));
          return;
       end if;
       Mon := Two (Base);      Day := Two (Base + 2);
       Hr  := Two (Base + 4);  Mi  := Two (Base + 6);  Sc := Two (Base + 8);
+      --  Tie the local field values to the ghost TTwo so the field-range branch
+      --  below decides Time_Fields_OK (and hence Time_Parses) either way.
+      pragma Assert (Mon = TTwo (Cert, S, Base));
+      pragma Assert (Day = TTwo (Cert, S, Base + 2));
+      pragma Assert (Hr  = TTwo (Cert, S, Base + 4));
+      pragma Assert (Mi  = TTwo (Cert, S, Base + 6));
+      pragma Assert (Sc  = TTwo (Cert, S, Base + 8));
       if Mon not in 1 .. 12 or else Day not in 1 .. 31
         or else Hr > 23 or else Mi > 59 or else Sc > 60
       then
+         pragma Assert (not Time_Fields_OK (Cert, S, Base));
+         pragma Assert (not Time_Parses (Cert, S, Tag));
          return;
       end if;
+      pragma Assert (Time_Fields_OK (Cert, S, Base));
+      pragma Assert (Time_Parses (Cert, S, Tag));
+      pragma Assert (Year = Decoded_Year (Cert, S, Tag));
       T  := Pack_Time (Year, Mon, Day, Hr, Mi, Sc);
+      pragma Assert (T = Decoded_Time (Cert, S, Tag));
       Ok := True;
    end Parse_Time;
 

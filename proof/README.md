@@ -37,7 +37,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | Project | Covers | Status |
 |---------|--------|--------|
 | `sparknacl_proof.gpr` | vendored SPARKNaCl crypto primitives | **replays (cross)** — see below |
-| `x509_proof.gpr` | `X509.DER` + `X509` (parse / `Valid_At` / `Host_Matches`) | **proved** (226/226 VCs) — see `tier-a-results.md` |
+| `x509_proof.gpr` | `X509.DER` + `X509` (parse / `Valid_At` / `Host_Matches`) | **proved** (456/456 VCs) — AoRTE **+ the `Valid_At` functional postcondition** (accept iff both validity times are well-formed and `notBefore ≤ Now ≤ notAfter`); see `tier-a-results.md` |
 | `cert_verify_proof.gpr` | `Cert_Verify` (RSA PKCS#1 v1.5 / PSS) | **proved** (0 unproved, `--no-subprojects`) |
 | `chain_verify_proof.gpr` | `Chain_Verify` (chain walk, null-safe derefs) | **proved** (63/63 VCs) |
 | `aes_gcm_proof.gpr` | `AES.GCM` GHASH authenticator (`GF_Mul`/`GHASH`) | **proved** (17/17 VCs) |

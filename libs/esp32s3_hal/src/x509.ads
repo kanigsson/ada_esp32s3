@@ -8,6 +8,7 @@ with Interfaces;
 package X509 with SPARK_Mode => On is
 
    subtype U8 is Interfaces.Unsigned_8;
+   use type Interfaces.Unsigned_8;   --  =, <= on bytes for the ghost time mirror
    type Byte_Array is array (Natural range <>) of U8;
 
    --  Indices into a (finite) certificate buffer.  Capping just below Natural'Last
@@ -95,6 +96,90 @@ package X509 with SPARK_Mode => On is
       or else (S.First >= Cert'First and then S.Last <= Cert'Last))
    with Ghost;
 
+   --  ----- Ghost mirror of the validity-time decoder (for Valid_At) -----------
+   --  These expression functions replicate, at the spec level, exactly what the
+   --  Parse_Time body computes.  They let Parse_Time carry a functional
+   --  postcondition (Ok = Time_Parses, T = Decoded_Time) and Valid_At in turn
+   --  state the real property: it accepts iff both times parse and Now lies in
+   --  [notBefore, notAfter].  ASCII times are UTCTime (tag 0x17, YYMMDDHHMMSSZ,
+   --  13 bytes) or GeneralizedTime (0x18, YYYYMMDDHHMMSSZ, 15 bytes).
+
+   --  YYYYMMDDHHMMSS field offsets start here (skipping the 2- or 4-digit year).
+   function Time_Base (Tag : U8) return Natural is
+     (if Tag = 16#17# then 2 else 4)
+   with Ghost;
+
+   --  One BCD digit at offset Off within slice S (0 for a non-digit byte, matching
+   --  the body's total digit reader D).
+   function TD (Cert : Byte_Array; S : Slice; Off : Natural) return Natural is
+     (if Cert (S.First + Off) in 16#30# .. 16#39#
+      then Natural (Cert (S.First + Off)) - 16#30# else 0)
+   with Ghost,
+        Pre  => Slice_In (Cert, S) and then 0 < Length (S)
+                and then Off < Length (S),
+        Post => TD'Result <= 9;
+
+   --  Two BCD digits at Off (the body's Two helper).
+   function TTwo (Cert : Byte_Array; S : Slice; Off : Natural) return Natural is
+     (TD (Cert, S, Off) * 10 + TD (Cert, S, Off + 1))
+   with Ghost,
+        Pre  => Slice_In (Cert, S) and then 2 <= Length (S)
+                and then Off <= Length (S) - 2,
+        Post => TTwo'Result <= 99;
+
+   --  Bytes 0 .. N-1 of S are all ASCII digits (the body's digit loop).
+   function Time_Digits_OK (Cert : Byte_Array; S : Slice; N : Natural)
+                            return Boolean is
+     (for all K in 0 .. N - 1 => Cert (S.First + K) in 16#30# .. 16#39#)
+   with Ghost,
+        Pre => Slice_In (Cert, S) and then N <= Length (S);
+
+   --  Month/day/hour/minute/second (from Base) are in their civil ranges.
+   function Time_Fields_OK (Cert : Byte_Array; S : Slice; Base : Natural)
+                            return Boolean is
+     (TTwo (Cert, S, Base)     in 1 .. 12       --  month
+      and then TTwo (Cert, S, Base + 2) in 1 .. 31   --  day
+      and then TTwo (Cert, S, Base + 4) <= 23        --  hour
+      and then TTwo (Cert, S, Base + 6) <= 59        --  minute
+      and then TTwo (Cert, S, Base + 8) <= 60)       --  second
+   with Ghost,
+        Pre => Slice_In (Cert, S) and then Base <= 4
+               and then Base + 10 <= Length (S);
+
+   --  S (with ASN.1 Tag) is a well-formed UTCTime / GeneralizedTime: correct
+   --  length, trailing 'Z', all digits, civil field ranges.
+   function Time_Parses (Cert : Byte_Array; S : Slice; Tag : U8) return Boolean is
+     (if Tag = 16#17# then          --  UTCTime YYMMDDHHMMSSZ
+        Length (S) = 13 and then Cert (S.First + 12) = 16#5A#
+        and then Time_Digits_OK (Cert, S, 12)
+        and then Time_Fields_OK (Cert, S, 2)
+      elsif Tag = 16#18# then       --  GeneralizedTime YYYYMMDDHHMMSSZ
+        Length (S) = 15 and then Cert (S.First + 14) = 16#5A#
+        and then Time_Digits_OK (Cert, S, 14)
+        and then Time_Fields_OK (Cert, S, 4)
+      else False)
+   with Ghost, Pre => Slice_In (Cert, S);
+
+   --  The four-/two-digit year (UTCTime windows two-digit years at 1950).
+   function Decoded_Year (Cert : Byte_Array; S : Slice; Tag : U8) return Natural is
+     (if Tag = 16#17#
+      then (if TTwo (Cert, S, 0) < 50 then 2000 + TTwo (Cert, S, 0)
+            else 1900 + TTwo (Cert, S, 0))
+      else TD (Cert, S, 0) * 1000 + TD (Cert, S, 1) * 100
+           + TD (Cert, S, 2) * 10 + TD (Cert, S, 3))
+   with Ghost, Pre => Slice_In (Cert, S) and then Time_Parses (Cert, S, Tag);
+
+   --  The packed Time_64 a well-formed time decodes to (mirrors the body).
+   function Decoded_Time (Cert : Byte_Array; S : Slice; Tag : U8) return Time_64 is
+     (Pack_Time
+        (Decoded_Year (Cert, S, Tag),
+         TTwo (Cert, S, Time_Base (Tag)),
+         TTwo (Cert, S, Time_Base (Tag) + 2),
+         TTwo (Cert, S, Time_Base (Tag) + 4),
+         TTwo (Cert, S, Time_Base (Tag) + 6),
+         TTwo (Cert, S, Time_Base (Tag) + 8)))
+   with Ghost, Pre => Slice_In (Cert, S) and then Time_Parses (Cert, S, Tag);
+
    --  Every slice a valid Certificate carries lies within Cert, and SAN_Count is
    --  in range.  This is the contract glue of Tier A: Parse establishes it, and
    --  the consumers (Valid_At, Host_Matches, Cert_Verify via Chain_Verify) require
@@ -128,10 +213,17 @@ package X509 with SPARK_Mode => On is
           Post => (if Result.Valid then Well_Formed (Cert, Result));
 
    --  notBefore <= Now <= notAfter, with Now a Pack_Time value (e.g. derived from
-   --  the NTP clock).  False if either validity time fails to parse.
+   --  the NTP clock).  False if either validity time fails to parse.  The
+   --  postcondition pins the full functional behaviour: accept iff both validity
+   --  times are well-formed and Now lies within [notBefore, notAfter].
    function Valid_At (Cert : Byte_Array; C : Certificate; Now : Time_64)
                       return Boolean
-     with Pre => Well_Formed (Cert, C);
+     with Pre  => Well_Formed (Cert, C),
+          Post => Valid_At'Result =
+                    (Time_Parses (Cert, C.Not_Before, C.NB_Tag)
+                     and then Time_Parses (Cert, C.Not_After, C.NA_Tag)
+                     and then Now >= Decoded_Time (Cert, C.Not_Before, C.NB_Tag)
+                     and then Now <= Decoded_Time (Cert, C.Not_After, C.NA_Tag));
 
    --  Does any subjectAltName dNSName match Host?  Case-insensitive (ASCII), with a
    --  single leftmost "*" wildcard label (RFC 6125: "*.a.b" matches one label and

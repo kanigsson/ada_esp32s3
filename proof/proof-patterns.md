@@ -214,7 +214,7 @@ infeasible) was scoped down to what carries its weight; the rest is deferred:
 | AoRTE across all 5 units | **Yes** | ✅ done — the core Tier-A deliverable |
 | `DER.Read`: valid ⇒ element within window | **Yes** | ✅ done — the workhorse lemma |
 | `Parse`: valid ⇒ `Well_Formed` | **Yes** | ✅ done — falls out of the lemma |
-| `Valid_At` ⇔ `notBefore ≤ Now ≤ notAfter` | **Yes** | clean spec via `Pack_Time`; AoRTE done, functional spec optional |
+| `Valid_At` ⇔ `notBefore ≤ Now ≤ notAfter` | **Yes** | ✅ done (2026-06-28) — `Valid_At`'s postcondition now pins the full behaviour: accept iff both validity times are well-formed *and* `Now ∈ [notBefore, notAfter]`. Backed by ghost expression functions in `x509.ads` (`Time_Parses`, `Decoded_Time`, and the `TD`/`TTwo`/`Time_Digits_OK`/`Time_Fields_OK`/`Decoded_Year` mirrors of the `Parse_Time` body) and a `Parse_Time` postcondition `Ok = Time_Parses ∧ (Ok ⇒ T = Decoded_Time)`. 456/456 VCs, 0 unproved/0 justified |
 | `Host_Matches` implements RFC 6125 matching | **Partial / spec-heavy** | ⬜ deferred — provable but the wildcard spec is fiddly; ~1 day |
 | `GF_Mul` = carry-less mult mod x¹²⁸+x⁷+x²+x+1 | **Yes but costly** | ⬜ deferred — needs a `Ghost` polynomial-arithmetic spec; high effort/value ratio |
 | `RSA_PKCS1/PSS` = "signature valid ⇔ …" | **No (by design)** | rests on `Mod_Exp` correctness, which is hardware. AoRTE + the constant-time-compare structural property are proved; functional RSA correctness is a documented silicon assumption |
