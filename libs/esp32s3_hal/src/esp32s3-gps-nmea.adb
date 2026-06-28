@@ -1,8 +1,16 @@
 with Interfaces; use type Interfaces.Unsigned_8;
 
-package body ESP32S3.GPS.NMEA is
+package body ESP32S3.GPS.NMEA with SPARK_Mode => On is
 
    subtype LLI is Long_Long_Integer;
+
+   --  Accumulator cap shared by the integer/fraction readers: a parsed value can
+   --  never exceed 1e9, so every later widening into LLI (Coord / Scaled) and the
+   --  one Natural add (To_Date's 2000 + yy) stays provably in range.  Realistic
+   --  NMEA fields are tiny, so the cap is never reached in practice -- it only
+   --  fences off a hostile, arbitrarily long digit run.
+   Nat_Cap   : constant := 1_000_000_000;   --  reader results are < this
+   Digit_Cap : constant := 99_999_999;      --  stop one decimal short of Nat_Cap
 
    ---------------------------------------------------------------------------
    --  Small string helpers (no secondary stack: all return scalars or work on
@@ -17,13 +25,35 @@ package body ESP32S3.GPS.NMEA is
          when 'a' .. 'f' => Character'Pos (C) - Character'Pos ('a') + 10,
          when others     => -1);
 
+   --  10**P as an LLI, for P in 0 .. 9.  A total case (not the "**" operator) so
+   --  the prover sees the exact value and bounds the Scaled multiply directly.
+   function Pow10 (P : Natural) return LLI is
+     (case P is
+         when 0      => 1,
+         when 1      => 10,
+         when 2      => 100,
+         when 3      => 1_000,
+         when 4      => 10_000,
+         when 5      => 100_000,
+         when 6      => 1_000_000,
+         when 7      => 10_000_000,
+         when 8      => 100_000_000,
+         when others => 1_000_000_000)
+   with Pre  => P <= 9,
+        Post => Pow10'Result >= 1 and then Pow10'Result <= Nat_Cap;
+
    --  Unsigned integer value of the leading digits of S (stops at the first
-   --  non-digit); empty / no digits -> 0.
-   function To_Nat (S : String) return Natural is
+   --  non-digit); empty / no digits -> 0.  Capped at < Nat_Cap so a long digit
+   --  run can neither overflow here nor downstream.
+   function To_Nat (S : String) return Natural with
+     Post => To_Nat'Result <= Nat_Cap
+   is
       Acc : Natural := 0;
    begin
       for C of S loop
+         pragma Loop_Invariant (Acc <= 10 * Digit_Cap + 9);
          exit when C not in '0' .. '9';
+         exit when Acc > Digit_Cap;
          Acc := Acc * 10 + (Character'Pos (C) - Character'Pos ('0'));
       end loop;
       return Acc;
@@ -31,16 +61,25 @@ package body ESP32S3.GPS.NMEA is
 
    --  Fractional digits of S scaled to exactly Places digits (pad or truncate).
    --  e.g. Frac ("123", 5) = 12300 ;  Frac ("123456", 5) = 12345.
-   function Frac (S : String; Places : Natural) return Natural is
+   function Frac (S : String; Places : Natural) return Natural with
+     Pre  => Places <= 9,
+     Post => Frac'Result <= Nat_Cap
+   is
       Acc : Natural := 0;
       N   : Natural := 0;
    begin
       for C of S loop
+         pragma Loop_Invariant (N <= Places);
+         pragma Loop_Invariant (Acc <= 10 * Digit_Cap + 9);
          exit when C not in '0' .. '9' or else N = Places;
+         exit when Acc > Digit_Cap;
          Acc := Acc * 10 + (Character'Pos (C) - Character'Pos ('0'));
          N := N + 1;
       end loop;
       while N < Places loop
+         pragma Loop_Invariant (Acc <= 10 * Digit_Cap + 9);
+         pragma Loop_Variant (Decreases => Places - N);
+         exit when Acc > Digit_Cap;
          Acc := Acc * 10;
          N := N + 1;
       end loop;
@@ -48,12 +87,23 @@ package body ESP32S3.GPS.NMEA is
    end Frac;
 
    --  Return field number N (0-based) of a comma-separated payload, as a slice
-   --  of S.  Out-of-range -> an empty slice.
-   function Field (S : String; N : Natural) return String is
+   --  of S.  Out-of-range -> an empty slice.  The result lies within S'Range.
+   --  The result is a slice of S, so its 'Last inherits S's "realistic window"
+   --  cap -- which is all the field consumers (Coord / To_Time / Scaled) need to
+   --  rule out index overflow.  (A within-S'Range 'First bound is unprovable for a
+   --  pathological empty S, whose 'First/'Last SPARK models independently, and no
+   --  consumer relies on it.)
+   function Field (S : String; N : Natural) return String with
+     Pre  => S'Last <= Integer'Last - 1,
+     Post => Field'Result'Last <= Integer'Last - 1
+   is
       Start : Integer := S'First;
       Count : Natural := 0;
    begin
       for I in S'Range loop
+         pragma Loop_Invariant
+           (Start >= S'First and then Start <= I
+            and then Count <= I - S'First);
          if S (I) = ',' then
             if Count = N then
                return S (Start .. I - 1);
@@ -65,30 +115,40 @@ package body ESP32S3.GPS.NMEA is
       if Count = N then
          return S (Start .. S'Last);
       end if;
-      return S (S'First .. S'First - 1);   --  empty
+      return S (S'Last + 1 .. S'Last);   --  empty, and provably within S'Range
    end Field;
 
    ---------------------------------------------------------------------------
    --  Decimal "iii.fff" -> integer scaled by 10**Places (e.g. metres -> mm with
-   --  Places = 3).  Missing fraction is treated as zero.
+   --  Places = 3).  Missing fraction is treated as zero.  Computed in LLI and
+   --  clamped to Integer'Last so an oversized field cannot overflow the result.
    ---------------------------------------------------------------------------
 
-   function Scaled (S : String; Places : Natural) return Integer is
+   function Scaled (S : String; Places : Natural) return Natural with
+     Pre => Places <= 9 and then S'Last <= Integer'Last - 1
+   is
       Dot : Integer := 0;
+      V   : LLI;
    begin
       if S = "" then
          return 0;
       end if;
       for I in S'Range loop
+         pragma Loop_Invariant (Dot = 0 or else Dot in S'First .. S'Last);
          if S (I) = '.' then
             Dot := I;
          end if;
       end loop;
       if Dot = 0 then
-         return To_Nat (S) * 10 ** Places;
+         V := LLI (To_Nat (S)) * Pow10 (Places);
+      else
+         V := LLI (To_Nat (S (S'First .. Dot - 1))) * Pow10 (Places)
+            + LLI (Frac (S (Dot + 1 .. S'Last), Places));
       end if;
-      return To_Nat (S (S'First .. Dot - 1)) * 10 ** Places
-        + Frac (S (Dot + 1 .. S'Last), Places);
+      if V > LLI (Integer'Last) then
+         return Integer'Last;
+      end if;
+      return Natural (V);
    end Scaled;
 
    ---------------------------------------------------------------------------
@@ -97,7 +157,9 @@ package body ESP32S3.GPS.NMEA is
    --  is degrees (2 for latitude, 3 for longitude -- handled the same way).
    ---------------------------------------------------------------------------
 
-   function Coord (S : String; Hemi : Character) return Interfaces.Integer_32 is
+   function Coord (S : String; Hemi : Character) return Interfaces.Integer_32 with
+     Pre => S'Last <= Integer'Last - 1
+   is
       Dot     : Integer := 0;
       Degrees : Natural;
       Min_E5  : LLI;        --  minutes in units of 1e-5 minute
@@ -107,11 +169,12 @@ package body ESP32S3.GPS.NMEA is
          return 0;
       end if;
       for I in S'Range loop
+         pragma Loop_Invariant (Dot = 0 or else Dot in S'First .. S'Last);
          if S (I) = '.' then
             Dot := I;
          end if;
       end loop;
-      if Dot < S'First + 3 then
+      if Dot = 0 or else Dot - S'First < 3 then
          return 0;          --  too short to hold dd + mm.
       end if;
 
@@ -124,11 +187,20 @@ package body ESP32S3.GPS.NMEA is
       if Hemi = 'S' or else Hemi = 'W' then
          Deg_E7 := -Deg_E7;
       end if;
+      --  Clamp into Integer_32 so a hostile, oversized degrees field cannot raise
+      --  on the narrowing conversion (a real coordinate is well inside the range).
+      if Deg_E7 > LLI (Interfaces.Integer_32'Last) then
+         Deg_E7 := LLI (Interfaces.Integer_32'Last);
+      elsif Deg_E7 < LLI (Interfaces.Integer_32'First) then
+         Deg_E7 := LLI (Interfaces.Integer_32'First);
+      end if;
       return Interfaces.Integer_32 (Deg_E7);
    end Coord;
 
    --  "hhmmss.ss" -> UTC_Time.
-   function To_Time (S : String) return UTC_Time is
+   function To_Time (S : String) return UTC_Time with
+     Pre => S'Last <= Integer'Last - 1
+   is
       T   : UTC_Time;
       Dot : Integer := 0;
    begin
@@ -139,6 +211,7 @@ package body ESP32S3.GPS.NMEA is
       T.Minute := To_Nat (S (S'First + 2 .. S'First + 3));
       T.Second := To_Nat (S (S'First + 4 .. S'First + 5));
       for I in S'Range loop
+         pragma Loop_Invariant (Dot = 0 or else Dot in S'First .. S'Last);
          if S (I) = '.' then
             Dot := I;
          end if;
@@ -170,6 +243,9 @@ package body ESP32S3.GPS.NMEA is
 
    procedure Check
      (Sentence : String; First, Last : out Integer; Ok : out Boolean)
+   with Post => (if Ok then First = Sentence'First + 1
+                          and then Last <= Sentence'Last
+                          and then First <= Last + 1)
    is
       Star : Integer := 0;
       Sum  : Interfaces.Unsigned_8 := 0;
@@ -186,7 +262,10 @@ package body ESP32S3.GPS.NMEA is
          end if;
          Sum := Sum xor Interfaces.Unsigned_8 (Character'Pos (Sentence (I)));
       end loop;
-      if Star = 0 or else Star + 2 > Sentence'Last then
+      --  Written as "Star > Sentence'Last - 2" (not "Star + 2 > Sentence'Last")
+      --  so the guard itself cannot overflow; Length >= 4 makes the subtraction
+      --  safe, and on success Star + 2 is provably within Sentence'Range.
+      if Star = 0 or else Star > Sentence'Last - 2 then
          return;   --  no '*HH'
       end if;
       Hi := Hex_Val (Sentence (Star + 1));
@@ -232,7 +311,7 @@ package body ESP32S3.GPS.NMEA is
       end if;
 
       declare
-         P    : String renames Sentence (First .. Last);
+         P    : constant String := Sentence (First .. Last);
          Kind : constant String := Field (P, 0);
       begin
          if Is_Type (Kind, "GGA") then
@@ -392,8 +471,13 @@ package body ESP32S3.GPS.NMEA is
                View   : constant String := Field (P, 3);
                In_V   : constant Natural := To_Nat (View);
                Sys    : constant GNSS_System := System_Of (Kind);
+               --  Satellites carried by earlier messages.  Computed so the "* 4"
+               --  cannot overflow: only when (Msg_No - 1) <= In_V / 4 is the real
+               --  product taken; past that the message is beyond the in-view set,
+               --  so Before is forced above In_V and Here collapses to 0.
                Before : constant Natural :=
-                 (if Msg_No >= 1 then 4 * (Msg_No - 1) else 0);
+                 (if Msg_No >= 1 and then Msg_No - 1 <= In_V / 4
+                  then 4 * (Msg_No - 1) else In_V + 1);
                Here   : constant Natural :=
                  (if In_V > Before then Natural'Min (4, In_V - Before) else 0);
                Best   : Natural := 0;
@@ -403,6 +487,7 @@ package body ESP32S3.GPS.NMEA is
                   Result.In_View := In_V;
                end if;
                for K in 0 .. Here - 1 loop
+                  pragma Loop_Invariant (N <= K and then N <= 4);
                   declare
                      Prn : constant String := Field (P, 4 + 4 * K);
                      Elv : constant String := Field (P, 5 + 4 * K);
@@ -440,6 +525,7 @@ package body ESP32S3.GPS.NMEA is
                                   when 3      => Fix_3D,
                                   when others => Fix_None);
                for K in 3 .. 14 loop
+                  pragma Loop_Invariant (N <= K - 3);
                   if Field (P, K) /= "" then
                      N := N + 1;
                   end if;

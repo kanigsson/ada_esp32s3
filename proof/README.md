@@ -45,6 +45,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | `ftp_replies_proof.gpr` | `FTP_Replies` (FTP reply parsers + PASV `Parse_Pasv`) | **proved** (56/56 VCs, 0 justified) — AoRTE on the attacker-facing parse; found/fixed a PASV overflow bug |
 | `ftp_paths_proof.gpr` | `FTP_Paths` (FTP-server path-traversal guard: `Abs_Path` / `Split`) | **proved** (230/230 VCs, 0 justified, 0 warnings) — AoRTE **+ the functional no-escape postcondition** (`No_Parent_Ref (Result)`: normalised output has no `..` component, cannot escape the root) |
 | `dns_parse_proof.gpr` | `DNS_Parse` (DNS A-record reply parser: `Skip_Name` + answer-RR walk) | **proved** (41/41 VCs, 0 justified, 0 warnings) — AoRTE on the attacker-facing parse; closes the unbounded `Skip_Name` overrun and the A-record OOB read the inline parse carried |
+| `nmea_proof.gpr` | `ESP32S3.GPS.NMEA` (NMEA-0183 sentence decoder: GGA/RMC/ZDA/GLL/VTG/GSV/GSA) | **proved** (223/223 VCs, 0 justified, 0 warnings) — AoRTE annotated in place; caps the unguarded decimal accumulators, computes the coordinate/scale maths in `LLI` with clamping, and closes a GSV message-number `* 4` overflow |
 
 Tier-A AoRTE is complete across all five attacker-facing units. The networking
 layer is now AoRTE-complete too — all four networking targets (`Net_Routes`,
@@ -53,8 +54,9 @@ layer is now AoRTE-complete too — all four networking targets (`Net_Routes`,
 security property. The reusable proof patterns and the
 deferred optional functional properties are recorded in `proof-patterns.md`; the
 per-phase VC tables and the AoRTE bugs the proof found are in `tier-a-results.md`.
-The next wave of *un-proved* targets (DNS / DHCP / NTP / NMEA / Modbus / ext4 /
-P-256) is triaged in `ROADMAP.md`.
+The next wave of *un-proved* targets (DHCP / NTP / Modbus / ext4 / P-256) is
+triaged in `ROADMAP.md`; `DNS_Parse` and `ESP32S3.GPS.NMEA` from that wave are now
+proved (the next attacker-facing parser is the DHCP reply option walk).
 
 ## Running
 

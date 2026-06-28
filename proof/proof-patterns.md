@@ -102,6 +102,33 @@ by contract — see "Proving across the hardware boundary" below.
   count). Recast as a bounded `for I in 0 .. 31` bit-scan with invariant
   `N <= I + 1`: the add is then provably `<= 32`. Same lesson as the limb-arithmetic
   bullet — give bounded loops an explicit index the prover can count on.
+- **A function returning an empty slice cannot promise it lies within `S'Range`.**
+  `NMEA.Field` returns a sub-slice of its `String` formal `S`, and a
+  `Post => Result'First >= S'First and Result'Last <= S'Last` looked obviously true —
+  but it fails (counterexample `Result'First = Integer'Last`). For an *unconstrained*
+  empty `String`, SPARK models `S'First` and `S'Last` independently (only `S'Length =
+  0` is known), so `S'First` can sit far above `S'Last + 1`; then no empty slice can
+  satisfy *both* bounds at once. Fix: state only the bound a consumer actually needs.
+  Here every consumer (`Coord`/`To_Time`/`Scaled`) just needs the result to inherit
+  the realistic-window cap, so `Post => Result'Last <= Integer'Last - 1` is enough and
+  provable. Same family as the "empty-array `'First` can be negative" bullet — don't
+  assert a within-buffer relation you can't establish for the null case.
+- **Cap the decimal accumulators, in place, with the `FTP_Replies` idiom.**
+  `NMEA.To_Nat`/`Frac` (`Acc := Acc * 10 + digit` over an attacker digit run) take an
+  `exit when Acc > Digit_Cap` guard and a *flat* loop invariant `Acc <= 10*Digit_Cap +
+  9`; pick `Digit_Cap` so the post-multiply bound stays `< Nat_Cap (1e9)`, small enough
+  that every later widening (`LLI` coordinate/scale maths, the lone `2000 + yy` add)
+  is trivially in range. Watch the invariant *constant*: the post-multiply bound is
+  `10*Digit_Cap + 9`, not `9*Digit_Cap + 9` — an off-by-a-factor there reads as "loop
+  invariant might not be preserved", not as an arithmetic error.
+- **Compute attacker-scaled fixed-point in `LLI`, then clamp on the way out.**
+  `NMEA.Scaled`/`Coord` widen to `Long_Long_Integer` for the `*10**Places` /
+  `ddmm.mmmmm → 1e-7°` arithmetic and clamp to `Integer'Last` / `Interfaces.Integer_32`'
+  range *before* the narrowing conversion. The original direct `Integer_32 (Deg_E7)`
+  was an unguarded `Constraint_Error` on an oversized degrees field; the clamp turns
+  it into a saturating, AoRTE-clean conversion. Replace a variable-exponent `10 **
+  Places` with a total `case` function (`Pow10`) so the prover sees the exact value
+  and bounds the product directly instead of reasoning about `**`.
 - **Guard a contract's length precondition at the call.** `Sig_OK` feeds
   cert slices to `RSA_PKCS1_SHA256` (which needs `TBS'Length >= 1`). Rather than
   strengthen `Well_Formed`, short-circuit on `Length (Child.TBS) >= 1 and then …`:

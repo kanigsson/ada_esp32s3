@@ -8,7 +8,9 @@ post-merge **networking** triage are proved end-to-end. What landed:
   functional postcondition), **`FTP_Replies`** (PASV/reply parse — found & fixed a real
   integer-overflow bug), **`FTP_Paths`** (path-traversal guard + functional no-escape
   postcondition), **`DNS_Parse`** (DNS A-record reply parser — closes the unbounded
-  `Skip_Name` overrun and the A-record OOB read the inline `Resolve` carried).
+  `Skip_Name` overrun and the A-record OOB read the inline `Resolve` carried),
+  **`ESP32S3.GPS.NMEA`** (NMEA-0183 decoder — proved AoRTE in place; closes the
+  unguarded accumulator overflows and a GSV message-number `* 4` overflow).
   Per-unit VC counts are in `README.md`; the reusable proof techniques
   are in `proof-patterns.md`; Tier-A phase tables and the bugs proof found are in
   `tier-a-results.md`.
@@ -30,7 +32,7 @@ refactor) are all in `proof-patterns.md` — reuse them.
 | ✅ | ~~`DNS_Client` reply parse~~ | A (AoRTE) | **done** — `DNS_Parse.Parse_Reply` factored out, proved 41/41 VCs; see §1 | — | — |
 | 2 | DHCP reply option walk (`ESP32S3.W5500.DHCP.Parse_Reply`) | A (AoRTE) | factor pure parser out of the socket loop | high — attacker-facing TLV walk | small–medium |
 | 3 | `NTP_Client` timestamp parse | A (AoRTE) | factor / annotate | medium | small |
-| 4 | `ESP32S3.GPS.NMEA` | A (AoRTE) | **already pure** — annotate in place | medium-high (free win) | very small |
+| ✅ | ~~`ESP32S3.GPS.NMEA`~~ | A (AoRTE) | **done** — annotated in place, proved 223/223 VCs; see §4 | — | — |
 | 5 | `Modbus` frame `Process` (slave/master PDUs) | A (AoRTE) | factor out of socket `Serve` | medium — bus-facing | medium |
 | 6 | ext4 `crc32c` / `bitmap` / `mkfs`, `Block_Dev.WL` | A (AoRTE) | **already host-tested / pure** | medium (FS + flash integrity) | medium |
 | 7 | `P256` (TLS ECDH field arithmetic) | A (AoRTE + functional) | SPARKNaCl-style proof project | high (TLS key exchange) | large |
@@ -118,22 +120,36 @@ helper and prove AoRTE. Low effort; modest but real attacker surface (clock skew
 
 ---
 
-## 4. `ESP32S3.GPS.NMEA` — a near-free win 🎯
+## 4. `ESP32S3.GPS.NMEA` — ✅ DONE (annotated in place, 223/223 VCs)
 
-`libs/esp32s3_hal/src/esp32s3-gps-nmea.{ads,adb}`, ~510 LOC. The file header already
-states it: *"pure logic, no UART, no tasking, so it is directly testable… no
-secondary stack: all return scalars or work on slices of the caller's Sentence."*
-It is **already shaped exactly like the proved `FTP_Replies` / `FTP_Paths`** — no
-refactor, just add `SPARK_Mode On` and discharge AoRTE.
+**Resolved.** `esp32s3-gps-nmea.{ads,adb}` were marked `SPARK_Mode On` in place — no
+refactor, exactly as the static read predicted — and proved AoRTE at `--level=2`
+(`proof/nmea_proof.gpr`, 223/223 VCs, 0 unproved/0 justified/0 warnings). The proof
+project pulls in only the `ESP32S3.GPS` *spec* (and its with-closure of specs) so
+the prover can see the parent data types; the task/protected-store `ESP32S3.GPS`
+body that drives the decoder stays `SPARK_Mode Off` and consumes it by call. The
+proof closed exactly the AoRTE holes the static read flagged, plus one the read
+missed:
 
-The accumulators are the obvious VCs: `To_Nat` (`Acc := Acc * 10 + digit`) and
-`Frac` run over attacker-influenceable digit runs with **no overflow guard** → a long
-field overflows `Natural`. `Field` / `Hex_Val` and the XOR-checksum slice walk are
-index-in-range obligations. Capping the accumulators (the `FTP_Replies` `Parse_Pasv`
-fix) closes them.
-
-**Value: medium-high relative to its cost — biggest win for least effort. Effort:
-very small (annotate in place).**
+- **The decimal accumulators are now overflow-safe.** `To_Nat` and `Frac`
+  (`Acc := Acc * 10 + digit`) gained the `FTP_Replies` cap idiom — an
+  `exit when Acc > Digit_Cap` guard with a flat loop invariant — so a hostile,
+  arbitrarily long digit run saturates at < 1e9 instead of overflowing `Natural`.
+- **`Scaled` / `Coord` compute in `Long_Long_Integer` and clamp.** The `*10**Places`
+  scaling and the `ddmm.mmmmm → 1e-7°` coordinate maths now run in `LLI` and clamp
+  to `Integer'Last` / `Integer_32`'range, so an oversized field can neither overflow
+  the intermediate nor raise on the narrowing conversion (the old direct
+  `Integer_32 (Deg_E7)` was an unguarded `Constraint_Error`).
+- **A GSV message-number overflow the static read missed.** `Before := 4 * (Msg_No - 1)`
+  multiplied a *server-supplied* message number by 4 with no bound — a crafted GSV
+  overflows `Natural` before the in-view comparison. Now the product is taken only
+  when `Msg_No - 1 <= In_V / 4`; past that the message is beyond the in-view set and
+  `Here` collapses to 0.
+- **Index walks proved in range.** `Field`'s comma scan, `Check`'s `*HH` walk (its
+  `Star + 2 > 'Last` guard rewritten as `Star > 'Last - 2` so the guard itself can't
+  overflow), and the GGA/RMC/GSV field reads all discharge their index-in-range and
+  `'First + k` obligations under a single realistic-window precondition
+  (`Sentence'Last <= Integer'Last - 1`, true for every real String).
 
 ---
 
@@ -200,8 +216,8 @@ pass.
 ## Recommended order
 
 1. ~~**`DNS_Client`**~~ — ✅ done (`DNS_Parse`, 41/41 VCs); see §1.
-2. **`NMEA`** — nearly free (already pure); annotate in place for a fast second win.
-   **Start here next.**
+2. ~~**`NMEA`**~~ — ✅ done (annotated in place, 223/223 VCs); see §4.
 3. **DHCP** then **NTP** — finish the attacker-facing network-parser sweep.
+   **Start here next** (§2 — the DHCP reply option walk).
 4. **Modbus PDU** / **ext4 `CRC32C` + bitmap + WL** — integrity targets, incremental.
 5. **`P256`** — schedule as a dedicated crypto-proof project.

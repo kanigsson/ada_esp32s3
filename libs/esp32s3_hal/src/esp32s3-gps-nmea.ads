@@ -9,7 +9,7 @@
 --  talker it reports Recognised = False and the Has_* flags stay clear.  Each
 --  Has_* flag says whether that field was present and decoded, so the caller
 --  publishes only what actually arrived.
-private package ESP32S3.GPS.NMEA is
+private package ESP32S3.GPS.NMEA with SPARK_Mode => On is
 
    --  Everything one GGA or RMC sentence can yield.  Only the fields whose Has_*
    --  flag is set are meaningful.
@@ -51,6 +51,12 @@ private package ESP32S3.GPS.NMEA is
    end record;
 
    --  Decode one framed sentence (leading '$' through the trailing '*HH').
-   procedure Parse (Sentence : String; Result : out Parsed);
+   --  The bound on Sentence'Last is the "realistic buffer window" cap (a sentence
+   --  is at most ~82 chars; the reader's line buffer is 100): it lets the prover
+   --  rule out index overflow in the field walk without threading 'First bounds.
+   --  It holds for every real String (an object cannot span the whole address
+   --  space), so the SPARK_Mode-Off caller never violates it.
+   procedure Parse (Sentence : String; Result : out Parsed)
+     with Pre => Sentence'Last <= Integer'Last - 1;
 
 end ESP32S3.GPS.NMEA;
