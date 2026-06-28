@@ -1,0 +1,232 @@
+\chapter{Assembly Inside Ada: a SIMD Vector Library}
+\label{ch:asm}\index{assembly}\index{inline assembly}\index{SIMD}\index{PIE}
+
+Almost everything in this book is Ada the compiler can see through: a register
+write is a typed field assignment, a context switch is structured code. This
+chapter goes one level lower, to the cases where you must hand the compiler the
+exact machine instructions yourself -- and builds something real with them: a
+vector library that drives the ESP32-S3's SIMD unit, with its inner loops written
+as assembly embedded directly in Ada package bodies.
+
+There are two honest reasons to reach for assembly on this chip. The first is an
+instruction the compiler will never emit on its own. Reading the cycle counter
+(\texttt{rsr.ccount}), draining a pipeline, a memory barrier, an atomic primitive --
+these have no Ada spelling. The second is a whole \emph{instruction set} the
+compiler does not target: the ESP32-S3's Xtensa LX7 core carries Espressif's
+\emph{PIE} SIMD extension -- 128-bit vector registers \texttt{q0}--\texttt{q7} and
+instructions that add, multiply or compare sixteen bytes at once -- and GNAT's code
+generator never produces them. If you want that throughput, you write the
+instructions. The good news is that Ada gives you a clean, contracted way to do it,
+and the result stays a normal Ada subprogram: callable, type-checked at its
+boundary, and host-readable.
+
+\section{The \texttt{Asm} mechanism}\index{System.Machine\_Code}
+
+GNAT exposes inline assembly through \texttt{System.Machine\_Code.Asm}. The
+smallest useful example is a one-instruction read of the Xtensa cycle counter,
+which the benchmark in this chapter uses as its stopwatch:
+
+\begin{lstlisting}
+with System.Machine_Code; use System.Machine_Code;
+
+function Cycles return Unsigned_32 is
+   V : Unsigned_32;
+begin
+   Asm ("rsr.ccount %0",
+        Outputs  => Unsigned_32'Asm_Output ("=r", V),
+        Volatile => True);
+   return V;
+end Cycles;
+\end{lstlisting}
+
+Every part earns its place:
+
+\begin{description}[style=nextline]
+\item[Template] the assembly text, with \texttt{\%0}, \texttt{\%1}, \ldots\ standing
+  for operands. \texttt{rsr.ccount \%0} reads the special register into operand 0.
+\item[Outputs] the Ada variables the assembly writes. \texttt{'Asm\_Output} pairs a
+  \emph{constraint} string with a variable. \texttt{"=r"} means ``a register,
+  write-only'': the compiler picks a free register, runs the instruction, and copies
+  the register back into \texttt{V}.
+\item[Inputs] (omitted here) the read-only values, via \texttt{'Asm\_Input}.
+\item[Clobber] (omitted here) registers or flags the code destroys that are not
+  named as operands, so the compiler does not assume they survived.
+\item[Volatile] tells the optimiser the block has an effect it cannot see -- do not
+  delete it, reorder it, or assume two calls return the same value. A cycle-counter
+  read needs this; without it the compiler could hoist one read out of a loop.
+\end{description}
+
+The constraint letters are a small language of their own. The three that carry this
+chapter's SIMD code are \texttt{"r"} (an input in a register), \texttt{"+r"} (a
+register that is read \emph{and} written -- both input and output), and
+\texttt{"=\&r"} (a write-only register the compiler must keep \emph{distinct} from
+every input, because the code writes it before it has finished reading the others --
+an ``early clobber''). Getting these right is how the compiler and your assembly
+agree on who owns which register; getting them wrong produces code that works until
+the optimiser reuses a register you quietly trampled.
+
+\cnote{This is the same \texttt{asm} GCC offers C, with Ada's typing on the seams:
+operands are typed objects and \texttt{'Asm\_Output}/\texttt{'Asm\_Input} name the
+type, so a wrong-width operand is a compile error, not a silent truncation. A
+multi-line template is just Ada string concatenation with \texttt{\&\ ASCII.LF},
+which means the assembly is built with the language's ordinary tools.}
+
+\section{A SIMD kernel up close}\index{vector register}\index{saturation}
+
+The payoff is the vector kernels. Here is the heart of saturating 32-bit vector
+addition -- add two arrays of \texttt{Integer\_32} four lanes at a time. The
+pointers \texttt{A\_Ptr}, \texttt{B\_Ptr}, \texttt{R\_Ptr} and the count
+\texttt{Cnt} are Ada variables; the template advances and consumes them:
+
+\begin{lstlisting}
+Asm
+ (Template =>
+    "extui   %4, %3, 0, 2" & ASCII.LF &      -- tail = Cnt and 3
+    "srli    %3, %3, 2" & ASCII.LF &         -- Cnt = full 4-lane blocks
+    "beqz    %3, .Ltail_%=" & ASCII.LF &     -- none? do scalar tail
+    "ee.vld.128.ip q0, %0, 16" & ASCII.LF &  -- preload first A chunk
+    "loopnez %3, .Lend_%=" & ASCII.LF &      -- hardware loop, Cnt times
+    "  ee.vld.128.ip        q1, %1, 16"         & ASCII.LF &
+    "  ee.vadds.s32.ld.incp q0, %0, q4, q0, q1" & ASCII.LF &
+    "  ee.vst.128.ip        q4, %2, 16"         & ASCII.LF &
+    ".Lend_%=:" & ASCII.LF &
+    "addi    %0, %0, -16" & ASCII.LF &       -- rewind pipelined read
+    ".Ltail_%=:",
+  Outputs =>
+    (Address'Asm_Output ("+r", A_Ptr),    -- %0  read + written
+     Address'Asm_Output ("+r", B_Ptr),    -- %1
+     Address'Asm_Output ("+r", R_Ptr),    -- %2
+     size_t'Asm_Output  ("+r", Cnt),      -- %3
+     size_t'Asm_Output  ("=&r", Tail)),   -- %4  early-clobber
+  Inputs   => No_Input_Operands,
+  Clobber  => "memory",
+  Volatile => True);
+--  the three middle lines: load B, q4 = saturate(q0 + q1) while pre-loading
+--  the next A chunk into q0, store q4.  A scalar loop then does the 0..3 tail.
+\end{lstlisting}
+
+Several ideas are worth drawing out, because they are why this is faster than a
+loop the compiler could write:
+
+\begin{itemize}
+\item \textbf{One instruction, sixteen bytes.} \texttt{ee.vadds.s32} adds four
+  32-bit lanes in a single issue; the byte and 16-bit kernels do 16 and 8 lanes.
+  That width is the speed-up.
+\item \textbf{Saturation for free.} The \texttt{.s32} form \emph{saturates} --
+  \texttt{Integer\_32'Last + 1} stays \texttt{'Last} rather than wrapping to a huge
+  negative. In a signal-processing or neural-network kernel that is the behaviour you
+  want, and the hardware gives it at no cost; a portable Ada version would need a
+  branch per element.
+\item \textbf{Fused load. } \texttt{ee.vadds.s32.ld.incp q0, \%0, q4, q0, q1}
+  both computes the sum \emph{and} pre-loads the next chunk of A into \texttt{q0}
+  with an auto-incrementing pointer, so the load latency hides under the add.
+\item \textbf{\texttt{\%=} for unique labels.} GNAT may inline a body more than once;
+  \texttt{\%=} expands to a number unique per expansion, so \texttt{.Lend\_\%=}
+  never collides with another copy of the same kernel. Hand-written labels would
+  duplicate-define and fail to assemble.
+\item \textbf{\texttt{Clobber => "memory"}.} The block reads and writes arrays
+  through pointers the compiler is not tracking as operands, so this tells it not to
+  cache those arrays' contents across the asm.
+\end{itemize}
+
+The full library spreads this pattern across four element families
+(\texttt{Integer\_8/16/32}, \texttt{IEEE\_Float\_32}) and the usual operation
+catalogue -- add, subtract, multiply-with-shift, dot-product, multiply-accumulate,
+min/max, compare, clamp, ReLU, bitwise. Every kernel pairs the vector path with a
+scalar Ada \emph{tail} so any array length works, not just multiples of the vector
+width.
+
+\section{Making it assemble and run on the S3}
+
+Two ESP32-S3 facts stand between ``the source exists'' and ``it runs,'' and both are
+the kind of detail that is invisible until it bites.
+
+\textbf{The assembler has to know the opcodes.} The Ada toolchain here is built for
+the base ESP32 (Xtensa LX6) configuration, whose assembler has never heard of
+\texttt{ee.vld.128.ip}. The Xtensa GNU tools solve this with a \emph{dynamic
+configuration overlay}: the environment variable \texttt{XTENSA\_GNU\_CONFIG} points
+the assembler at a shared object describing a specific core. This project already
+ships and builds an S3 overlay (\texttt{crates/xtensa-dynconfig}) and exports
+\texttt{XTENSA\_GNU\_CONFIG} for every compile (Chapter~\ref{ch:runtime-build}), so
+the LX7 PIE instructions assemble with no extra step. Without that overlay the same
+source stops at \texttt{Error: unknown opcode}.
+
+\textbf{The coprocessor has to be on.} The PIE unit is a \emph{coprocessor}, and on
+the S3 it is coprocessor~3 (named \texttt{cop\_ai}; the FPU is coprocessor~0).
+Coprocessors come out of reset disabled, so the first \texttt{ee.*} instruction
+would take a coprocessor-disabled exception. The bare runtime's \texttt{start.S}
+enables both by writing \texttt{CPENABLE = 16\#09\#} -- bit~0 for the FPU, bit~3 for
+PIE (Chapter~\ref{ch:bootloader}); the value is exactly the \texttt{XCHAL\_CP\_MASK}
+the S3 core configuration declares. One word at boot, and SIMD code runs.
+
+A third, gentler requirement is \textbf{alignment}: the 128-bit loads and stores
+want 16-byte-aligned data. The library's vector types carry
+\texttt{with Alignment =>\ 16}, so any object you declare of them is aligned by
+construction -- you only have to be careful with slices and overlays.
+
+\section{Using the library}\index{ESP32S3.SIMD}
+
+Application code \texttt{with}s the one facade, \texttt{ESP32S3.SIMD}, and works in
+the aligned vector types. The operations are overloaded across the element families
+and carry \texttt{Pre} contracts for shape (matching lengths), so a mismatched call
+is caught at compile time or as a contract violation rather than a corrupt buffer:
+
+\begin{lstlisting}
+with ESP32S3.SIMD; use ESP32S3.SIMD;
+
+A : SIMD_I32_Vector (0 .. 1023) := (others => 100);
+B : SIMD_I32_Vector (0 .. 1023) := (others => 25);
+R : SIMD_I32_Vector (0 .. 1023);
+begin
+   Add (A, B, R);        --  R := saturating A + B, four lanes per issue
+   Total : constant Integer_32 := Dot_Product (A, B);
+\end{lstlisting}
+
+The example \texttt{examples/esp32s3\_simd} puts this on the board: it fills a pair of
+1024-element vectors, runs each SIMD op against a scalar Ada reference to confirm the
+results agree, then brackets both with \texttt{Cycles} (the \texttt{rsr.ccount} reader
+above) and prints the speed-up. It builds into a flashable image through the normal
+bare-metal path -- the SIMD library is a library like any other
+(\texttt{libs/esp32s3\_simd}), pulled in with one \texttt{with} line in the project
+file.
+
+The upstream project published a full benchmark run on real silicon (1024 elements,
+64 iterations, \texttt{-O3}); a representative slice gives the shape of the win:
+
+\begin{center}
+\begin{tabular}{l r r r}
+\toprule
+\textbf{Operation} & \textbf{SIMD (\textmu s)} & \textbf{Scalar (\textmu s)} & \textbf{Speed-up} \\ \midrule
+\texttt{Add} i8           &  171 & 6987 & 40.9$\times$ \\
+\texttt{Add} i16          &  278 & 6578 & 23.7$\times$ \\
+\texttt{Add} i32          &  476 & 2877 &  6.0$\times$ \\
+\texttt{Add} f32          & 1096 & 3704 &  3.4$\times$ \\
+\texttt{Dot\_Product} i8  &  131 & 3297 & 25.2$\times$ \\
+\texttt{Max} i8           &  166 & 3698 & 22.3$\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The pattern is the one the width predicts: the narrower the element, the more lanes
+per 128-bit register, the larger the win -- byte operations, with sixteen lanes,
+run an order of magnitude faster, while \texttt{Integer\_32} and \texttt{Float\_32}
+at four lanes land in the low single digits. These are the upstream's numbers; the
+on-board example here is built to reproduce the measurement on your own board.
+
+\section{Provenance and status}
+
+The library is \emph{vendored}: \texttt{libs/esp32s3\_simd} is
+\texttt{rowsail/ada-esp32-s3-simd} (itself based on the \texttt{zliu43/esp\_simd}
+instruction-level work), with the package tree renamed \texttt{ESP32.S3.SIMD} to
+\texttt{ESP32S3.SIMD} so it sits under this repo's HAL root; the kernels are
+otherwise unmodified. It is \textbf{experimental} -- correctness is validated for a
+subset of operations through the benchmark harness, not exhaustively across every
+operation and interaction, so treat it as beta-quality and verify the operations you
+depend on.
+
+What it demonstrates for this book is the broader point: dropping to assembly in Ada
+is neither a hack nor an escape from the language. The instructions live inside a
+normal subprogram, behind a typed, contracted interface, host-readable and
+version-controlled like everything else -- and the one genuinely hard part, on a
+chip whose toolchain does not target its own SIMD unit, was teaching the assembler
+the opcodes and turning the coprocessor on, both of which are now one line each.

@@ -3,7 +3,7 @@
  * Our own IDF-free 2nd-stage bootloader (flash 0x0) does flash/cache/MMU/clock-pin
  * bring-up, then jumps to this ELF entry (_start).  We establish a clean
  * register window, VECBASE (our vendored Xtensa vector table), the env-task
- * stack, enable the FPU coprocessor (no lazy trap), clear .bss, then call the C
+ * stack, enable the FPU + PIE/SIMD coprocessors (no lazy trap), clear .bss, then call the C
  * entry start_c() (which disables the RTC watchdogs and calls app_main()).
  *
  * Also defines bare, ABI-safe stubs for the handful of Xtensa/FreeRTOS symbols
@@ -44,8 +44,11 @@ _start:
 	wsr.windowstart	a2
 	rsync
 	movi	a0, 0
-	/* enable coprocessor 0 (FPU) so first FP use does not take a coproc trap */
-	movi	a0, 1
+	/* Enable the configured coprocessors so the first use does not take a
+	 * coprocessor-disabled trap.  CPENABLE = 0x09 = CP0 (FPU) | CP3 (cop_ai,
+	 * the ESP32-S3 PIE/SIMD unit -- see XCHAL_CP_MASK=0x09 in the S3 config).
+	 * The base runtime uses CP0; ESP32S3.SIMD's ee.* kernels use CP3. */
+	movi	a0, 0x9
 	wsr.cpenable	a0
 	/* SP = top of the env-task stack, 16-aligned */
 	movi	a1, __stack_end
@@ -179,7 +182,7 @@ core1_start:
 	movi	a0, 0x00040000		/* PS = WOE, kernel ring, INTLEVEL=0 */
 	wsr.ps	a0
 	rsync
-	movi	a0, 1
+	movi	a0, 0x9			/* CP0 FPU | CP3 cop_ai (PIE SIMD); see _start */
 	wsr.cpenable	a0
 	/* clean single register window (see _start) */
 	movi	a0, 0
