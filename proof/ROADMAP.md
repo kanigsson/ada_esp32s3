@@ -7,7 +7,9 @@ post-merge **networking** triage are proved end-to-end. What landed:
   `Cert_Verify`, `Chain_Verify`, `AES.GCM`, `SPARKNaCl`, **`Net_Routes`** (+ `Resolve`
   functional postcondition), **`FTP_Replies`** (PASV/reply parse — found & fixed a real
   integer-overflow bug), **`FTP_Paths`** (path-traversal guard + functional no-escape
-  postcondition). Per-unit VC counts are in `README.md`; the reusable proof techniques
+  postcondition), **`DNS_Parse`** (DNS A-record reply parser — closes the unbounded
+  `Skip_Name` overrun and the A-record OOB read the inline `Resolve` carried).
+  Per-unit VC counts are in `README.md`; the reusable proof techniques
   are in `proof-patterns.md`; Tier-A phase tables and the bugs proof found are in
   `tier-a-results.md`.
 
@@ -25,7 +27,7 @@ refactor) are all in `proof-patterns.md` — reuse them.
 
 | # | Target | Tier | Shape | Value | Effort |
 |--:|--------|------|-------|-------|--------|
-| 1 | `DNS_Client` reply parse | A (AoRTE) | factor pure parser out of the socket `Resolve` | **highest** — attacker-facing, likely finds real OOB bugs | small once factored |
+| ✅ | ~~`DNS_Client` reply parse~~ | A (AoRTE) | **done** — `DNS_Parse.Parse_Reply` factored out, proved 41/41 VCs; see §1 | — | — |
 | 2 | DHCP reply option walk (`ESP32S3.W5500.DHCP.Parse_Reply`) | A (AoRTE) | factor pure parser out of the socket loop | high — attacker-facing TLV walk | small–medium |
 | 3 | `NTP_Client` timestamp parse | A (AoRTE) | factor / annotate | medium | small |
 | 4 | `ESP32S3.GPS.NMEA` | A (AoRTE) | **already pure** — annotate in place | medium-high (free win) | very small |
@@ -37,7 +39,26 @@ refactor) are all in `proof-patterns.md` — reuse them.
 
 ---
 
-## 1. `DNS_Client` reply parsing — the standout new target ⭐
+## 1. `DNS_Client` reply parsing — ✅ DONE (`DNS_Parse`, 41/41 VCs)
+
+**Resolved.** The inline parse was factored into a pure `DNS_Parse.Parse_Reply
+(Resp, RLast; Host, Found)` over the `Stream_Element_Array` reply slice
+(`dns_parse.{ads,adb}`, `SPARK_Mode On`), proved AoRTE at `--level=2`
+(`proof/dns_parse_proof.gpr`, 41/41 VCs, 0 unproved/0 justified/0 warnings). The
+socket-driving `DNS_Client.Resolve` stays `SPARK_Mode Off` and calls it. The proof
+closed exactly the bugs the static read predicted:
+
+- **`Skip_Name` is now provably bounded.** It is a fixed-trip-count `for` loop with a
+  top `Pos > RLast` fail-closed guard and a `Pos <= RLast + 1` postcondition; a
+  compression pointer ends the name (never followed), so there is no resolver
+  pointer-loop and no unbounded `Pos` walk.
+- **The A-record read can no longer index past the buffer.** The fixed RR header is
+  guarded by `Pos + 9 > RLast` and the 4 RDATA bytes by a *separate* `RData + 3 >
+  RLast` (the old single `Pos + 10 > RLast` guard was the OOB bug).
+- **Short replies fail closed.** A `RLast < Resp'First + 11` header-length check
+  gates every field read; truncated names/answers exit the walk with `Found = False`.
+
+The remainder of this section is kept for the record (what the static read found).
 
 `libs/esp32s3_hal/src/dns_client.{ads,adb}`, ~150 LOC. A textbook attacker-facing
 parser, and a static read already turns up **concrete AoRTE bugs** — the same payoff
@@ -178,9 +199,9 @@ pass.
 
 ## Recommended order
 
-1. **`DNS_Client`** — highest security value, will likely surface real OOB bugs,
-   fits the factor-the-parser precedent. Start here.
+1. ~~**`DNS_Client`**~~ — ✅ done (`DNS_Parse`, 41/41 VCs); see §1.
 2. **`NMEA`** — nearly free (already pure); annotate in place for a fast second win.
+   **Start here next.**
 3. **DHCP** then **NTP** — finish the attacker-facing network-parser sweep.
 4. **Modbus PDU** / **ext4 `CRC32C` + bitmap + WL** — integrity targets, incremental.
 5. **`P256`** — schedule as a dedicated crypto-proof project.

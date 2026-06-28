@@ -111,6 +111,29 @@ by contract — see "Proving across the hardware boundary" below.
 
 ---
 
+- **A precondition that itself adds at the ceiling re-introduces the overflow.**
+  `DNS_Parse.U16`'s guard `Pos + 1 <= Resp'Last` was meant to bound the read, but the
+  `Pos + 1` *in the precondition* draws its own overflow VC (counterexample `Pos =
+  Stream_Element_Offset'Last`). Write the bound so the suspect operand never appears:
+  `Pos < Resp'Last`. Same lesson, contract side, as the limb-arithmetic bullet.
+- **Cap an attacker buffer to a realistic window instead of threading `'First`
+  bounds.** `Stream_Element_Array` formals give the prover no bound on `Resp'First`
+  (an empty/aliased slice can sit anywhere in the 64-bit offset range), so
+  `Resp'First + 11` and the `for .. in 0 .. Resp'Length` loop bound both drew
+  spurious overflow VCs. Rather than add `'First`-relating clauses to every helper,
+  state the real-world envelope once as the entry precondition — `Resp'First >= 0
+  and then Resp'Last <= 16#FFFF#` (a DNS reply is ≤ 64 KiB; the W5500 buffer is 512
+  bytes) — and let `RLast`/`Pos` inherit the cap. Every offset computation is then
+  trivially within the type. (`DNS_Parse`.)
+- **Bound an attacker-driven name/TLV walk with a `for`, not a `while`+variant.**
+  `DNS_Parse.Skip_Name` replaced the inline unbounded `loop` with
+  `for Step in 0 .. Resp'Length loop`, a top `if Pos > RLast then return` fail-closed
+  guard, and a single `pragma Loop_Invariant (Pos >= Resp'First)`. The fixed trip
+  count (each non-terminal label advances `Pos` by ≥ 2) discharges termination with no
+  loop variant, and treating a `0xC0` compression pointer as *end-of-name* (never
+  followed) means there is no resolver pointer-loop to chase. Same shape as the
+  `Net_Routes.Prefix_Len` bounded bit-scan.
+
 ## The central design move: an "in-buffer" predicate
 
 Every consumer of a parsed `Certificate` indexes the original `Cert` buffer

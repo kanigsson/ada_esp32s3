@@ -1,5 +1,6 @@
 with Ada.Streams;  use Ada.Streams;
 with GNAT.Sockets; use GNAT.Sockets;
+with DNS_Parse;
 
 package body DNS_Client is
 
@@ -55,24 +56,6 @@ package body DNS_Client is
          QLen := P - Query'First;
       end Build_Query;
 
-      --  Advance Pos past a DNS name (labels, or a 0xC0 compression pointer).
-      procedure Skip_Name (Pos : in out Stream_Element_Offset) is
-         Len : Integer;
-      begin
-         loop
-            Len := Integer (Resp (Pos));
-            if Len = 0 then
-               Pos := Pos + 1;  exit;
-            elsif Len >= 16#C0# then            --  pointer: 2 bytes, name ends here
-               Pos := Pos + 2;  exit;
-            else
-               Pos := Pos + 1 + Stream_Element_Offset (Len);
-            end if;
-         end loop;
-      end Skip_Name;
-
-      function U16 (Pos : Stream_Element_Offset) return Integer is
-        (Integer (Resp (Pos)) * 256 + Integer (Resp (Pos + 1)));
    begin
       Addr := Any_Inet_Addr;
       Build_Query;
@@ -90,32 +73,19 @@ package body DNS_Client is
             return False;
       end;
 
+      --  Hand the raw reply to the proved, socket-free parser (DNS_Parse): it walks
+      --  the attacker-controlled datagram with every index bounded by RLast and
+      --  recovers the first A-record address, fail-closed on anything malformed.
       declare
-         AnCount : constant Integer := U16 (Resp'First + 6);   --  answer count
-         Pos     : Stream_Element_Offset := Resp'First + 12;   --  past the header
-         Found   : Boolean := False;
+         Host  : DNS_Parse.Host_Octets;
+         Found : Boolean;
       begin
-         Skip_Name (Pos);                 --  skip the question's QNAME
-         Pos := Pos + 4;                  --   + QTYPE + QCLASS
-         for A in 1 .. AnCount loop
-            exit when Pos + 10 > RLast;
-            Skip_Name (Pos);              --  answer NAME (usually a pointer)
-            declare
-               RRType : constant Integer := U16 (Pos);
-               RDLen  : constant Integer := U16 (Pos + 8);
-               RData  : constant Stream_Element_Offset := Pos + 10;
-            begin
-               if RRType = 1 and then RDLen = 4 then           --  an A record
-                  Addr := Inet_Addr
-                    (Img (Resp (RData))     & "." &
-                     Img (Resp (RData + 1)) & "." &
-                     Img (Resp (RData + 2)) & "." &
-                     Img (Resp (RData + 3)));
-                  Found := True;  exit;
-               end if;
-               Pos := RData + Stream_Element_Offset (RDLen);
-            end;
-         end loop;
+         DNS_Parse.Parse_Reply (Resp, RLast, Host, Found);
+         if Found then
+            Addr := Inet_Addr
+              (Img (Host (1)) & "." & Img (Host (2)) & "." &
+               Img (Host (3)) & "." & Img (Host (4)));
+         end if;
          Close_Socket (Sock);
          return Found;
       end;
