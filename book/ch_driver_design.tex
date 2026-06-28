@@ -342,3 +342,62 @@ Those drivers stay simple on purpose and run under every runtime profile,
 including light-tasking, where the controlled \texttt{Session} types (which need
 finalization) are not available. Reach for the full ownership machinery only when
 the hazard is real; for everything else, the simplest safe thing is better.
+
+\section{Letting the application plug in: dispatch or callback}
+\label{driver:plugin}\index{callback}\index{dispatching}\index{closure-free}
+
+A driver often needs the \emph{application} to supply a piece of behaviour: assert
+a chip-select line, pin a fresh socket to one interface, decide what a Modbus
+register read returns. In most languages the reach-for tool is a closure -- a
+nested subprogram that captures the surrounding state. That is exactly what this
+platform forbids. A subprogram that captures its environment compiles to a
+\emph{trampoline} -- a scrap of executable code GCC writes onto the stack -- and on
+the ESP32-S3 the stack lives in non-executable data memory, so calling such a
+trampoline faults outright. The HAL is built under
+\texttt{pragma Restrictions (No\_Implicit\_Dynamic\_Code)}, which turns that into a
+\emph{compile-time} refusal rather than a runtime crash (the same fault, seen from
+the debugger's side, is the war story in Chapter~\ref{ch:debug}).
+
+So a driver's extension point must need \emph{no} captured state. Two shapes
+satisfy that, and which one a driver picks comes down to how much per-instance
+state the hook carries.
+
+\textbf{A closure-free callback with an explicit context.} The hook is a
+library-level access-to-subprogram, and any state it needs travels through an
+opaque context parameter the driver hands back to it -- not captured, passed. The
+SPI driver's application chip-select is this shape (Chapter~\ref{ch:hal}):
+
+\begin{lstlisting}
+type CS_Select is access procedure (Ctx : System.Address; Active : Boolean);
+--  the app's procedure is library-level; per-device state rides in Ctx
+\end{lstlisting}
+
+It is light and runs under every profile. The cost is that \texttt{Ctx} is
+untyped -- the callback converts it back itself -- so it suits a hook that is
+essentially stateless or one-shot: ``drive this pin,'' ``call \texttt{Set\_Interface}
+on this socket.''
+
+\textbf{Dispatching through a tagged type.} You derive a type, keep your data in
+its fields, and override the operations you support. The Modbus slave is this
+shape (Chapter~\ref{ch:modbus}):
+
+\begin{lstlisting}
+type Device is new Modbus.Slave.Server with record
+   Holding : Word_Array (0 .. 63) := (others => 0);   -- your storage, in the object
+end record;
+overriding procedure On_Read_Holding_Registers (Self : in out Device; ...);
+\end{lstlisting}
+
+Here \texttt{Self} \emph{is} the context: no \texttt{Ctx} to thread, no conversion,
+and the call dispatches through a static vtable -- a table, not generated code, so
+\texttt{No\_Implicit\_Dynamic\_Code} is satisfied. The set of primitives you
+override expresses exactly which operations the device implements; the ones you
+leave alone take the base type's default (for Modbus, an \texttt{Illegal\_Function}
+reply). This suits a hook whose context is rich and structured, or a \emph{family}
+of related operations with sensible defaults.
+
+The rule of thumb: a stateless or one-shot hook wants the closure-free callback
+(carry any scrap of context in an opaque pointer); a hook with rich per-instance
+state, or a group of related operations, wants a tagged type you derive and
+override. Both exist for one reason -- to recover the convenience of a capturing
+closure without the trampoline this chip cannot run.
