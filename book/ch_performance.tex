@@ -1,0 +1,116 @@
+\chapter{Performance: Where Code and Data Live}
+\label{ch:perf}\index{performance}\index{memory map}\index{IRAM}\index{XIP}
+
+On a chip with a uniform flat memory, performance is mostly about the algorithm. On
+the ESP32-S3 it is also about \emph{placement}: the same loop runs at different
+speeds depending on whether its instructions come from on-chip SRAM or are fetched
+from external flash through a cache, and the same buffer is or isn't reachable by
+DMA depending on which memory it lives in. This chapter collects the placement facts
+scattered through the rest of the book into one picture, so you can reason about
+speed deliberately instead of by surprise.
+
+\section{The memory map, read for speed}\index{IROM}\index{DROM}
+
+The linker scripts pin every region to a fixed address (the full table is in
+Chapter~\ref{ch:bootloader}); read for performance, they fall into three speeds:
+
+\begin{center}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Region} & \textbf{Base} & \textbf{Speed} \\ \midrule
+IRAM (code in SRAM)   & \texttt{16\#4037\_8000\#} & full speed, always \\
+DRAM (data in SRAM)   & \texttt{16\#3FC9\_0000\#} & full speed, always \\
+IROM (code in flash)  & \texttt{16\#4200\_0000\#} & cache hit fast, miss = flash read \\
+DROM (rodata in flash)& \texttt{16\#3C00\_0000\#} & cache hit fast, miss = flash read \\
+PSRAM (external RAM)  & \texttt{16\#3D00\_0000\#} & cached, slower than SRAM, no DMA \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The bulk of a program -- all its \texttt{.text} and read-only data -- lives in
+flash and executes \emph{in place} (XIP): the CPU fetches through the instruction
+cache that \texttt{start.S} configures, and on a hit it runs at full speed. A cache
+\emph{miss} pays a SPI-flash read of the missing line. For straight-line and
+tight-loop code the cache hides this completely; for code with a large or scattered
+footprint, misses are the single biggest placement cost on this chip.
+
+\section{Putting hot code in SRAM}\index{Linker\_Section}
+
+The escape hatch is to place code in IRAM, where it is never a cache miss because it
+is not in flash at all. The runtime already does this for the things that must be
+fast or must not fault during a flash stall: the exception vectors and the lowest
+boot code sit in the \texttt{.iram1} sections the linker routes to SRAM. Application
+code can join them with an aspect:
+
+\begin{lstlisting}
+procedure Hot_Path with Linker_Section => ".iram1";
+\end{lstlisting}
+
+IRAM is scarce -- 32\,KiB of it -- so this is a scalpel, not a default: reserve it
+for an interrupt handler or an inner loop that profiling shows is cache-bound. One
+hard constraint bounds how much you can move: the 2nd-stage bootloader expects the
+image to present exactly two flash-mapped segments (IROM and DROM), so the bulk of
+the code must stay in flash; IRAM is for the hot slivers, not the program.
+
+\section{PSRAM: large, slower, and not DMA-able}\index{PSRAM}\index{DMA}
+
+External PSRAM gives you megabytes where SRAM gives you kilobytes, but it comes with
+two performance caveats. It is reached through the cache and the octal SPI bus, so it
+is slower than internal SRAM -- fine for a big LISP arena or a filesystem block
+cache, not where you want a hot inner loop's working set. And, decisively, \emph{it
+cannot be a DMA endpoint}: the GDMA controller reaches only internal SRAM. So even
+when a task's stack lives in PSRAM (the \texttt{ENV\_STACK\_PSRAM} option of
+Chapter~\ref{ch:static-mem}), any buffer handed to DMA -- an SD-card transfer, an
+I2S sample block -- must be carved from internal SRAM. The SD and filesystem drivers
+do exactly this: their scratch buffers are internal even when the rest of the data
+structure is not.
+
+\section{Measuring, not guessing}\index{CCOUNT}\index{cycle counter}
+
+The CPU runs at 240\,MHz (the PLL that \texttt{start.S} selects out of the 20\,MHz
+reset clock). At that rate, guessing about microseconds is hopeless; measure with the
+cycle counter. The Xtensa \texttt{CCOUNT} register is a free-running 32-bit counter
+at the core clock, readable in a single instruction -- the SIMD benchmark
+(Chapter~\ref{ch:asm}) uses exactly this to time its kernels:
+
+\begin{lstlisting}
+function Cycles return Unsigned_32 is
+   V : Unsigned_32;
+begin
+   Asm ("rsr.ccount %0",
+        Outputs => Unsigned_32'Asm_Output ("=r", V), Volatile => True);
+   return V;
+end Cycles;
+\end{lstlisting}
+
+Bracket a section between two reads, subtract (unsigned, so wrap takes care of
+itself), and divide by 240 for microseconds. This is how every performance claim in
+this book was obtained -- including the discovery that an unplaced hot loop was
+cache-bound, or that a SIMD kernel really was an order of magnitude faster than the
+scalar one.
+
+\section{Optimisation levels}\index{optimisation}
+
+The build is not uniform about \texttt{-O}, on purpose. The runtime, the HAL and the
+libraries compile at \texttt{-O2} -- the scheduler and interrupt paths want the speed,
+and so does anything you are benchmarking. The bare boot glue compiles at
+\texttt{-Os}, because bootloader size matters more than its speed and it runs once.
+The host verification builds use \texttt{-O0 -g} so the debugger sees everything.
+When you quote a number, quote the level with it: a \texttt{-O0} measurement of a
+hot loop is not telling you what the shipped \texttt{-O2} build will do, and the gap
+is often large.
+
+\section{A placement story: the full-profile trampoline}
+
+One placement problem is subtle enough to be worth seeing in full, because it ties
+the map back to the language. GCC implements a nested subprogram that captures its
+enclosing scope with a \emph{trampoline} -- a few bytes of code it writes onto the
+stack. But the stack is in DRAM, a data-bus view with no execute permission, so
+calling that trampoline faults. The \texttt{light-tasking} and \texttt{embedded}
+profiles forbid the construct outright (\texttt{No\_Implicit\_Dynamic\_Code}); the
+\texttt{full} profile instead, at task creation, detects a trampoline address in the
+DRAM stack range and re-points it to the \emph{instruction-bus alias} of the same
+physical SRAM -- the identical bytes seen through an executable window
+(Chapter~\ref{ch:runtime-build}). It is the memory map's defining feature -- SRAM
+visible at two addresses, one data and one instruction -- turned from a hazard into
+the fix.

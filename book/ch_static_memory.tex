@@ -1,0 +1,138 @@
+\chapter{Static Memory: Bounding the Stack and Heap}
+\label{ch:static-mem}\index{stack}\index{memory!static bounding}
+
+A workstation program runs in virtual memory: the stack grows until it hits a
+guard page, the heap until the OS says no. A bare-metal ESP32-S3 has neither
+luxury. There is a fixed amount of internal SRAM -- a few hundred kilobytes --
+divided at link time into \texttt{.data}, \texttt{.bss}, the task stacks and
+whatever is left for a heap, with the external PSRAM as optional overflow. Nothing
+grows on demand; if a stack runs past its allotment it corrupts whatever is below
+it. So a real question on this chip is: \emph{how much memory does this program
+use, worst case, and does it fit?} This chapter is the accounting.
+
+The three runtime profiles (Chapter~\ref{ch:profiles}) make very different
+promises here, so the chapter keeps coming back to them: \texttt{light-tasking} is
+the austere one -- no heap, no secondary stack, no finalization -- while
+\texttt{embedded} and \texttt{full} trade that austerity for a real heap and full
+exceptions.
+
+\section{The environment-task stack}\index{environment task}
+
+The first stack is the one \texttt{Main} runs on: the environment task's stack. Its
+size is a build-time knob, \texttt{ENV\_STACK\_SIZE}, defaulting to 32\,KiB under
+\texttt{embedded}/\texttt{full} and 16\,KiB under \texttt{light-tasking} (the
+exception machinery needs more headroom, so the heavier profiles start larger). The
+build turns the number into the linker symbols \texttt{\_\_stack\_start} and
+\texttt{\_\_stack\_end} that \texttt{start.S} loads into the stack pointer; an
+example that recurses deeply just exports a bigger value (the LISP and SIMD examples
+set 64\,KiB and 128\,KiB).
+
+\begin{lstlisting}[style=sh]
+export ENV_STACK_SIZE=131072    # 128 KiB env-task stack for this example
+\end{lstlisting}
+
+When even that is not enough -- the full-profile ACATS sweep elaborates very deep --
+the \texttt{ENV\_STACK\_PSRAM} option moves the whole env stack to the top of the
+8\,MB PSRAM, trading a little access latency for a great deal of room. The
+bootloader maps PSRAM \emph{before} \texttt{start.S} sets the stack pointer
+(Chapter~\ref{ch:bootloader}), so this is safe at the very first instruction.
+
+\section{Per-task stacks}\index{task!stack size}
+
+Every other task gets its own fixed stack, sized by the \texttt{Storage\_Size}
+aspect on the task or, if you say nothing, the runtime default from
+\texttt{System.Parameters} -- 20\,KiB under \texttt{light-tasking}, 12\,KiB under
+\texttt{full} (smaller there only so the ACATS sweep can hold more tasks at once).
+A task that knows it is shallow should say so and reclaim the rest:
+
+\begin{lstlisting}
+task type Poller with Storage_Size => 4 * 1024;   -- 4 KiB is plenty
+\end{lstlisting}
+
+Because the Jorvik/Ravenscar model (Chapter~\ref{ch:tasking}) forbids dynamic task
+creation, the \emph{set} of tasks is known at compile time, so the sum of all task
+stacks is a static quantity -- you can add it up. There is no pool of tasks coming
+and going to reason about; what you declare is what you pay.
+
+\section{The secondary stack}\index{secondary stack}
+
+Ada returns unconstrained results -- a \texttt{String} of computed length, say --
+on a \emph{secondary} stack, separate from the primary one. Its per-task size is set
+by the binder \texttt{-D} switch you will see in every project file
+(\texttt{-D8k}, \texttt{-D16k}); the default is a modest 4\,KiB.
+
+\begin{lstlisting}[style=sh]
+for Switches ("Ada") use ("-D16k", "-Q2", "-Mada_main");
+\end{lstlisting}
+
+The neighbouring \texttt{-Q} switch is subtler and worth knowing. Under
+\texttt{-Q2} (the bareboard default) each task's secondary stack is handed out from
+a \emph{monotonic pool} that is never reclaimed -- fine for the steady-state task
+set, but a program that created and destroyed tasks forever would exhaust it. The
+\texttt{full} profile carries a runtime patch that makes secondary stacks
+heap-managed instead (built \texttt{-Q0}), so they are freed with the task; it is
+one of the concrete differences between the profiles, not just a flag.
+
+\section{The heap --- or the absence of one}\index{heap}\index{TLSF}
+
+This is where the profiles split hardest. \texttt{light-tasking} has \emph{no heap}:
+it sets \texttt{No\_Allocators}, and its \texttt{s-memory} ``allocator'' is a bump
+pointer whose \texttt{Free} raises \texttt{Program\_Error}. Memory is whatever you
+declared statically; \texttt{new} is a compile-time error. That is a feature -- it
+is the profile you reach for when you want a provably bounded memory footprint and
+no fragmentation, ever.
+
+\texttt{embedded} and \texttt{full} provide a real heap: a TLSF (Two-Level
+Segregated Fit) allocator with O(1) \texttt{malloc}/\texttt{free} and bounded
+fragmentation, described in full in Chapter~\ref{ch:heap}. Its arena is placed by
+the build -- by default the leftover internal DRAM after \texttt{.data},
+\texttt{.bss} and the stacks (a couple of hundred KiB), or, with
+\texttt{HEAP\_PSRAM=1}, the 8\,MB PSRAM for programs that need real room (the LISP
+arena and the ext4 block cache both live there).
+
+\begin{lstlisting}[style=sh]
+export HEAP_SIZE=1 HEAP_PSRAM=1   # heap arena in PSRAM, not internal DRAM
+\end{lstlisting}
+
+\section{What the profile forbids}
+
+Memory bounding is really enforced by \emph{restrictions} -- pragmas the profile's
+\texttt{system.ads} sets, which make the expensive constructs compile errors rather
+than runtime surprises. The contrast is the whole story:
+
+\begin{center}
+\begin{tabular}{l c c}
+\toprule
+\textbf{Restriction} & \textbf{light-tasking} & \textbf{embedded / full} \\ \midrule
+\texttt{No\_Allocators} (no heap)            & yes & no \\
+\texttt{No\_Secondary\_Stack}                & yes & no \\
+\texttt{No\_Finalization}                    & yes & no \\
+\texttt{No\_Exception\_Propagation}          & yes & no \\
+\texttt{No\_Implicit\_Dynamic\_Code}         & yes & no\,$^{*}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent$^{*}$\,\texttt{embedded} relaxes it but still expects closure-free,
+library-level callbacks (Chapter~\ref{ch:driver-design}); \texttt{full} re-points
+nested-subprogram trampolines into executable memory at task creation instead
+(Chapter~\ref{ch:runtime-build}).
+
+Under \texttt{light-tasking} the combination means a program's entire memory use --
+every stack, no heap, no hidden secondary-stack growth -- is fixed at link time and
+checkable by the compiler. Each step up to \texttt{embedded} and \texttt{full} buys
+expressiveness (exceptions you can catch, controlled types, dynamic data) at the
+cost of a quantity you now have to \emph{budget} rather than have proven zero.
+
+\section{Doing the accounting}
+
+One candid gap: this project does not (yet) wire up
+\texttt{-fstack-usage} or \texttt{GNATstack}, so worst-case stack depth is not
+computed automatically -- you size stacks by reasoning about recursion depth and
+call chains, then leave headroom and watch for the runtime's stack-overflow trap
+(Chapter~\ref{ch:debug}) during testing. That is the honest state of the art here:
+the \emph{static} quantities (task set, stack sizes, heap arena bounds, the
+restriction set) are all pinned down and visible, but turning them into a proven
+worst-case number is still a manual exercise. For a hard-real-time deployment it is
+exactly the exercise worth automating, and the GNAT toolchain has the tools to do
+it; they are simply not part of the build today.

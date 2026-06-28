@@ -35,7 +35,7 @@
 %  Long inline-code wrapping (so fully-qualified Ada names do not run into the
 %  margin).  (3) microtype tightens spacing and emergencystretch lets TeX relax
 %  a line rather than overrun.  (1) \texttt is taught to break after the natural
-%  separators of a qualified name --- '.', '_' and '/'.  '_' is the macro \_ in
+%  separators of a qualified name -- '.', '_' and '/'.  '_' is the macro \_ in
 %  our source, handled by redefinition; '.' and '/' are ordinary characters, so
 %  \texttt activates them before reading its argument (this works for the normal
 %  \texttt{...} call; where the text was already tokenised, e.g. a section title,
@@ -87,7 +87,17 @@
   keywordstyle=\color{kw}, frame=single, backgroundcolor=\color{bg},
   breaklines=true, showstringspaces=false}
 
-\titleformat{\chapter}[display]{\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{16pt}{\Huge}
+%  Don't let a code listing start at the very bottom of a page and break after
+%  only a line or two: require at least this many lines of room, else push the
+%  whole block to the next page.  A listing longer than this still breaks (it has
+%  to), but never orphans a tiny fragment.  Tune the line count to taste.
+\usepackage{needspace}
+\usepackage{etoolbox}
+\BeforeBeginEnvironment{lstlisting}{\par\needspace{6\baselineskip}}
+
+%  raggedright so multi-line chapter titles don't get justified into ugly
+%  inter-word gaps (e.g. "Networking: GNAT.Sockets over the W5500").
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\raggedright}{\chaptertitlename\ \thechapter}{16pt}{\Huge}
 
 %  A short "if you come from C / ESP-IDF" aside, set off in a light frame.
 \newcommand{\cnote}[1]{%
@@ -126,13 +136,24 @@
 
 \mainmatter
 
+%  Part I -- the language and the lay of the land before any hardware.
+\part{Ada on Bare Metal}
 \input{ch_foundations}
+\input{ch_ada_for_c}
 \input{ch_getting_started}
 \input{ch_anatomy}
 \input{ch_debugging}
-%  Language + hardware techniques BEFORE the HAL that uses them, then the
-%  encapsulation features the drivers are built from.
 \input{ch_lang}
+
+%  Part II -- why there is a runtime at all, and what it costs, BEFORE the
+%  peripherals and applications that live on top of it.
+\part{The Runtime}
+\input{ch_gnarl_gnull}
+\input{ch_limitations}
+
+%  Part III -- hardware techniques and the HAL built from them, then the
+%  concurrency features the drivers use.
+\part{Talking to Hardware}
 \input{ch_hardware}
 \input{ch_encapsulation}
 \input{ch_hal}
@@ -141,20 +162,30 @@
 \input{ch_driver_design}
 \input{ch_tasking}
 \input{ch_suspension}
+
+%  Part IV -- the crescendo: full subsystems built on everything above.
+\part{Building Real Systems}
 \input{ch_storage}
 \input{ch_networking}
+\input{ch_modbus}
 \input{ch_tls}
-\input{ch_acats_sweep}
-%  Under-the-hood: how the runtime is built, how the chip boots, then the
-%  scheduler internals it all leads into.
+\input{ch_lisp}
+\input{ch_asm}
+
+%  Part V -- under the hood: how the runtime is built, how the chip boots, the
+%  scheduler internals, and conformance.  Reference-grade, after the journey.
+\part{Under the Hood}
 \input{ch_runtime_build}
 \input{ch_bootloader}
+\input{ch_production}
+\input{ch_ota}
 \input{ch_psram}
 \input{ch_heap}
-\input{ch_gnarl_gnull}
+\input{ch_static_memory}
+\input{ch_performance}
 \input{ch_context_switch}
 \input{ch_interrupts}
-\input{ch_limitations}
+\input{ch_acats_sweep}
 
 \appendix
 \input{ch_appendix}

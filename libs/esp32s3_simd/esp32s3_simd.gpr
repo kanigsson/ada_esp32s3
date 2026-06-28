@@ -1,0 +1,30 @@
+--  ESP32S3.SIMD -- vector SIMD kernels for the Xtensa LX7 PIE extension, with the
+--  inner loops written as GNAT inline assembly (System.Machine_Code) inside the
+--  Ada bodies.  See the book chapter on assembly-in-Ada (\ref{ch:asm}).
+--
+--  VENDORED from rowsail/ada-esp32-s3-simd (itself based on zliu43/esp_simd), with
+--  the package tree renamed ESP32.S3.SIMD -> ESP32S3.SIMD so it sits under this
+--  repo's HAL root (ESP32S3).  Experimental / beta -- see src/README.md.
+--
+--  The PIE `ee.*` opcodes assemble because every build exports XTENSA_GNU_CONFIG to
+--  the repo's S3 dynconfig overlay (crates/xtensa-dynconfig); the bundled Alire
+--  xtensa-esp32-elf assembler does not know them on its own.  RUNNING the kernels
+--  on-board also needs the PIE coprocessor enabled in start.S (CPENABLE = 16#09#,
+--  CP0 FPU + CP3 cop_ai) -- the bare runtime does this.
+with "../../crates/esp32s3_rts/esp32s3_rts.gpr";
+with "../esp32s3_hal/esp32s3_hal.gpr";   --  for the ESP32S3 root package
+
+project ESP32S3_SIMD is
+   type Profile_Kind is ("light-tasking", "embedded", "full");
+   Profile : Profile_Kind := external ("ESP32S3_RTS_PROFILE", "embedded");
+
+   for Target use "xtensa-esp32-elf";
+   for Runtime ("Ada") use Esp32s3_Rts.Runtime_Path;
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj-" & Profile;
+
+   package Compiler is
+      --  -gnat2022: the sources use Ada 2022 (pragma Ada_2022 per unit).
+      for Default_Switches ("Ada") use ("-O2", "-g", "-gnat2022");
+   end Compiler;
+end ESP32S3_SIMD;

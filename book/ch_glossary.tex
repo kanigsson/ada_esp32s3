@@ -6,7 +6,7 @@ a chapter that treats it properly, the entry points there.
 
 \begin{description}[style=nextline, leftmargin=0pt]
 
-\item[ACATS] Ada Conformity Assessment Test Suite --- the official conformance
+\item[ACATS] Ada Conformity Assessment Test Suite -- the official conformance
   tests for an Ada implementation. This project runs them on real silicon
   (Chapter~\ref{ch:acats-sweep}).
 
@@ -26,6 +26,12 @@ a chapter that treats it properly, the entry points there.
   raised to the object's ceiling priority for the duration, bounding blocking and
   preventing priority inversion.
 
+\item[closure] A subprogram bundled with the enclosing-scope variables it uses but
+  does not declare -- the state it ``closes over.'' A nested subprogram that
+  captures a local needs a stack \emph{trampoline}, which faults on this chip, so
+  the HAL builds under \texttt{No\_Implicit\_Dynamic\_Code} and uses closure-free
+  callbacks or tagged dispatch instead (\S\ref{driver:plugin}).
+
 \item[context switch] Saving one task's CPU state and restoring another's. The
   Xtensa version (windows, the coprocessor, \texttt{THREADPTR}) is
   Chapter~\ref{ch:context-switch}.
@@ -37,7 +43,7 @@ a chapter that treats it properly, the entry points there.
 \item[DROM / IROM] The data and instruction \emph{flash} windows, reached
   execute-/read-in-place through the cache MMU.
 
-\item[GNARL] The GNU Ada Runtime Library --- the tasking half of the runtime
+\item[GNARL] The GNU Ada Runtime Library -- the tasking half of the runtime
   (tasks, protected objects, the scheduler), archived as \texttt{libgnarl.a}.
 
 \item[GNAT] The GNU Ada compiler. Its sequential runtime is \texttt{libgnat.a}.
@@ -45,13 +51,13 @@ a chapter that treats it properly, the entry points there.
 \item[GPR / \texttt{gprbuild}] GNAT project files and their builder. Each crate
   (\texttt{esp32s3\_rts}, \texttt{esp32s3\_hal}) is a GPR project.
 
-\item[HAL] Hardware Abstraction Layer --- the \texttt{ESP32S3.*} peripheral
+\item[HAL] Hardware Abstraction Layer -- the \texttt{ESP32S3.*} peripheral
   drivers (Chapters~\ref{ch:hal}--\ref{ch:hal3}).
 
-\item[IPI] Inter-Processor Interrupt --- the poke one core sends another to wake a
+\item[IPI] Inter-Processor Interrupt -- the poke one core sends another to wake a
   task or rebalance, central to the SMP scheduler.
 
-\item[Jorvik] A tasking profile (Ada RM~D.13) --- a less restrictive successor to
+\item[Jorvik] A tasking profile (Ada RM~D.13) -- a less restrictive successor to
   Ravenscar that still bans the unbounded constructs. Both \texttt{light-tasking}
   and \texttt{embedded} build under it.
 
@@ -61,7 +67,7 @@ a chapter that treats it properly, the entry points there.
 \item[MSPI] The memory SPI controller that talks to flash and PSRAM; its timing
   is what makes PSRAM bring-up delicate (\S\ref{ch:bootloader}).
 
-\item[PDM] Pulse-Density Modulation --- the 1-bit serial format some microphones
+\item[PDM] Pulse-Density Modulation -- the 1-bit serial format some microphones
   and ADCs emit; the I2S driver converts it to/from PCM.
 
 \item[protected object] An Ada monitor: data plus operations with built-in mutual
@@ -70,7 +76,7 @@ a chapter that treats it properly, the entry points there.
 \item[PSRAM] Pseudo-static external RAM, mapped at \texttt{16\#3D00\_0000\#} by the
   bootloader. Not DMA-capable.
 
-\item[RAII] ``Resource Acquisition Is Initialization'' --- tying a resource's
+\item[RAII] ``Resource Acquisition Is Initialization'' -- tying a resource's
   lifetime to an object's scope. In Ada it is a \texttt{controlled} type whose
   \texttt{Finalize} releases the resource (\S\ref{ch:encap}).
 
@@ -84,13 +90,13 @@ a chapter that treats it properly, the entry points there.
   Jorvik) that the compiler enforces, trading language features for analysability
   and footprint (Chapter~\ref{ch:profiles}).
 
-\item[RTS] Run-Time System --- the compiled runtime an application links against;
+\item[RTS] Run-Time System -- the compiled runtime an application links against;
   here, one of the three profile archives.
 
 \item[secondary stack] Where Ada returns unconstrained results (e.g. a
   \texttt{String} of run-time-determined length). Absent in \texttt{light-tasking}.
 
-\item[SMP] Symmetric Multi-Processing --- both ESP32-S3 cores under one scheduler,
+\item[SMP] Symmetric Multi-Processing -- both ESP32-S3 cores under one scheduler,
   with tasks pinned per core and woken across cores by IPI.
 
 \item[SVD / \texttt{svd2ada}] A machine-readable register description (System View
@@ -99,6 +105,11 @@ a chapter that treats it properly, the entry points there.
 
 \item[\texttt{THREADPTR}] An Xtensa per-thread pointer register, saved/restored on
   context switch so per-task thread-local data works.
+
+\item[trampoline] A scrap of executable code the compiler writes onto the stack to
+  carry a closure's captured state. The stack is non-executable here, so a
+  trampoline faults; \texttt{No\_Implicit\_Dynamic\_Code} forbids generating one
+  (\S\ref{driver:plugin}, Chapter~\ref{ch:debug}).
 
 \item[VECBASE] The Xtensa register holding the base address of the exception/
   interrupt vector table; \texttt{start.S} points it at our vectors.
@@ -111,13 +122,13 @@ a chapter that treats it properly, the entry points there.
   physical registers per call instead of spilling to the stack; mismanaged
   windows are a recurring source of boot and context-switch bugs.
 
-\item[XIP] Execute-In-Place --- running code directly from flash through the cache
+\item[XIP] Execute-In-Place -- running code directly from flash through the cache
   rather than copying it to RAM.
 
-\item[ZCX] Zero-Cost Exceptions --- the exception model in \texttt{embedded} and
+\item[ZCX] Zero-Cost Exceptions -- the exception model in \texttt{embedded} and
   \texttt{full}: no overhead unless an exception is actually raised.
 
-\item[ZFP] ``Zero FootPrint'' --- a runtime (or coding style) with no tasking,
+\item[ZFP] ``Zero FootPrint'' -- a runtime (or coding style) with no tasking,
   exceptions or secondary stack; the 2nd-stage bootloader is written this way.
 
 \end{description}

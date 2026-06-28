@@ -3,6 +3,7 @@ with ESP32S3.SPI;
 with ESP32S3.W5500;
 with ESP32S3.W5500.DHCP;
 with ESP32S3.W5500.Net_Device;
+with ESP32S3.MAC;
 with ESP32S3.Log;   use ESP32S3.Log;
 
 package body W5500_Dev is
@@ -10,7 +11,13 @@ package body W5500_Dev is
    package DHCP renames ESP32S3.W5500.DHCP;
    use type Net.Link_State;
 
-   MAC : constant Net.MAC_Address := (16#00#, 16#08#, 16#DC#, 16#01#, 16#02#, 16#03#);
+   function To_W5500 (M : ESP32S3.MAC.MAC_Address) return Net.MAC_Address is
+     (Net.Byte (M (0)), Net.Byte (M (1)), Net.Byte (M (2)),
+      Net.Byte (M (3)), Net.Byte (M (4)), Net.Byte (M (5)));
+
+   --  The primary W5500 gets the chip's factory Ethernet MAC (eFuse base + 3) --
+   --  a unique, manufacturer-assigned address, no hand-picking.
+   MAC : constant Net.MAC_Address := To_W5500 (ESP32S3.MAC.Ethernet);
 
    --  Natural'Image without its leading space.
    function Img (N : Natural) return String is
