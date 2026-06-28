@@ -43,17 +43,17 @@ cycle.
 The textless Ada mascot is rasterised to a 240×240 RGB565 image and blitted
 full-screen with `ESP32S3.ST7789.Draw_Bitmap` before the dashboard starts:
 
-- `main/ada_logo.svg` — the source art (a copy of `book/AdaNoText.svg`).
-- `main/gen_ada_logo.py` — rasterises the SVG (Inkscape) and emits the pixel
+- `ada_logo.svg` — the source art (a copy of `book/AdaNoText.svg`).
+- `gen_ada_logo.py` — rasterises the SVG (Inkscape) and emits the pixel
   table (Pillow). Re-run only if the art or size changes.
-- `main/ada_logo.h` — the generated `const unsigned short ada_logo_rgb565[]`,
+- `ada_logo.h` — the generated `const unsigned short ada_logo_rgb565[]`,
   `#include`d by `glue.c`.
 - `src/ada_logo.ads` — imports that C symbol as a `Color_Array`, so the image is
   blitted with the normal driver call (importing the C array keeps the
   57 600-element table out of the Ada source and compiles instantly).
 
 ```sh
-./main/gen_ada_logo.py     # ada_logo.svg -> ada_logo.h  (needs inkscape + Pillow)
+./gen_ada_logo.py     # ada_logo.svg -> ada_logo.h  (needs inkscape + Pillow)
 ```
 
 ## How it works

@@ -23,7 +23,7 @@ panel doesn't support. Spacing is proportional (per-glyph advance).
 
 Each size is fully independent:
 
-- its glyph data is a separate C header (`main/b612_<sz>.h`) compiled into its
+- its glyph data is a separate C header (`b612_<sz>.h`) compiled into its
   own `.rodata.b612_<sz>_*` linker section (`-fdata-sections`);
 - it has its own one-line Ada package (`src/b612_<sz>.ads`) exposing an
   `ESP32S3.Fonts.Font` constant.
@@ -64,18 +64,18 @@ The atlases are produced by the **shared, font-agnostic** generator
 the invocation:
 
 ```sh
-./main/regen.sh           # B612-Regular.ttf -> b612_<sz>.h + src/b612_<sz>.ads
+./regen.sh           # B612-Regular.ttf -> b612_<sz>.h + src/b612_<sz>.ads
 ```
 
 i.e. `gen_font.py --ttf B612-Regular.ttf --name b612 --sizes 12,16,24
 --range 0x20-0xFF --bpp 4`. Re-run only when the sizes/range/font change; the
 committed headers and Ada packages are the build inputs. Needs Pillow (with
-FreeType). `B612-Regular.ttf` and `OFL.txt` are vendored under `main/`. (Add a
+FreeType). `B612-Regular.ttf` and `OFL.txt` are vendored under the example root. (Add a
 size by appending to `--sizes`; `--bpp 1` would emit a monochrome atlas.)
 
 ## Licensing
 
-B612 is **SIL Open Font License 1.1** (`main/OFL.txt`) — free to embed and
+B612 is **SIL Open Font License 1.1** (`OFL.txt`) — free to embed and
 redistribute; the derived bitmap atlas is a permitted use.
 
 ## Build / flash / run

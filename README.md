@@ -142,6 +142,7 @@ All 31 examples share the same FreeRTOS-free bare boot
 | `esp32s3_timer_count` | GP timer vs the runtime wall clock + alarm |
 | `esp32s3_lcd_i8080` | 8-bit i80 parallel LCD DMA transfer |
 | `esp32s3_adc_read` / `esp32s3_touch_read` | SAR ADC / capacitive touch |
+| `esp32s3_tlv2556` | TI TLV2556 external 12-bit SPI ADC — reference-independent self-test + channel read (CS on a GPIO the SPI driver drives, shared bus) |
 | `esp32s3_rtc_sleep` / `esp32s3_rtcio_hold` | Deep sleep + retained memory / RTC-pad hold |
 | `esp32s3_crypto` | HW SHA-1/224/256 + AES-128/256 vs FIPS vectors |
 
@@ -149,6 +150,10 @@ All 31 examples share the same FreeRTOS-free bare boot
 | Example | What it is |
 |---|---|
 | `esp32s3_sd_spi` / `esp32s3_sdmmc` | SD over SPI / native SDHOST — non-destructive sector round-trip |
+| `esp32s3_w25q` | W25Q256FV SPI NOR flash — JEDEC ID, 4-byte mode, erase + page-program + read-back (CS on a GPIO the SPI driver drives, shared bus) |
+| `esp32s3_wl` | Dynamic wear-leveling FTL (`Block_Dev.WL`) over the SPI NOR flash — format, write/verify across mapping moves, remount and re-verify |
+| `esp32s3_ext4_flash` | A real ext4 filesystem on the SPI NOR flash — install an embedded image through `Ext4 → Block_Dev.WL → W25Q_Source`, mount read-write, read + create/commit a file (no-journal direct flush) |
+| `esp32s3_ext4_mkfs` | **Format** a blank SPI NOR flash to ext4 **on-device** with `Ext4.Mkfs` (no host, no image; optional JBD2 journal), then mount read-write, create files + a subdirectory, remount and read back |
 | `esp32s3_ext4` | Mount a real ext4/3/2 SD card with the pure-Ada filesystem and read a file |
 
 **Tasking & runtime profiles**

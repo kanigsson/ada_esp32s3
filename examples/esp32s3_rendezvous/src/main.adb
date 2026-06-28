@@ -1,28 +1,41 @@
---  Ada task RENDEZVOUS on the bare-metal dual-core ESP32-S3
---  =========================================================
---  Runs on the `full` runtime profile (the complete GNARL tasking kernel, no
---  Jorvik restrictions), where genuine task entries / `accept` / entry calls
---  are available -- all forbidden under Ravenscar/Jorvik.
+--  Ada task RENDEZVOUS on the bare-metal dual-core ESP32-S3 -- synchronous
+--  task-to-task message passing (entries / `accept` / entry calls with `out`
+--  parameters): the full tasking model that lives beyond Jorvik.  Build and run
+--  with `./x run rendezvous`; this needs the FULL runtime profile, which the
+--  example's build.sh selects (ESP32S3_RTS_PROFILE=full).
 --
 --  A "rendezvous" is Ada's synchronous message passing: a caller task calls a
 --  server task's ENTRY and blocks; the server reaches a matching `accept`; the
---  two then execute the accept body together (the caller stays suspended), IN
---  and OUT parameters are exchanged, and both continue.
+--  two then execute the accept body together (the caller stays suspended), the
+--  `in` and `out` parameters are exchanged, and both continue.
 --
---  This demo builds a tiny `Calculator` server task that exports three entries
---  and serves them with a SELECTIVE ACCEPT (`select ... or accept ... end
---  select`), which waits for whichever entry is called next.  The environment
---  task (the body of `Main` -- itself an Ada task) is the client: it calls
---  `Add`, `Sub`, then `Stop`, getting each result back through an OUT parameter.
+--  What the demo exercises -- each construct here is forbidden under Jorvik,
+--  which permits only protected objects, not task entries / accept / select:
+--    * A task ENTRY with `in`/`out` parameters (Add/Sub/Stop on Calculator).
+--    * The `accept` body running while the caller is blocked in the rendezvous;
+--      the `out` parameter is delivered to the caller when the accept completes.
+--    * A SELECTIVE ACCEPT (`select ... or accept ... end select`), which waits
+--      for whichever of several entries is called next and serves that one.
+--    * A parameterless rendezvous (Stop) that lets the server task terminate.
+--  A tiny `Calculator` server task offers the three entries; the environment
+--  task (the body of `Main` -- itself an Ada task) is the client and calls them.
+--
+--  Output: the server announces it is ready, then for each entry call the calc
+--  side prints the operation and the main side prints the result it got back
+--  through the `out` parameter, ending with "[calc] stopped -- terminating" and
+--  "[main] done." (see the README for the exact expected transcript).
+--
+--  Hardware: none (self-contained; logs through the console).
 --
 --  NOTE: this demo uses the environment task as the client for simplicity, but
 --  a DEDICATED client task (two separately declared tasks) works fine too, as
 --  does printing to the console from several tasks at once.  Both used to fault
 --  ("corrupts memory during activation/handoff" / "console concurrency") -- that
 --  was the ESP32-S3 W^X memory-protection feature refusing to execute the GCC
---  nested-function trampoline a frame-capturing client-task body needs.  This
---  project disables it (CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n in sdkconfig.defaults);
---  with that, dedicated-client + multi-task console output run cleanly.
+--  nested-function trampoline a frame-capturing client-task body needs.  On the
+--  bare boot there is no sdkconfig and the memory-protection (PMS) feature is
+--  simply never armed, so that trampoline executes freely; with that,
+--  dedicated-client + multi-task console output run cleanly.
 
 with Ada.Text_IO;  use Ada.Text_IO;
 with Ada.Real_Time; use Ada.Real_Time;
@@ -65,7 +78,7 @@ procedure Main is
       Put_Line ("[calc] stopped -- terminating");
    end Calculator;
 
-   R : Integer;
+   Result : Integer;   --  receives each entry's `out` parameter
 
 begin
    New_Line;
@@ -74,14 +87,14 @@ begin
    --  Let the server reach its first `accept`, then drive it with entry calls.
    delay until Clock + Milliseconds (100);
 
-   Calculator.Add (10, 5, R);    --  entry call: blocks until accepted
-   Put_Line ("[main] 10 + 5 =" & Integer'Image (R));
+   Calculator.Add (10, 5, Result);    --  entry call: blocks until accepted
+   Put_Line ("[main] 10 + 5 =" & Integer'Image (Result));
 
-   Calculator.Sub (10, 5, R);
-   Put_Line ("[main] 10 - 5 =" & Integer'Image (R));
+   Calculator.Sub (10, 5, Result);
+   Put_Line ("[main] 10 - 5 =" & Integer'Image (Result));
 
-   Calculator.Add (100, 23, R);
-   Put_Line ("[main] 100 + 23 =" & Integer'Image (R));
+   Calculator.Add (100, 23, Result);
+   Put_Line ("[main] 100 + 23 =" & Integer'Image (Result));
 
    Calculator.Stop;              --  parameterless rendezvous; ends the server
    Put_Line ("[main] done.");

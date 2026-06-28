@@ -1,18 +1,39 @@
 --  Ada MCPWM PWM-output self-test on the bare-metal ESP32-S3 (no FreeRTOS, no IDF)
 --  =============================================================================
---  Drives edge-aligned PWM through the reusable HAL (ESP32S3.MCPWM) and measures
---  it back with NO external wiring: the generator's output pad is sampled with
---  ESP32S3.GPIO.Read in a tight loop over a timed window.  Counting high samples
---  gives the duty cycle (a clock-independent ratio); counting rising edges over
---  the measured elapsed time gives the frequency.
 --
+--  What it demonstrates
+--  --------------------
+--  The reusable HAL motor-control-PWM driver (ESP32S3.MCPWM), exercised across
+--  all of its submodules and verified back with NO external wiring: each output
+--  pad is sampled with ESP32S3.GPIO.Read in a tight loop over a timed window.
+--  Counting high samples gives the duty cycle (a clock-independent ratio);
+--  counting rising edges over the measured elapsed time gives the frequency.
 --  A generator channel and a capture channel are claimed as limited, controlled
 --  RAII handles (Channel / Capture) -- non-copyable and auto-released on scope
---  exit -- so this also exercises the ownership model.
+--  exit -- so this also exercises the ownership model.  Five tests run: duty,
+--  complementary-pair + dead-time, capture, fault-trip and carrier-chopper.
 --
---  20 kHz on GPIO4, checked at 25 % and 75 % duty.  A "PASS" (measured duty and
---  frequency within tolerance) confirms real PWM on silicon.  Report goes
---  through the ROM printf glue (the reliable console path here).
+--  Build & run
+--  -----------
+--  ./x run esp32s3_mcpwm_pwm
+--  Built as the *embedded* profile (full exceptions, the profile the drivers
+--  target -- not the default light tasking); build.sh sets ESP32S3_RTS_PROFILE.
+--
+--  Output
+--  ------
+--  One "[mcpwm] ..." line per test, each ending PASS when the measured duty /
+--  frequency / overlap land within tolerance, then "[mcpwm] done.".  A run with
+--  every line PASS confirms real PWM on silicon.  Report goes through the ROM
+--  printf glue (the reliable console path here).
+--
+--  Hardware / wiring
+--  -----------------
+--  None -- self-contained (the output pads are sampled internally, not wired).
+--  The driver does drive these S3 GPIOs as PWM outputs, so leave them free:
+--    GPIO4       duty + capture + fault tests (channel 0)
+--    GPIO6/GPIO7 complementary half-bridge pair A/B (channel 1)
+--    GPIO8       fault input, driven by us to trip channel 0
+--    GPIO9       carrier-chopper output (channel 2)
 with Interfaces;   use Interfaces;
 with Ada.Real_Time; use Ada.Real_Time;
 
@@ -34,14 +55,14 @@ procedure Main is
                 & "(GPIO-sampled, no wiring)");
    end Banner;
 
-   procedure Result (Set_Pct, Meas_Pct_X10, Meas_Hz : Integer; Ok : Boolean) is
+   procedure Result (Set_Pct, Measured_Pct_X10, Measured_Hz : Integer; Ok : Boolean) is
    begin
       Put ("[mcpwm] duty set=");
       Put (Set_Pct);
       Put ("%  measured=");
-      Put_Fixed (Meas_Pct_X10, 10, 1);
+      Put_Fixed (Measured_Pct_X10, 10, 1);
       Put ("%  freq=");
-      Put (Meas_Hz);
+      Put (Measured_Hz);
       Put (" Hz  ");
       Put_Line (if Ok then "PASS" else "FAIL");
    end Result;
@@ -58,7 +79,7 @@ procedure Main is
       Put_Line (if Ok then "PASS" else "FAIL");
    end Pair;
 
-   procedure Cap_Result (Freq_Hz, Duty_X10 : Integer; Ok : Boolean) is
+   procedure Capture_Result (Freq_Hz, Duty_X10 : Integer; Ok : Boolean) is
    begin
       Put ("[mcpwm] capture: freq=");
       Put (Freq_Hz);
@@ -66,7 +87,7 @@ procedure Main is
       Put_Fixed (Duty_X10, 10, 1);
       Put ("%  ");
       Put_Line (if Ok then "PASS" else "FAIL");
-   end Cap_Result;
+   end Capture_Result;
 
    procedure Fault_Result (Run_Pct, Fault_Pct, Resume_Pct : Integer; Ok : Boolean) is
    begin
@@ -95,24 +116,47 @@ procedure Main is
       Put_Line ("[mcpwm] done.");
    end Done;
 
+   --  Channel-0 output: duty, capture and fault tests all observe this pad.
    Out_Pin : constant ESP32S3.GPIO.Pin_Id := 4;
-   Freq    : constant := 20_000;
 
-   --  Complementary-pair test pins (A, B) on channel 1.
+   --  PWM carrier frequency for every generator channel.  20 kHz keeps the
+   --  period long enough (~50 us) to sample many points per cycle in the
+   --  GPIO-read loop, yet above the audible band for a real motor drive.
+   Frequency_Hz : constant := 20_000;
+
+   --  Complementary-pair (half-bridge) test pins (A, B) on channel 1.
    Pair_A : constant ESP32S3.GPIO.Pin_Id := 6;
    Pair_B : constant ESP32S3.GPIO.Pin_Id := 7;
 
    Fault_Pin   : constant ESP32S3.GPIO.Pin_Id := 8;   --  driven by us as the fault
    Carrier_Pin : constant ESP32S3.GPIO.Pin_Id := 9;   --  channel-2 carrier output
 
+   --  Dead-time inserted on each edge of the complementary pair, so the high
+   --  and low side of a half-bridge are never on together (no shoot-through).
+   Dead_Time_Ns : constant := 1_000;                  --  1 us
+
+   --  Duties swept in the first test: a low and a high setting, to prove both
+   --  that PWM is generated and that Set_Duty re-targets it at run time.
    Duties : constant array (1 .. 2) of Duty_Percent := (25.0, 75.0);
+
+   --  Pass/fail tolerances.  The GPIO-sampling loop is biased low by a fraction
+   --  of a percent (it misses brief states between reads), so the duty windows
+   --  are a few percent wide; the timer-based capture test is tighter.
+   Duty_Tol_Pct      : constant Float := 4.0;   --  duty test: |measured-set|
+   Freq_Tol_Frac     : constant Float := 0.10;  --  duty test: 10 % of frequency
+   Pair_Tol_Pct      : constant Float := 6.0;   --  each pad ~50 % (less dead-time)
+   Overlap_Max_Pct   : constant Float := 1.0;   --  both-high time must be ~0
+   Capture_Freq_Tol_Frac : constant Float := 0.05;  --  capture: 5 % of frequency
+   Capture_Duty_Tol_Pct  : constant Float := 3.0;   --  capture: |measured-30 %|
+   Fault_Tol_Pct     : constant Float := 6.0;   --  run/resume ~50 %
+   Fault_Trip_Max    : constant Float := 2.0;   --  tripped output ~0 %
 
    --  Claimed channel handles (declared up front so the nested helpers below can
    --  see the capture handle).  Each is released automatically when Main returns.
-   Gen0 : Channel;     --  channel 0 -> Out_Pin (duty + capture + fault tests)
-   Gen1 : Channel;     --  channel 1 -> complementary pair
-   Gen2 : Channel;     --  channel 2 -> carrier test
-   Cap  : Capture;     --  capture channel 0 -> Out_Pin
+   Generator0 : Channel;     --  channel 0 -> Out_Pin (duty + capture + fault tests)
+   Generator1 : Channel;     --  channel 1 -> complementary pair
+   Generator2 : Channel;     --  channel 2 -> carrier test
+   Capture_Channel : Capture; --  capture channel 0 -> Out_Pin
 
    --  Sample the (driver-driven) output pad for Window_Ms; return the high-sample
    --  fraction as a duty %, and rising-edges / elapsed-time as a frequency.
@@ -120,26 +164,27 @@ procedure Main is
       T0      : constant Time := Clock;
       Deadline : constant Time := T0 + Milliseconds (Window_Ms);
       Samples, Highs, Rising : Natural := 0;
-      Cur  : Boolean;
-      Prev : Boolean := False;
-      Secs : Float;
+      Current  : Boolean;
+      Previous : Boolean := False;
+      Elapsed_Seconds : Float;
    begin
       loop
-         Cur := ESP32S3.GPIO.Read (Out_Pin);
+         Current := ESP32S3.GPIO.Read (Out_Pin);
          Samples := Samples + 1;
-         if Cur then
+         if Current then
             Highs := Highs + 1;
-            if not Prev then
+            if not Previous then
                Rising := Rising + 1;
             end if;
          end if;
-         Prev := Cur;
+         Previous := Current;
          exit when Clock >= Deadline;
       end loop;
-      Secs := Float (To_Duration (Clock - T0));
+      Elapsed_Seconds := Float (To_Duration (Clock - T0));
       Duty_Pct := (if Samples = 0 then 0.0
                    else Float (Highs) / Float (Samples) * 100.0);
-      Freq_Hz  := (if Secs = 0.0 then 0.0 else Float (Rising) / Secs);
+      Freq_Hz  := (if Elapsed_Seconds = 0.0 then 0.0
+                   else Float (Rising) / Elapsed_Seconds);
    end Measure;
 
    --  Sample a complementary pair: per-pad duty and the fraction of time BOTH
@@ -149,15 +194,21 @@ procedure Main is
    is
       Deadline : constant Time := Clock + Milliseconds (Window_Ms);
       Samples, Highs_A, Highs_B, Both : Natural := 0;
-      A, B : Boolean;
+      A_High, B_High : Boolean;
    begin
       loop
-         A := ESP32S3.GPIO.Read (Pair_A);
-         B := ESP32S3.GPIO.Read (Pair_B);
+         A_High := ESP32S3.GPIO.Read (Pair_A);
+         B_High := ESP32S3.GPIO.Read (Pair_B);
          Samples := Samples + 1;
-         if A then Highs_A := Highs_A + 1; end if;
-         if B then Highs_B := Highs_B + 1; end if;
-         if A and B then Both := Both + 1; end if;
+         if A_High then
+            Highs_A := Highs_A + 1;
+         end if;
+         if B_High then
+            Highs_B := Highs_B + 1;
+         end if;
+         if A_High and B_High then       --  both high at once: a dead-time miss
+            Both := Both + 1;
+         end if;
          exit when Clock >= Deadline;
       end loop;
       Duty_A  := Float (Highs_A) / Float (Samples) * 100.0;
@@ -172,7 +223,9 @@ procedure Main is
    begin
       loop
          Samples := Samples + 1;
-         if ESP32S3.GPIO.Read (Pin) then Highs := Highs + 1; end if;
+         if ESP32S3.GPIO.Read (Pin) then
+            Highs := Highs + 1;
+         end if;
          exit when Clock >= Deadline;
       end loop;
       return Float (Highs) / Float (Samples) * 100.0;
@@ -181,90 +234,107 @@ procedure Main is
    --  Measure Out_Pin precisely with the capture submodule: ticks (80 MHz) for
    --  one full period (rising->rising) and the high time (rising->falling).
    procedure Capture_Measure (Period, High : out Natural) is
-      V : Unsigned_32; Falling : Boolean;
-      R0, Fall, R1 : Unsigned_32 := 0;
-      Got_R0, Got_F, Got_R1 : Boolean := False;
-      Guard : Natural := 5_000_000;
+      --  Collect three timestamps from the capture FIFO -- a rising edge, the
+      --  following falling edge, then the next rising edge -- to bracket exactly
+      --  one period (rising->rising) and one high time (rising->falling).
+      Stamp   : Unsigned_32;       --  one capture timestamp (80 MHz ticks)
+      Falling : Boolean;           --  edge of the captured event
+
+      First_Rise, Fall, Next_Rise : Unsigned_32 := 0;
+      Got_First_Rise, Got_Fall, Got_Next_Rise : Boolean := False;
+
+      --  Spin bound so a stalled / disconnected capture can't hang the test.
+      Spin_Limit : constant Natural := 5_000_000;
+      Guard      : Natural := Spin_Limit;
    begin
-      while Capture_Pending (Cap) loop               --  drain stale captures
-         Read_Capture (Cap, V, Falling);
+      while Capture_Pending (Capture_Channel) loop   --  drain stale captures
+         Read_Capture (Capture_Channel, Stamp, Falling);
       end loop;
       loop
-         if Capture_Pending (Cap) then
-            Read_Capture (Cap, V, Falling);
-            if not Got_R0 and then not Falling then
-               R0 := V; Got_R0 := True;
-            elsif Got_R0 and then not Got_F and then Falling then
-               Fall := V; Got_F := True;
-            elsif Got_F and then not Got_R1 and then not Falling then
-               R1 := V; Got_R1 := True;
+         if Capture_Pending (Capture_Channel) then
+            Read_Capture (Capture_Channel, Stamp, Falling);
+            if not Got_First_Rise and then not Falling then
+               First_Rise := Stamp;
+               Got_First_Rise := True;
+            elsif Got_First_Rise and then not Got_Fall and then Falling then
+               Fall := Stamp;
+               Got_Fall := True;
+            elsif Got_Fall and then not Got_Next_Rise and then not Falling then
+               Next_Rise := Stamp;
+               Got_Next_Rise := True;
             end if;
          end if;
-         exit when Got_R1 or else Guard = 0;
+         exit when Got_Next_Rise or else Guard = 0;
          Guard := Guard - 1;
       end loop;
-      Period := Natural (R1 - R0);     --  modular subtraction handles a wrap
-      High   := Natural (Fall - R0);
+      Period := Natural (Next_Rise - First_Rise);  --  modular sub handles a wrap
+      High   := Natural (Fall - First_Rise);
    end Capture_Measure;
 
-   D, F          : Float;
-   Da, Db, Ov    : Float;
-   Ok            : Boolean;
+   Measured_Duty, Measured_Freq : Float;
+   Duty_A, Duty_B, Overlap   : Float;
+   Ok                        : Boolean;
 begin
-   delay until Clock + Milliseconds (200);
+   delay until Clock + Milliseconds (200);   --  let the USB console settle first
    Banner;
 
    Setup (MCPWM0);
-   Claim (Gen0, MCPWM0, Ch0);
-   Configure_Channel (Gen0, Freq => Freq, Pin => Out_Pin);
-   Start (Gen0);
+   Claim (Generator0, MCPWM0, Ch0);
+   Configure_Channel (Generator0, Freq => Frequency_Hz, Pin => Out_Pin);
+   Start (Generator0);
 
    for I in Duties'Range loop
-      Set_Duty (Gen0, Duties (I));
+      Set_Duty (Generator0, Duties (I));
       delay until Clock + Milliseconds (5);     --  let the new duty latch
-      Measure (50, D, F);
+      Measure (50, Measured_Duty, Measured_Freq);
 
-      Ok := abs (D - Float (Duties (I))) <= 4.0       --  duty within 4 %
-              and then abs (F - Float (Freq)) <= Float (Freq) * 0.10;  --  freq within 10 %
+      Ok := abs (Measured_Duty - Float (Duties (I))) <= Duty_Tol_Pct
+              and then
+            abs (Measured_Freq - Float (Frequency_Hz))
+              <= Float (Frequency_Hz) * Freq_Tol_Frac;
 
-      Result (Integer (Float (Duties (I))), Integer (D * 10.0), Integer (F),
-              Ok);
+      Result (Integer (Float (Duties (I))), Integer (Measured_Duty * 10.0),
+              Integer (Measured_Freq), Ok);
    end loop;
 
    --  Complementary pair + dead-time on channel 1: A on Pair_A, inverted B on
    --  Pair_B, with 1 us of dead-time, at 50 % duty.  Expect A and B each ~50 %
    --  (minus the dead-time gap) and ~0 % overlap -- the dead-time guarantees the
    --  two are never high together.
-   Claim (Gen1, MCPWM0, Ch1);
-   Configure_Channel (Gen1, Freq => Freq, Pin => Pair_A,
-                      Complement_Pin => Pair_B, Dead_Time_Ns => 1_000);
-   Start (Gen1);
-   Set_Duty (Gen1, 50.0);
+   Claim (Generator1, MCPWM0, Ch1);
+   Configure_Channel (Generator1, Freq => Frequency_Hz, Pin => Pair_A,
+                      Complement_Pin => Pair_B, Dead_Time_Ns => Dead_Time_Ns);
+   Start (Generator1);
+   Set_Duty (Generator1, 50.0);
    delay until Clock + Milliseconds (5);
-   Measure_Pair (50, Da, Db, Ov);
-   Ok := abs (Da - 50.0) <= 6.0       --  A ~ 50 % (less the dead-time gap)
-           and then abs (Db - 50.0) <= 6.0   --  B ~ 50 % (complementary)
-           and then Ov < 1.0;                --  never both high (dead-time)
-   Pair (Integer (Da * 10.0), Integer (Db * 10.0), Integer (Ov * 10.0), Ok);
+   Measure_Pair (50, Duty_A, Duty_B, Overlap);
+   Ok := abs (Duty_A - 50.0) <= Pair_Tol_Pct  --  A ~ 50 % (less the dead-time gap)
+           and then abs (Duty_B - 50.0) <= Pair_Tol_Pct  --  B ~ 50 % (complement)
+           and then Overlap < Overlap_Max_Pct;          --  never both high
+   Pair (Integer (Duty_A * 10.0), Integer (Duty_B * 10.0),
+         Integer (Overlap * 10.0), Ok);
 
    ----------------------------------------------------------------------------
    --  Test 3: CAPTURE -- feed channel 0's own output (Out_Pin) into capture 0
    --  on the same pad and measure period + high precisely (80 MHz timer).
    ----------------------------------------------------------------------------
-   Set_Duty (Gen0, 30.0);
-   Claim (Cap, MCPWM0, Cap0);
-   Configure_Capture (Cap, Pin => Out_Pin, Edge => Both_Edges);
+   Set_Duty (Generator0, 30.0);
+   Claim (Capture_Channel, MCPWM0, Cap0);
+   Configure_Capture (Capture_Channel, Pin => Out_Pin, Edge => Both_Edges);
    delay until Clock + Milliseconds (5);
    declare
-      Period, High : Natural;
-      CF, CD : Float;
+      Period, High      : Natural;       --  80 MHz timer ticks
+      Capture_Freq, Capture_Duty : Float;
    begin
       Capture_Measure (Period, High);
-      CF := (if Period = 0 then 0.0 else Float (Capture_Clock_Hz) / Float (Period));
-      CD := (if Period = 0 then 0.0 else Float (High) / Float (Period) * 100.0);
-      Ok := abs (CF - Float (Freq)) <= Float (Freq) * 0.05
-              and then abs (CD - 30.0) <= 3.0;
-      Cap_Result (Integer (CF), Integer (CD * 10.0), Ok);
+      Capture_Freq := (if Period = 0 then 0.0
+                       else Float (Capture_Clock_Hz) / Float (Period));
+      Capture_Duty := (if Period = 0 then 0.0
+                       else Float (High) / Float (Period) * 100.0);
+      Ok := abs (Capture_Freq - Float (Frequency_Hz))
+              <= Float (Frequency_Hz) * Capture_Freq_Tol_Frac
+              and then abs (Capture_Duty - 30.0) <= Capture_Duty_Tol_Pct;
+      Capture_Result (Integer (Capture_Freq), Integer (Capture_Duty * 10.0), Ok);
    end;
 
    ----------------------------------------------------------------------------
@@ -274,8 +344,8 @@ begin
    ESP32S3.GPIO.Configure (Fault_Pin, ESP32S3.GPIO.Output);
    ESP32S3.GPIO.Clear (Fault_Pin);                       --  inactive (no fault)
    Configure_Fault (MCPWM0, Fault0, Pin => Fault_Pin, Active_High => True);
-   Protect_Channel (Gen0, Fault0, One_Shot, Force_Low);
-   Set_Duty (Gen0, 50.0);
+   Protect_Channel (Generator0, Fault0, One_Shot, Force_Low);
+   Set_Duty (Generator0, 50.0);
    delay until Clock + Milliseconds (2);
    declare
       Run, Trip, Resume : Float;
@@ -285,11 +355,12 @@ begin
       delay until Clock + Milliseconds (2);
       Trip := Duty_Of (Out_Pin, 20);
       ESP32S3.GPIO.Clear (Fault_Pin);                    --  deassert ...
-      Clear_Fault (Gen0);                                --  ... and release the latch
+      Clear_Fault (Generator0);                          --  ... and release the latch
       delay until Clock + Milliseconds (2);
       Resume := Duty_Of (Out_Pin, 20);
-      Ok := abs (Run - 50.0) <= 6.0 and then Trip < 2.0
-              and then abs (Resume - 50.0) <= 6.0;
+      Ok := abs (Run - 50.0) <= Fault_Tol_Pct
+              and then Trip < Fault_Trip_Max
+              and then abs (Resume - 50.0) <= Fault_Tol_Pct;
       Fault_Result (Integer (Run), Integer (Trip), Integer (Resume), Ok);
    end;
 
@@ -297,20 +368,35 @@ begin
    --  Test 5: CARRIER -- channel 2 at 100 % duty: constant high with the carrier
    --  off, chopped to the carrier's own duty (~50 %) with it on.
    ----------------------------------------------------------------------------
-   Claim (Gen2, MCPWM0, Ch2);
-   Configure_Channel (Gen2, Freq => Freq, Pin => Carrier_Pin);
-   Start (Gen2);
-   Set_Duty (Gen2, 100.0);
+   Claim (Generator2, MCPWM0, Ch2);
+   Configure_Channel (Generator2, Freq => Frequency_Hz, Pin => Carrier_Pin);
+   Start (Generator2);
+   Set_Duty (Generator2, 100.0);
    delay until Clock + Milliseconds (2);
    declare
+      --  Carrier (chopper) settings: a high-frequency square wave that the
+      --  output is AND-ed with.  Prescale divides the 160 MHz source; the carrier
+      --  duty is set in eighths (4/8 = 50 %), so a 100 %-duty channel is chopped
+      --  down to ~50 % at the pad.  First_Pulse => 0 starts every cycle chopped.
+      Carrier_Prescale     : constant := 15;   --  160 MHz / (15+1) carrier clock
+      Carrier_Duty_Eighths : constant := 4;    --  4/8 = 50 % chopper duty
+      Carrier_First_Pulse  : constant := 0;    --  no wider leading pulse
+
+      Carrier_Off_Min_Pct : constant Float := 95.0;   --  off: near 100 %
+      Carrier_On_Min_Pct  : constant Float := 30.0;   --  on: chopped to ~50 %,
+      Carrier_On_Max_Pct  : constant Float := 70.0;   --  accepted 30 .. 70 %
+
       Off, On : Float;
    begin
       Off := Duty_Of (Carrier_Pin, 20);                  --  ~100 %
-      Set_Carrier (Gen2, Enable => True,
-                   Prescale => 15, Duty_Eighths => 4, First_Pulse => 0);
+      Set_Carrier (Generator2, Enable => True,
+                   Prescale     => Carrier_Prescale,
+                   Duty_Eighths => Carrier_Duty_Eighths,
+                   First_Pulse  => Carrier_First_Pulse);
       delay until Clock + Milliseconds (2);
       On := Duty_Of (Carrier_Pin, 20);                   --  chopped -> ~50 %
-      Ok := Off > 95.0 and then On in 30.0 .. 70.0;
+      Ok := Off > Carrier_Off_Min_Pct
+              and then On in Carrier_On_Min_Pct .. Carrier_On_Max_Pct;
       Carrier_Result (Integer (Off), Integer (On), Ok);
    end;
 

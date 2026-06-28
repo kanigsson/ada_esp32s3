@@ -39,7 +39,7 @@ Buffer : array (0 .. 1024*1024 - 1) of Unsigned_8
   with Linker_Section => ".ext_ram.bss";
 ```
 `Big.Run` fills it, reads it back, checksums it, and reports its address; the app
-side (`main/glue.c`) only re-applies the d-bus cache map after the runtime's
+side (`glue.c`) only re-applies the d-bus cache map after the runtime's
 `start.S` re-inits the cache (the bootloader already did the chip bring-up).
 
 **Not for task stacks** — those stay in internal SRAM; PSRAM is unreachable
@@ -48,8 +48,15 @@ whenever the cache is disabled (e.g. during flash writes).
 ## Build & flash (no ESP-IDF, no idf.py)
 
 ```sh
+./x run psram                                         # build + flash + monitor
+```
+`./x` is the one command surface (`build|flash|monitor|run`); under the hood it
+runs this example's `build.sh` (Ada -> `app.bin`) then `flash.sh`, which flash the
+app, our 2nd-stage bootloader, and the partition table over USB. To drive the
+underlying scripts directly:
+
+```sh
 ./build.sh                                            # Ada -> app.bin, no idf.py
-./flash.sh /dev/ttyACM0                               # app + partition table
-../common/bare/bootloader/flash.sh /dev/ttyACM0       # our bootloader at 0x0
+./flash.sh /dev/ttyACM0                               # bootloader + partitions + app.bin
 ```
 Only the Alire GNAT toolchain + `esptool` are needed.

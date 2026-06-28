@@ -38,9 +38,14 @@ package body ESP32S3.Ext4.FS is
       M.V.Read_Only := Read_Only;
       M.Live        := True;
 
-      --  Recover a dirty journal before normal use (writable mounts only; a
-      --  read-only mount is left as-is, deliberately not replaying).
-      if not Read_Only and then Journal.Needs_Recovery (M.V) then
+      --  Recover a dirty journal before normal use (writable mounts only, and
+      --  only on a journaled volume; a read-only mount or a no-journal volume is
+      --  left as-is).  The Has_Journal short-circuit also keeps Needs_Recovery
+      --  from touching a missing journal inode on an ^has_journal volume.
+      if not Read_Only
+        and then Superblock.Has_Journal (M.V.SB)
+        and then Journal.Needs_Recovery (M.V)
+      then
          Journal.Replay (M.V);
          ESP32S3.Ext4.Block_Cache.Flush (M.V.Cache);   --  checkpoint replay
       end if;
@@ -130,6 +135,11 @@ package body ESP32S3.Ext4.FS is
       Writer.Write_Small (M.V, N, Data);
    end Write_File;
 
+   procedure Append (M : in out Mount; N : Inode_Number; Data : Byte_Array) is
+   begin
+      Writer.Append (M.V, N, Data);
+   end Append;
+
    procedure Mkdir (M : in out Mount; Dir_Path, Name : String) is
    begin
       Writer.Mkdir (M.V, Dir_Path, Name);
@@ -166,14 +176,36 @@ package body ESP32S3.Ext4.FS is
       Writer.Make_Symlink (M.V, Dir_Path, Name, Target);
    end Symlink;
 
+   --  Durably persist a transaction WITHOUT a journal: write the dirty metadata
+   --  to its final locations and sync the superblock free counts.  This is the
+   --  same durable step the journaled path performs at checkpoint (and that
+   --  Close performs on a writable mount) -- it just has no atomic barrier, so an
+   --  interrupted commit can leave the volume inconsistent (the price of
+   --  ^has_journal).
+   procedure Flush_Direct (M : in out Mount) is
+   begin
+      ESP32S3.Ext4.Block_Cache.Flush (M.V.Cache);
+      Superblock.Sync (M.V.Dev, M.V.SB);
+   end Flush_Direct;
+
    procedure Commit (M : in out Mount) is
    begin
-      Journal.Transaction_Commit (M.V, Simulate_Crash => False);
+      if Superblock.Has_Journal (M.V.SB) then
+         Journal.Transaction_Commit (M.V, Simulate_Crash => False);
+      else
+         Flush_Direct (M);
+      end if;
    end Commit;
 
    procedure Commit_Crash (M : in out Mount) is
    begin
-      Journal.Transaction_Commit (M.V, Simulate_Crash => True);
+      --  Crash simulation needs the journal's barrier; on a no-journal volume
+      --  there is none, so this degenerates to a plain direct flush.
+      if Superblock.Has_Journal (M.V.SB) then
+         Journal.Transaction_Commit (M.V, Simulate_Crash => True);
+      else
+         Flush_Direct (M);
+      end if;
    end Commit_Crash;
 
    procedure Drop_Cache (M : in out Mount) is

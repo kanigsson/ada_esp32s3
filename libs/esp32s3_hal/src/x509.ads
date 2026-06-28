@@ -21,6 +21,14 @@ package X509 is
    Max_SAN : constant := 8;                       --  dNSNames captured per cert
    type Slice_Array is array (1 .. Max_SAN) of Slice;
 
+   --  Public-key algorithm of the certificate's subject key, and the algorithm the
+   --  certificate's issuer used to sign it -- the parser classifies both so the
+   --  verifier can dispatch RSA vs ECDSA without re-walking the DER.
+   type Key_Algorithm is (Key_RSA, Key_EC_P256, Key_Ed25519, Key_Other);
+   type Sig_Algorithm is
+     (Sig_RSA_SHA256, Sig_RSA_SHA384, Sig_RSA_SHA512,
+      Sig_ECDSA_SHA256, Sig_ECDSA_SHA384, Sig_Ed25519, Sig_Other);
+
    --  Civil time packed as YYYYMMDDHHMMSS in one comparable integer (lexicographic
    --  on the fixed-width fields), the form Valid_At compares against.
    subtype Time_64 is Interfaces.Integer_64;
@@ -42,11 +50,28 @@ package X509 is
       NB_Tag       : U8 := 0;          --  0x17 UTCTime or 0x18 GeneralizedTime
       NA_Tag       : U8 := 0;
       Sig_Alg_OID  : Slice;            --  signatureAlgorithm OID content
+      Sig_Kind     : Sig_Algorithm := Sig_Other;  --  classified signatureAlgorithm
       Signature    : Slice;            --  signatureValue (BIT STRING, unused-bits byte dropped)
+      Key_Kind     : Key_Algorithm := Key_Other;  --  subject public-key algorithm
       RSA_Modulus  : Slice;            --  SubjectPublicKeyInfo RSA modulus  (big-endian INTEGER)
       RSA_Exponent : Slice;            --  RSA public exponent
+      EC_X         : Slice;            --  P-256 public-key affine X (32 bytes) when Key_EC_P256
+      EC_Y         : Slice;            --  P-256 public-key affine Y (32 bytes)
+      Ed_Pub       : Slice;            --  Ed25519 public key (32 bytes) when Key_Ed25519
       SAN          : Slice_Array;      --  subjectAltName dNSName entries
       SAN_Count    : Natural := 0;
+
+      --  X.509 v3 extension flags the chain validator enforces (RFC 5280
+      --  4.2.1.9 basicConstraints, 4.2.1.3 keyUsage, 4.2.1.12 extKeyUsage).
+      BC_Present     : Boolean := False;  --  basicConstraints extension present
+      Is_CA          : Boolean := False;  --  basicConstraints cA = TRUE
+      Path_Len       : Integer := -1;     --  pathLenConstraint (-1 = absent)
+      KU_Present     : Boolean := False;  --  keyUsage extension present
+      KU_Cert_Sign   : Boolean := False;  --  keyUsage keyCertSign bit (5)
+      KU_Digital_Sig : Boolean := False;  --  keyUsage digitalSignature bit (0)
+      EKU_Present    : Boolean := False;  --  extendedKeyUsage present
+      EKU_Server     : Boolean := False;  --  id-kp-serverAuth (or anyExtendedKeyUsage)
+      EKU_Client     : Boolean := False;  --  id-kp-clientAuth (or anyExtendedKeyUsage)
    end record;
 
    --  Parse a DER-encoded certificate.  On success Result.Valid is True and the

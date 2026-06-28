@@ -69,14 +69,34 @@ package TLS_Client is
 
    --  Receive one application-data record and decrypt it.  Last is the index of the
    --  last byte written to Buf (Buf'First-1 if none); Ok is False on a closed
-   --  connection, an alert, or a bad tag.
+   --  connection, an alert, or a bad tag.  A NewSessionTicket arriving on this
+   --  channel is captured (see Has_Ticket) and skipped, not returned.
    procedure Recv (S : in out Session; Sock : GNAT.Sockets.Socket_Type;
                    Buf : out Byte_Array; Last : out Natural; Ok : out Boolean);
+
+   --  Session resumption (RFC 8446 2.2 / 4.6.1).  After a full handshake the server
+   --  usually sends one or more NewSessionTicket messages; Recv captures the first
+   --  one and derives its resumption PSK.  Has_Ticket then reports a ticket is held.
+   function Has_Ticket (S : Session) return Boolean;
+
+   --  Did the server's ServerHello carry a pre_shared_key (accepting our PSK)?
+   function Server_Accepted_PSK (S : Session) return Boolean;
+
+   --  Begin a NEW handshake on Sock that attempts to resume the session held in
+   --  Prior, offering its ticket as a pre_shared_key (PSK-with-(EC)DHE: a fresh
+   --  key_share is still sent, so forward secrecy holds and a non-accepting server
+   --  falls back to a full handshake).  On return Ok is the usual handshake success;
+   --  Resumed is True iff the server accepted the PSK (so it sent no Certificate and
+   --  the round-trip was shorter).  Prior must Has_Ticket.
+   procedure Resume (S : in out Session; Sock : GNAT.Sockets.Socket_Type;
+                     Host : String; Prior : Session;
+                     Ok : out Boolean; Resumed : out Boolean);
 
 private
    subtype Key32 is Byte_Array (0 .. 31);
 
-   Max_Chain : constant := 6;                    --  leaf + a few issuers
+   Max_Chain  : constant := 6;                   --  leaf + a few issuers
+   Max_Ticket : constant := 512;                 --  resumption ticket identity cap
    type Cert_Bounds is record First, Last : Natural; end record;
    type Cert_Bounds_Array is array (1 .. Max_Chain) of Cert_Bounds;
 
@@ -84,6 +104,13 @@ private
       Priv, Pub     : Key32 := (others => 0);   --  our X25519 key pair
       Client_Random : Key32 := (others => 0);   --  our ClientHello random
       Server_Pub    : Key32 := (others => 0);   --  server's X25519 key share
+      --  We also offer secp256r1 (P-256) ECDHE; the server picks one group.
+      P256_Priv     : Key32 := (others => 0);   --  our P-256 ephemeral private
+      P256_Pub_X    : Key32 := (others => 0);   --  our P-256 public key (X, Y)
+      P256_Pub_Y    : Key32 := (others => 0);
+      Server_P256_X : Key32 := (others => 0);   --  server's P-256 key share (X, Y)
+      Server_P256_Y : Key32 := (others => 0);
+      Group         : U16   := 0;               --  negotiated group: 0x001D x25519, 0x0017 P-256
       Suite         : U16   := 0;
       Have_Share    : Boolean := False;
       --  Key schedule outputs (handshake phase).
@@ -122,5 +149,18 @@ private
       C_App_Seq     : Interfaces.Unsigned_64 := 0;
       S_App_Seq     : Interfaces.Unsigned_64 := 0;
       Open          : Boolean := False;
+      --  Resumption: the resumption_master_secret (derived at handshake end), and
+      --  the first NewSessionTicket captured on the channel + its resumption PSK.
+      Res_Master    : Key32 := (others => 0);
+      Have_Res      : Boolean := False;
+      Ticket        : Byte_Array (0 .. Max_Ticket - 1) := (others => 0);
+      Ticket_Len    : Natural := 0;
+      Ticket_Age_Add : Interfaces.Unsigned_32 := 0;
+      Ticket_PSK    : Key32 := (others => 0);   --  the PSK this ticket resumes with
+      Has_Tick      : Boolean := False;
+      --  When this session is itself a resumption attempt, the PSK + age we offer.
+      Offered_PSK   : Key32 := (others => 0);
+      Offered_Age   : Interfaces.Unsigned_32 := 0;
+      Resumed_PSK   : Boolean := False;         --  server accepted our offered PSK
    end record;
 end TLS_Client;

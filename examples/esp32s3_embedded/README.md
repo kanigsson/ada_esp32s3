@@ -1,7 +1,7 @@
 # esp32s3_embedded — embedded runtime profile demo
 
-A flashable ESP-IDF example that runs Ada on both ESP32-S3 cores under the bare
-GNARL Ada runtime (no FreeRTOS) and exercises the three features the
+A flashable example that runs Ada on both ESP32-S3 cores under the bare-boot
+GNARL Ada runtime (no ESP-IDF, no FreeRTOS) and exercises the three features the
 **`embedded`** runtime profile adds over the default **`light-tasking`** profile:
 
 1. **Tagged dispatching** — a class-wide array of library-level `Shape`s is
@@ -20,14 +20,32 @@ the embedded profile to show them working.
 ## Build & run
 
 ```
-./x run embedded      # build + flash + monitor (no ESP-IDF)
+./x run embedded      # build + flash + monitor
 ```
 
-`main/build_ada.sh` builds the Ada (`app.gpr`) against the pinned runtime crate
-with `ESP32S3_RTS_PROFILE=embedded`, then localises the runtime's C heap aliases
-so they don't clash with newlib. `sdkconfig.defaults` sets
-`CONFIG_COMPILER_CXX_EXCEPTIONS=y`, which is **required** here so the IDF link
-keeps `.eh_frame` and registers the DWARF frames the unwinder uses.
+The repo's `./x` dispatcher drives the IDF-free bare-boot flow (use
+`./x build|flash|monitor embedded` for the individual steps). There is no
+`idf.py`, `sdkconfig`, `CMakeLists.txt`, `menuconfig` or FreeRTOS. At boot our
+own 2nd-stage bootloader sets up flash-XIP cache/MMU and jumps to `_start`
+(`start.S`), which selects the 240 MHz PLL and calls `start_c()`
+(`bare_boot.adb`); that hands off to `bare_glue.c`'s `app_main()`, which owns
+both cores directly — core 0 runs the env task, core 1 is cold-started into the
+GNARL slave scheduler. FreeRTOS never runs.
+
+This example's `build.sh` sets the env knobs — `ESP32S3_RTS_PROFILE=embedded`
+plus a larger `HEAP_SIZE`/`ENV_STACK_SIZE` (the unwinder and finalizers need the
+headroom) — then execs the shared `examples/common/bare/bare_build.sh`. The Ada
+(`app.gpr`) is compiled to `obj/app_main.o` by the shared
+`examples/common/bare/build_ada.sh`. Selecting the `embedded` profile pulls in
+the freestanding heap/libc the exception machinery references (newlib is not
+linked).
+
+ZCX exception support does **not** depend on any IDF `CONFIG_…` knob. The
+linker script brackets the `.eh_frame` block with `__eh_frame_start`, and the
+bare-boot registers the DWARF unwind frames itself before any exception can be
+raised: `bare_glue.c` calls `bare_register_eh_frames()`, whose strong override
+(`bare_crt.adb`, exception-capable profiles only) calls `__register_frame` on
+`__eh_frame_start`. For the light-tasking profile that hook is a weak no-op.
 
 Expected console transcript:
 

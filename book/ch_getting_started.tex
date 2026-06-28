@@ -5,11 +5,11 @@ This chapter takes you from a fresh clone to an LED blinking under your own Ada,
 in a few commands. The later chapters explain the runtime, the HAL and the
 language techniques; this one just gets you running.
 
-\section{What you need}
+\section{What you need}\index{Alire}
 
 \begin{description}[style=nextline]
 \item[An ESP32-S3 board.] Any devkit with the built-in USB-Serial-JTAG port (most
-  of them). One USB cable is enough --- it carries the console \emph{and} the
+  of them). One USB cable is enough -- it carries the console \emph{and} the
   debugger.
 \item[Alire (\texttt{alr}).] The Ada package manager fetches the toolchains the
   build needs: the \texttt{gnat\_xtensa\_esp32\_elf} cross-compiler, a native
@@ -35,10 +35,10 @@ cd ada_esp32s3
 git submodule update --init --recursive
 \end{lstlisting}
 
-\section{The \texttt{./x} dispatcher}
+\section{The \texttt{./x} dispatcher}\index{x helper script}
 
-The repository ships with around forty ready-to-run examples, and one script at
-its root --- \texttt{./x} --- drives all of them \emph{from inside the clone}. (For
+The repository ships with over sixty ready-to-run examples, and one script at
+its root -- \texttt{./x} -- drives all of them \emph{from inside the clone}. (For
 your \emph{own} application, kept outside the repo, the counterpart command is
 \texttt{esp32-ada}, \S\ref{sec:esp32-ada}; the two share the same verbs.) List the
 examples, then build, flash and watch one:
@@ -53,7 +53,7 @@ host tool), writes it to the board (the Ada \texttt{esp\_flash} tool, over the
 chip's ROM bootloader), resets, and streams the console. The first build also
 generates the runtime for the chosen profile, so it takes a little longer; later
 ones are incremental. The blink example toggles an LED and prints over the
-console --- your first Ada running bare-metal on the S3.
+console -- your first Ada running bare-metal on the S3.
 
 The pieces are also separate commands when you want them:
 
@@ -64,7 +64,17 @@ The pieces are also separate commands when you want them:
 ./x clean   esp32s3_gpio0_blink
 \end{lstlisting}
 
-\section{Choosing a profile}
+The examples are meant to be \emph{read}, not just run: each opens with a header
+that says what it demonstrates, how to build and run it, what the console should
+print, and what hardware (if any) it needs; magic numbers are named, and the
+``why'' is in the code rather than only in this book. A short house style at
+\texttt{examples/STYLE.md} records the bar, with \texttt{esp32s3\_gpio0\_blink}
+and \texttt{esp32s3\_gdma\_copy} as the models to copy; \texttt{./x new} (and
+\texttt{esp32-ada init}, \S\ref{sec:esp32-ada}) scaffold a new project already in
+that shape. So once a chapter here points you at an example, the example itself
+carries the rest of the explanation.
+
+\section{Choosing a profile}\index{runtime profile}\index{light-tasking profile}\index{embedded profile}\index{full profile}
 
 Most examples build under more than one runtime profile (Chapter~\ref{ch:profiles}).
 Pass \texttt{--profile} to pick one; \texttt{auto} (the default) uses the
@@ -78,10 +88,10 @@ example's own:
 handles, a heap and the full HAL (the usual choice), and \texttt{full} adds the
 complete Ada tasking model.
 
-\section{Board configuration}
+\section{Board configuration}\index{board.ads}
 
-Each project owns a \texttt{config/board.ads} (flash and PSRAM sizes) that sizes
-the image and the second-stage bootloader. Edit it directly, or:
+Each project owns a \texttt{board.ads} (flash and PSRAM sizes) that sizes the image
+and the second-stage bootloader. Edit it directly, or:
 
 \begin{lstlisting}[style=sh]
 ./x config esp32s3_gpio0_blink show
@@ -91,36 +101,37 @@ the image and the second-stage bootloader. Edit it directly, or:
 \section{Debugging}
 
 On-chip debugging needs the pinned OpenOCD + S3 GDB, fetched once; then
-\texttt{./x debug} (or \texttt{F5} in VS Code) halts at your \texttt{Main}:
+\texttt{./x debug} (or \texttt{F5} in VS Code) halts at the boot entry
+\texttt{app\_main} (the shared boot glue; these images have no C \texttt{main}):
 
 \begin{lstlisting}[style=sh]
 ./x get-debug-tools
-./x debug esp32s3_gpio0_blink              # build, flash, OpenOCD + GDB, rest at Main
+./x debug esp32s3_gpio0_blink              # build, flash, OpenOCD + GDB, break at app_main
 \end{lstlisting}
 
 The Debugging chapter (Chapter~\ref{ch:debug}) covers GDB, decoding a Guru
 Meditation, and the editor integration in full.
 
-\section{Your own project, out of tree: \texttt{esp32-ada}}
+\section{Your own project, out of tree: \texttt{esp32-ada}}\index{esp32-ada launcher}\index{scaffolding}
 \label{sec:esp32-ada}
 
 \texttt{./x} is for the examples that ship \emph{inside} the clone. For your own
 application you do not edit an example or copy the runtime into your tree: you
 treat this repository as an \emph{SDK} and scaffold a standalone project anywhere
-on disk. The launcher that does this --- the out-of-tree counterpart of
-\texttt{./x}, with the same verbs --- is \texttt{esp32-ada}.
+on disk. The launcher that does this -- the out-of-tree counterpart of
+\texttt{./x}, with the same verbs -- is \texttt{esp32-ada}.
 
 It becomes available when you \emph{source} the SDK's \texttt{export.sh} once per
 shell. That one step puts \texttt{esp32-ada} on your \texttt{PATH}, exports
 \texttt{ESP32S3\_ADA\_SDK} (so a project folder anywhere can find the SDK), and
-adds the runtime and HAL projects to \texttt{GPR\_PROJECT\_PATH} --- so both
+adds the runtime and HAL projects to \texttt{GPR\_PROJECT\_PATH} -- so both
 \texttt{gprbuild} \emph{and} the Ada Language Server resolve
 \texttt{with "esp32s3\_rts.gpr"} with no path baked into your project:
 
 \begin{lstlisting}[style=sh]
 . /path/to/ada_esp32s3/export.sh    # once per shell (add to ~/.bashrc to persist)
 mkdir ~/myblink && cd ~/myblink
-esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb, glue
+esp32-ada init                      # scaffold app.gpr, board.ads, src/main.adb
 #  ... edit src/main.adb ...
 esp32-ada run -p /dev/ttyACM0       # build + flash + monitor
 \end{lstlisting}
@@ -131,7 +142,8 @@ inside the clone, while \texttt{esp32-ada build} operates on the project folder 
 are standing in:
 
 \begin{longtable}{p{0.46\linewidth} p{0.48\linewidth}}
-\textbf{Command} & \textbf{What it does} \\ \hline
+\toprule
+\textbf{Command} & \textbf{What it does} \\ \midrule
 \endhead
 \texttt{esp32-ada init [\textit{dir}]} & Scaffold a project in \textit{dir} (or the current folder). \\
 \texttt{esp32-ada build [-P \textit{prof}]} & Build to \texttt{app.bin}. \textit{prof} = \texttt{light-tasking} (default), \texttt{embedded}, or \texttt{full}. \\
@@ -143,7 +155,8 @@ are standing in:
 \texttt{esp32-ada debug [-p \textit{port}]} & On-chip debug (OpenOCD + GDB), halting at \texttt{Main}. \\
 \texttt{esp32-ada kill-openocd} & Kill every OpenOCD (release captured USB-JTAG ports). \\
 \texttt{esp32-ada install-ide} & Install the VS Code extension (committed \texttt{.vsix}). \\
-\texttt{esp32-ada install-vim} & Symlink the Vim/Neovim plugin. \\ \hline
+\texttt{esp32-ada install-vim} & Symlink the Vim/Neovim plugin. \\ \midrule
+\bottomrule
 \end{longtable}
 
 \noindent\texttt{-p}/\texttt{--port} defaults to \texttt{\$ESPPORT} or
@@ -155,13 +168,11 @@ myblink/
   app.gpr            # withs esp32s3_rts.gpr + esp32s3_hal.gpr (resolved by name)
   board.ads          # this project's flash / PSRAM sizes
   src/main.adb       # your code (procedure Main; boots both cores, then idles)
-  main/glue.c        # your C natives (starts empty)
   build.sh flash.sh  # thin shims into the SDK's shared bare-boot
-  main/build_ada.sh
   .vscode/           # ALS project + build/flash/run tasks driving esp32-ada
 \end{lstlisting}
 
-Nothing from the SDK is copied in --- \texttt{app.gpr} references the runtime and
+Nothing from the SDK is copied in -- \texttt{app.gpr} references the runtime and
 HAL \emph{by name} through \texttt{GPR\_PROJECT\_PATH}, and the build shims call the
 SDK's shared bare-boot through \texttt{\$ESP32S3\_ADA\_SDK}. Add another SDK library
 the same way: \texttt{with "<name>.gpr";} in \texttt{app.gpr} for anything under the
@@ -169,11 +180,11 @@ SDK's \texttt{libs/}. The default profile is \texttt{light-tasking}; pass
 \texttt{-P embedded} (or \texttt{full}) to build under another
 (Chapter~\ref{ch:profiles}).
 
-\subsection{Taking an example out of tree to edit}
+\subsection{Taking an example out of tree to edit}\index{examples}
 
-The in-repo examples are wired to their location --- an Alire path-pin in
+The in-repo examples are wired to their location -- an Alire path-pin in
 \texttt{alire.toml}, a \texttt{\textit{name}.gpr}, and build shims relative to
-\texttt{examples/common/bare/} --- so copying a whole example directory elsewhere
+\texttt{examples/common/bare/} -- so copying a whole example directory elsewhere
 will not build. Instead, scaffold a fresh project and bring the \emph{sources}
 across; the scaffold already supplies the \texttt{app.gpr}, board config and build
 shims that make them build:
@@ -183,7 +194,7 @@ shims that make them build:
 esp32-ada init ~/myblink && cd ~/myblink
 SDK=$ESP32S3_ADA_SDK
 cp "$SDK"/examples/esp32s3_gpio0_blink/src/*.ad? src/   # the Ada sources (incl. main.adb)
-esp32-ada build -P embedded                             # match the example's profile
+esp32-ada build                                         # gpio0_blink uses the default light-tasking
 esp32-ada run -p /dev/ttyACM0
 \end{lstlisting}
 
@@ -200,7 +211,7 @@ A few things make the copy build cleanly:
   it with \texttt{-P}.
 \item \textbf{Bring board config and C natives if customized.} If the example sets
   a non-default flash/PSRAM size, copy its \texttt{board.ads} (or run
-  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{main/glue.c}.
+  \texttt{esp32-ada config}); if it has C natives, copy its \texttt{glue.c}.
 \item \textbf{Extra libraries.} If the example \texttt{with}s more of the SDK's
   \texttt{libs/} (beyond the HAL), add the matching \texttt{with "<name>.gpr";} to
   \texttt{app.gpr}.
@@ -208,17 +219,17 @@ A few things make the copy build cleanly:
 
 \cnote{There is no fixed ``project location'' and no \texttt{idf.py}: the SDK is
 found through \texttt{\$ESP32S3\_ADA\_SDK} (set by \texttt{export.sh}), so your
-project folder can live anywhere and stays portable --- check it into its own git
+project folder can live anywhere and stays portable -- check it into its own git
 repo, with no SDK paths baked into any file.}
 
 \section{Where to go next}
 
 \begin{itemize}
-\item The anatomy of an application and the runtime profiles ---
+\item The anatomy of an application and the runtime profiles --
   Chapters~\ref{ch:anatomy}--\ref{ch:build}.
-\item The peripheral HAL --- start at Chapter~\ref{ch:hal}; each driver has worked
+\item The peripheral HAL -- start at Chapter~\ref{ch:hal}; each driver has worked
   examples you can run with \texttt{./x run}.
-\item The Ada techniques behind it all --- the Ada Language Techniques and
+\item The Ada techniques behind it all -- the Ada Language Techniques and
   Talking to Hardware chapters (Chapters~\ref{ch:embedded}
   and~\ref{ch:hardware}), including a Terminology section (\S\ref{sec:terms})
   for unfamiliar terms.

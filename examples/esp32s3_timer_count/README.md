@@ -47,4 +47,4 @@ Two timers (TIMG0 / TIMG1). Because the `Timer` uses finalization, the driver is
 ```
 
 Built as the **embedded** profile. The report prints over the USB-Serial-JTAG
-console via the ROM `esp_rom_printf` glue in `main/glue.c`.
+console via the ROM `esp_rom_printf` glue in `glue.c`.

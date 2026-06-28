@@ -108,7 +108,7 @@ package body ESP32S3.ST7789 is
    procedure Command (S : Session; C : Byte; Params : Bytes := No_Params) is
       Bus : ESP32S3.SPI.Session;
    begin
-      ESP32S3.SPI.Acquire (Bus, S.Host);
+      ESP32S3.SPI.Acquire (Bus, S.Host, Mode => S.Mode, Clock_Hz => S.Clock_Hz);
       ESP32S3.GPIO.Clear (S.CS);
       Cmd1 (Bus, S, C);
       Dat (Bus, S, Params);
@@ -147,7 +147,8 @@ package body ESP32S3.ST7789 is
       Mode               : ESP32S3.SPI.SPI_Mode      := 0;
       Clock_Hz           : Positive                  := 40_000_000) is
    begin
-      Dev := (Host => Host, DC => DC, CS => CS, RST => RST,
+      Dev := (Host => Host, Mode => Mode, Clock_Hz => Clock_Hz,
+              DC => DC, CS => CS, RST => RST,
               W => Width, H => Height, X_Off => X_Offset, Y_Off => Y_Offset,
               Configured => True);
 
@@ -161,11 +162,11 @@ package body ESP32S3.ST7789 is
          ESP32S3.GPIO.Set (ESP32S3.GPIO.Pin_Id (RST));
       end if;
 
-      --  SPI host: full-duplex master; CS / MISO not routed (CS driven above).
-      ESP32S3.SPI.Setup (Host, Mode => Mode, Clock_Hz => Clock_Hz);
+      --  SPI host: route SCLK/MOSI only (CS/DC driven above, MISO unused).
+      --  Mode and clock are this display's; applied per hold at Acquire.
+      ESP32S3.SPI.Setup (Host);
       ESP32S3.SPI.Configure_Pins
-        (Host, Sclk => Sclk, Mosi => Mosi,
-         Miso => ESP32S3.SPI.No_Pin, Cs => ESP32S3.SPI.No_Pin);
+        (Host, Sclk => Sclk, Mosi => Mosi, Miso => ESP32S3.SPI.No_Pin);
    end Setup;
 
    -------------------------
@@ -180,6 +181,8 @@ package body ESP32S3.ST7789 is
       Guards (Natural (Dev.CS)).Acquire;     --  suspends until this display free
       S.Active := True;
       S.Host := Dev.Host;
+      S.Mode := Dev.Mode;
+      S.Clock_Hz := Dev.Clock_Hz;
       S.DC := Dev.DC;
       S.CS := Dev.CS;
       S.RST := Dev.RST;
@@ -298,7 +301,7 @@ package body ESP32S3.ST7789 is
          return;
       end if;
 
-      ESP32S3.SPI.Acquire (Bus, S.Host);
+      ESP32S3.SPI.Acquire (Bus, S.Host, Mode => S.Mode, Clock_Hz => S.Clock_Hz);
       ESP32S3.GPIO.Clear (S.CS);
       Window (Bus, S, X, Y, X + RW - 1, Y + RH - 1);
       Cmd1 (Bus, S, Cmd_RAMWR);
@@ -360,7 +363,7 @@ package body ESP32S3.ST7789 is
          return;
       end if;
 
-      ESP32S3.SPI.Acquire (Bus, S.Host);
+      ESP32S3.SPI.Acquire (Bus, S.Host, Mode => S.Mode, Clock_Hz => S.Clock_Hz);
       ESP32S3.GPIO.Clear (S.CS);
       Window (Bus, S, X, Y, X + W - 1, Y + H - 1);
       Cmd1 (Bus, S, Cmd_RAMWR);

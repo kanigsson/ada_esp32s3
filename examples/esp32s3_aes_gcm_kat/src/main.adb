@@ -1,8 +1,29 @@
---  AES-GCM known-answer test on the ESP32-S3: AEAD encrypt + decrypt for AES-128
---  and AES-256, against vectors computed with the Python "cryptography" library.
---  Encrypt must reproduce the expected ciphertext + tag; decrypt must verify the
---  tag and recover the plaintext.  Enables the RNG entropy source, as every crypto
---  example should on this RF-free target.
+--  What it demonstrates
+--    AES-GCM AEAD as a known-answer test (KAT) on the ESP32-S3: authenticated
+--    encrypt + decrypt for AES-128 and AES-256, driving the hardware AES block
+--    with software GHASH/CTR.  Encrypt must reproduce the expected ciphertext and
+--    tag; decrypt must verify the tag and recover the original plaintext.
+--
+--  Build & run
+--    ./x run esp32s3_aes_gcm_kat
+--    build.sh sets ESP32S3_RTS_PROFILE=embedded (the IDF-free bare-boot profile).
+--
+--  How to read the output
+--    [gcm] AES-GCM known-answer tests (HW AES block + SW GHASH/CTR)
+--    [gcm] AES-128-GCM : PASS      <- both cases must say PASS
+--    [gcm] AES-256-GCM : PASS
+--    [gcm] done
+--    PASS means the encrypt output matched the expected C/T and the decrypt both
+--    authenticated and recovered P; any mismatch prints FAIL on that line.
+--
+--  Hardware
+--    None (self-contained) — vectors are baked in; no external parts or wiring.
+--
+--  Vector legend (per case N): KN=key, IVN=nonce, AN=AAD (authenticated, not
+--    encrypted), PN=plaintext, CN=expected ciphertext, TN=expected auth tag.
+--  Provenance: these K/IV/A/P/C/T vectors were generated with the Python
+--    "cryptography" library (AESGCM), which produces the C and T for a given
+--    K/IV/A/P; re-run that library on the K/IV/A/P below to regenerate C and T.
 with Ada.Real_Time;     use Ada.Real_Time;
 with Interfaces;
 with ESP32S3.AES;       use ESP32S3.AES;
@@ -75,29 +96,38 @@ procedure Main is
      (16#34#, 16#CE#, 16#E0#, 16#DD#, 16#28#, 16#F1#, 16#D2#, 16#E6#,
       16#05#, 16#90#, 16#68#, 16#4B#, 16#D8#, 16#5E#, 16#A3#, 16#F1#);
 
+   --  True iff two byte arrays are equal element-for-element (length and content),
+   --  comparing position-by-position regardless of either array's index base.
    function Eq (A, B : Byte_Array) return Boolean is
    begin
-      if A'Length /= B'Length then return False; end if;
+      if A'Length /= B'Length then
+         return False;
+      end if;
       for I in A'Range loop
-         if A (I) /= B (B'First + (I - A'First)) then return False; end if;
+         if A (I) /= B (B'First + (I - A'First)) then
+            return False;
+         end if;
       end loop;
       return True;
    end Eq;
 
-   --  Run one AEAD round-trip; report whether the ciphertext, tag, auth and the
-   --  recovered plaintext all match.
+   --  Run one AEAD known-answer case; report whether the ciphertext, tag, auth
+   --  result and the recovered plaintext all match the vector.
    procedure Case_AEAD (Name : String; Key : Key_Bytes; IV : Nonce;
                         AAD, P, C_Want, T_Want : Byte_Array) is
-      C  : Byte_Array (0 .. P'Length - 1);
-      P2 : Byte_Array (0 .. P'Length - 1);
-      T  : Auth_Tag;
-      Ok : Boolean;
+      C     : Byte_Array (0 .. P'Length - 1);   --  ciphertext produced by Encrypt
+      P_Got : Byte_Array (0 .. P'Length - 1);   --  plaintext recovered by Decrypt
+      T     : Auth_Tag;                          --  tag produced by Encrypt
+      Ok    : Boolean;                           --  Decrypt's tag-authentication result
    begin
+      --  Encrypt our P and check it reproduces the expected C/T; separately decrypt
+      --  the expected C_Want/T_Want so the decrypt path is tested against the vector
+      --  (not merely round-tripped against our own Encrypt output).
       Encrypt (Key, IV, AAD, P, C, T);
-      Decrypt (Key, IV, AAD, C_Want, T_Want, P2, Ok);
+      Decrypt (Key, IV, AAD, C_Want, T_Want, P_Got, Ok);
       Put_Line ("[gcm] " & Name & " : "
                 & (if Eq (C, C_Want) and then Eq (T, T_Want)
-                        and then Ok and then Eq (P2, P)
+                        and then Ok and then Eq (P_Got, P)
                    then "PASS" else "FAIL"));
    end Case_AEAD;
 begin
@@ -109,5 +139,8 @@ begin
    Case_AEAD ("AES-256-GCM", K2, IV2, A2, P2, C2, T2);
    Put_Line ("[gcm] done");
 
-   loop delay until Clock + Seconds (3600); end loop;
+   --  Nothing more to do; idle forever so the console output stays readable.
+   loop
+      delay until Clock + Seconds (3600);
+   end loop;
 end Main;

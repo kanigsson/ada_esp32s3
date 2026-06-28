@@ -62,5 +62,5 @@ profile (light-tasking included).
 ```
 
 Built as the **embedded** profile. The report prints over the USB-Serial-JTAG
-console via the ROM `esp_rom_printf` glue in `main/glue.c`. (The console
+console via the ROM `esp_rom_printf` glue in `glue.c`. (The console
 disconnects and re-enumerates on each deep-sleep cycle — expected.)

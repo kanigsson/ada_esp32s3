@@ -1,22 +1,29 @@
---  SD card on the bare-metal ESP32-S3 (no FreeRTOS, no IDF), on a board where
---  the SD card's DAT3/CD line is not wired to the SoC but to a CH422G I2C
---  expander pin.  Two reusable HAL drivers together:
+--  What it demonstrates
+--    Reading an SD card on the bare-metal ESP32-S3 on a board where the card's
+--    DAT3/CD line is wired not to the SoC but to a CH422G I2C expander pin, so
+--    two reusable HAL drivers work together:
+--      * ESP32S3.CH422G drives the card's DAT3/CD high via its IO4 pin -- needed
+--        so the card enters/stays in SD mode.  The CH422G's IO direction is
+--        GLOBAL, so making IO4 an output turns the whole bank to outputs; we load
+--        the output register (IO4 high, the rest low) BEFORE enabling outputs, so
+--        DAT3 is already high the instant the bank switches to drive (no glitch).
+--        DAT3 is set once and never toggled, so the slow I2C path is fine.
+--      * ESP32S3.SDMMC then talks to the card in 1-bit mode (DAT1/2/3 not wired).
+--    READ-ONLY: it identifies the card, decodes CID/CSD/SCR (maker, product,
+--    serial, date, capacity, spec version, capabilities), negotiates High-Speed
+--    (50 MHz), and reads block 0 (checking the 0x55AA boot signature) -- it never
+--    writes, so no card content can be lost.
 --
---    * ESP32S3.CH422G (I2C0, SDA=IO8 SCL=IO9) drives the card's DAT3/CD high via
---      its IO4 pin -- needed so the card enters/stays in SD mode and is enabled.
---      The CH422G's IO direction is GLOBAL, so to make IO4 an output the whole
---      IO bank becomes outputs; we drive IO4 high and every other IO pin low.
---      We load the output register BEFORE enabling outputs, so DAT3 is already
---      high the instant the bank switches to outputs (no glitch).  DAT3 is set
---      once and never toggled during transfers, so the slow I2C path is fine.
+--  Build & run
+--    ./x run esp32s3_sdmmc_ch422g   (embedded profile; build.sh sets it)
 --
---    * ESP32S3.SDMMC then talks to the card in 1-bit mode on CLK=IO12, CMD=IO11,
---      D0=IO13 (DAT1/2/3 not wired to the SoC).
+--  Output
+--    The expander result, the card identity/capacity/capabilities, and the
+--    block-0 boot-signature check, printed over the ROM esp_rom_printf glue.
 --
---  READ-ONLY on the card: it identifies the card, decodes its CID/CSD/SCR
---  (maker, product, serial, date, capacity, spec version, capabilities),
---  negotiates High-Speed mode (50 MHz), and reads block 0 (checking the 0x55AA
---  boot signature) -- it never writes, so no card content can be lost.
+--  Hardware
+--    An SD card in the slot.  I2C0 to the CH422G on SDA=IO8 / SCL=IO9; SDMMC
+--    1-bit bus on CLK=IO12, CMD=IO11, D0=IO13.
 with System;
 with Interfaces;   use Interfaces;
 with Interfaces.C; use Interfaces.C;
@@ -29,10 +36,10 @@ with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
 procedure Main is
-   package CH renames ESP32S3.CH422G;
-   package SD renames ESP32S3.SDMMC;
-   use type CH.Status;
-   use type SD.Status;
+   package CH422G renames ESP32S3.CH422G;
+   package SDMMC  renames ESP32S3.SDMMC;
+   use type CH422G.Status;
+   use type SDMMC.Status;
 
    procedure Banner;  pragma Import (C, Banner, "native_sd_banner");
    procedure Exio_R (Ok : int);  pragma Import (C, Exio_R, "native_sd_exio");
@@ -53,23 +60,25 @@ procedure Main is
 
    --  Replace non-printable bytes (CID strings are ASCII, but be safe).
    function Clean (S : String) return String is
-      R : String := S;
+      Result : String := S;
    begin
-      for I in R'Range loop
-         if Character'Pos (R (I)) not in 32 .. 126 then
-            R (I) := '?';
+      for I in Result'Range loop
+         if Character'Pos (Result (I)) not in 32 .. 126 then
+            Result (I) := '?';
          end if;
       end loop;
-      return R;
+      return Result;
    end Clean;
 
-   Dev : CH.Device;
-   ExS : CH.Session;
-   ESt : CH.Status;
+   --  The CH422G I2C expander that drives the card's DAT3/CD line.
+   Expander         : CH422G.Device;
+   Expander_Session : CH422G.Session;
+   Expander_Status  : CH422G.Status;
 
-   C   : SD.Card;
-   St  : SD.Status;
-   Blk : SD.Block;
+   --  The SD card and a scratch block for the boot-sector read.
+   Card        : SDMMC.Card;
+   Card_Status : SDMMC.Status;
+   Block       : SDMMC.Block;
 begin
    delay until Clock + Milliseconds (200);
    Banner;
@@ -77,30 +86,32 @@ begin
    --  1) CH422G: drive DAT3/CD (IO4) high.  Load the IO output register first
    --     (IO4=1, all other IO low), THEN enable outputs, so DAT3 never glitches
    --     low.  The Session is held for the whole run (the output latches anyway).
-   CH.Setup (Dev, Sda => 8, Scl => 9);
-   CH.Acquire (ExS, Dev);
-   CH.Write_IO (ExS, 16#10#, ESt);                 --  IO4 high, IO0-3/5-7 low
-   if ESt = CH.OK then
-      CH.Configure (ExS, IO_Dir => CH.Outputs, OC_Mode => CH.Push_Pull,
-                    Result => ESt);                --  enable outputs -> DAT3 high
+   CH422G.Setup (Expander, Sda => 8, Scl => 9);
+   CH422G.Acquire (Expander_Session, Expander);
+   CH422G.Write_IO (Expander_Session, 16#10#, Expander_Status);   --  IO4 high, rest low
+   if Expander_Status = CH422G.OK then
+      CH422G.Configure (Expander_Session,
+                        IO_Dir => CH422G.Outputs, OC_Mode => CH422G.Push_Pull,
+                        Result => Expander_Status);   --  enable outputs -> DAT3 high
    end if;
-   Exio_R (Boolean'Pos (ESt = CH.OK));
+   Exio_R (Boolean'Pos (Expander_Status = CH422G.OK));
 
    --  2) SDMMC: 1-bit bus on CLK=IO12, CMD=IO11, D0=IO13 (D1/D2/D3 not wired).
-   SD.Setup (C, On => SD.Slot1, Clk => 12, Cmd => 11, D0 => 13,
-             Width => SD.Width_1,
-             Init_Clock_Hz => 400_000, Data_Clock_Hz => 50_000_000,
-             High_Speed => True);   --  negotiate the fastest the card allows
+   SDMMC.Setup (Card, On => SDMMC.Slot1, Clk => 12, Cmd => 11, D0 => 13,
+                Width => SDMMC.Width_1,
+                Init_Clock_Hz => 400_000, Data_Clock_Hz => 50_000_000,
+                High_Speed => True);   --  negotiate the fastest the card allows
 
-   SD.Initialize (C, St);
-   Init_R (int (SD.Status'Pos (St)), int (SD.Card_Kind'Pos (SD.Kind (C))));
+   SDMMC.Initialize (Card, Card_Status);
+   Init_R (int (SDMMC.Status'Pos (Card_Status)),
+           int (SDMMC.Card_Kind'Pos (SDMMC.Kind (Card))));
 
    --  Decoded identity (CID) + capacity (CSD).
-   if St = SD.OK then
+   if Card_Status = SDMMC.OK then
       declare
-         Id   : constant SD.Card_Id := SD.Identity (C);
-         Cap  : constant Interfaces.Unsigned_64 := SD.Capacity_Blocks (C);
-         Caps : constant SD.Card_Caps := SD.Capabilities (C);
+         Id   : constant SDMMC.Card_Id := SDMMC.Identity (Card);
+         Cap  : constant Interfaces.Unsigned_64 := SDMMC.Capacity_Blocks (Card);
+         Caps : constant SDMMC.Card_Caps := SDMMC.Capabilities (Card);
          Oem  : aliased constant String := Clean (Id.OEM) & Character'Val (0);
          Pnm  : aliased constant String := Clean (Id.Product) & Character'Val (0);
       begin
@@ -112,18 +123,19 @@ begin
                  int (Caps.Read_Block_Len), int (Caps.Spec_Major),
                  int (Caps.Spec_Minor), Boolean'Pos (Caps.Supports_4bit),
                  Boolean'Pos (Caps.High_Speed));
-         Speed_C (int (SD.Active_Clock_Hz (C) / 1_000_000),
-                  Boolean'Pos (SD.High_Speed_Active (C)));
+         Speed_C (int (SDMMC.Active_Clock_Hz (Card) / 1_000_000),
+                  Boolean'Pos (SDMMC.High_Speed_Active (Card)));
       end;
    end if;
 
    --  3) Read block 0 and check the boot signature (read-only).
-   if St = SD.OK then
-      SD.Read_Block (C, 0, Blk, St);
-      Read_R (int (SD.Status'Pos (St)),
-              int (Blk (0)), int (Blk (1)), int (Blk (2)), int (Blk (3)),
-              Boolean'Pos (St = SD.OK
-                           and then Blk (510) = 16#55# and then Blk (511) = 16#AA#));
+   if Card_Status = SDMMC.OK then
+      SDMMC.Read_Block (Card, 0, Block, Card_Status);
+      Read_R (int (SDMMC.Status'Pos (Card_Status)),
+              int (Block (0)), int (Block (1)), int (Block (2)), int (Block (3)),
+              Boolean'Pos (Card_Status = SDMMC.OK
+                           and then Block (510) = 16#55#
+                           and then Block (511) = 16#AA#));
    end if;
 
    Done;

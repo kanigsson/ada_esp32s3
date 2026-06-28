@@ -129,13 +129,13 @@ package body ESP32S3.SD_SPI is
       C.Cs      := Cs;
       C.Kind    := Unknown;
       C.Block_Addressed := False;
+      C.Init_Hz := Init_Clock_Hz;
       C.Data_Hz := Data_Clock_Hz;
 
-      --  SD is SPI mode 0; start slow for the init handshake.
-      ESP32S3.SPI.Setup (Host, Mode => 0, Clock_Hz => Init_Clock_Hz);
       --  Route clock/data; the SD card's CS is a plain GPIO we drive by hand.
-      ESP32S3.SPI.Configure_Pins (Host, Sclk => Sclk, Mosi => Mosi,
-                                  Miso => Miso, Cs => ESP32S3.SPI.No_Pin);
+      --  SD is SPI mode 0; the init/data clocks are applied per hold at Acquire.
+      ESP32S3.SPI.Setup (Host);
+      ESP32S3.SPI.Configure_Pins (Host, Sclk => Sclk, Mosi => Mosi, Miso => Miso);
       ESP32S3.GPIO.Configure (Cs, Mode => ESP32S3.GPIO.Output,
                               Pull => ESP32S3.GPIO.Pull_Up);
       ESP32S3.GPIO.Set (Cs);                 --  deassert (idle high)
@@ -154,7 +154,7 @@ package body ESP32S3.SD_SPI is
       C.Kind := Unknown;
       C.Block_Addressed := False;
 
-      ESP32S3.SPI.Acquire (S, C.Host);
+      ESP32S3.SPI.Acquire (S, C.Host, Clock_Hz => C.Init_Hz);
 
       --  Power-up: >= 74 clocks with CS and MOSI high puts the card in SPI mode.
       ESP32S3.GPIO.Set (C.Cs);
@@ -238,8 +238,7 @@ package body ESP32S3.SD_SPI is
       R := Swap (C, S, 16#FF#);                --  trailing clocks to release MISO
       ESP32S3.SPI.Release (S);
 
-      --  Card is ready: switch to the data clock for the rest of the session.
-      ESP32S3.SPI.Set_Clock (C.Host, C.Data_Hz);
+      --  Card is ready; subsequent Read_Block/Write_Block acquire at C.Data_Hz.
       Result := OK;
    end Initialize;
 
@@ -266,7 +265,7 @@ package body ESP32S3.SD_SPI is
       T : Unsigned_8 := 16#FF#;
       Got_Token : Boolean := False;
    begin
-      ESP32S3.SPI.Acquire (S, C.Host);
+      ESP32S3.SPI.Acquire (S, C.Host, Clock_Hz => C.Data_Hz);
       ESP32S3.GPIO.Clear (C.Cs);
 
       R := Command (C, S, CMD17, Card_Arg (C, LBA));
@@ -323,7 +322,7 @@ package body ESP32S3.SD_SPI is
       Resp : Unsigned_8;
       Busy : Boolean := True;
    begin
-      ESP32S3.SPI.Acquire (S, C.Host);
+      ESP32S3.SPI.Acquire (S, C.Host, Clock_Hz => C.Data_Hz);
       ESP32S3.GPIO.Clear (C.Cs);
 
       R := Command (C, S, CMD24, Card_Arg (C, LBA));

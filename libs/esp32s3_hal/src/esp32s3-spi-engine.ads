@@ -26,6 +26,10 @@ private package ESP32S3.SPI.Engine is
    --  Change just the bit clock of an already-Open bus (no GDMA re-Claim).
    procedure Set_Clock (B : Bus; Hz : Positive);
 
+   --  Change just the SPI mode (CPOL/CPHA) of an already-Open bus.  Applied per
+   --  device at Acquire, so two devices on one host can run different modes.
+   procedure Set_Mode (B : Bus; Mode : SPI_Mode);
+
    procedure Configure_Pins (B : Bus;
                              Sclk : ESP32S3.GPIO.Optional_Pin;
                              Mosi : ESP32S3.GPIO.Optional_Pin;
@@ -33,6 +37,12 @@ private package ESP32S3.SPI.Engine is
                              Cs   : ESP32S3.GPIO.Optional_Pin := No_Pin);
 
    procedure Enable_Loopback (B : Bus; Pad : ESP32S3.GPIO.Pin_Id);
+
+   --  Enable (Enabled => True) or suppress (False) the peripheral's hardware CS0
+   --  output for this host.  Suppressed when a device drives its own chip select
+   --  via a callback, so the auto-asserted CS0 cannot disturb another device's
+   --  pad sharing the bus (sets MISC.CS0_DIS).
+   procedure Set_Hardware_CS (B : Bus; Enabled : Boolean);
 
    procedure Transfer (B : Bus; Tx, Rx : System.Address; Length : Natural);
 

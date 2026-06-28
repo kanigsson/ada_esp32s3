@@ -80,4 +80,4 @@ live port's settings requires owning it, so it can never race another task.
 
 Built as the **embedded** profile (the drivers target it; `build.sh` exports
 `ESP32S3_RTS_PROFILE=embedded`). The report prints over the USB-Serial-JTAG
-console via the ROM `esp_rom_printf` glue in `main/glue.c`.
+console via the ROM `esp_rom_printf` glue in `glue.c`.

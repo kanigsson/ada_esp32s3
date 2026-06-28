@@ -56,7 +56,7 @@ list_dirs () {   # every examples/<dir> that has a build.sh, sorted
 profile_of () {  # $1 = full dir name -> runtime profile
     local p
     p="$(grep -rhoE 'ESP32S3_RTS_PROFILE=[a-z-]+' \
-            "$EXROOT/$1/build.sh" "$EXROOT/$1/main/build_ada.sh" 2>/dev/null \
+            "$EXROOT/$1/build.sh" 2>/dev/null \
          | head -1 | cut -d= -f2 || true)"
     echo "${p:-light-tasking}"
 }
@@ -243,7 +243,7 @@ cmd_clean () {
     if [ -n "${1:-}" ]; then dirs="$(resolve "$1")"; else dirs="$(list_dirs)"; fi
     for d in $dirs; do
         rm -f "$EXROOT/$d"/app.bin "$EXROOT/$d"/app.elf "$EXROOT/$d"/app.map \
-              "$EXROOT/$d"/main/app_main.o 2>/dev/null || true
+              "$EXROOT/$d"/obj/app_main.o 2>/dev/null || true
         #  obj/    : gprbuild's Ada closure (.o/.ali) -- stale .ali keep OLD source
         #            paths after a dir rename (gprbuild reuses them) -> the app.elf
         #            carries pre-rename DWARF paths + old code; this is THE thing to
@@ -346,7 +346,7 @@ cmd_new () {
     # esp32s3_ prefix (resolve() would otherwise shadow it).
     [ -e "$EXROOT/esp32s3_$name" ] && \
         die "name '$name' clashes with the existing example esp32s3_$name"
-    mkdir -p "$dir/src" "$dir/main"
+    mkdir -p "$dir/src"
 
     # Every project owns its board.ads (flash + PSRAM size); no global config.
     cp "$EXROOT/common/bare/config/board.ads.template" "$dir/board.ads"
@@ -406,31 +406,28 @@ with Ada.Real_Time; use Ada.Real_Time;
 with System.BB.CPU_Primitives.Multiprocessors;
 pragma Unreferenced (System.BB.CPU_Primitives.Multiprocessors);
 
---  Minimal bare-metal Ada application.  The runtime comes up on both cores
---  (the bare-boot prints "[C] Ada runtime up on both cores"); this environment
---  task then idles.  Start adding code:
+--  <one line: what this example demonstrates>
 --
---    * library-level tasks (Jorvik requires them at library level; pin with
---      CPU => 1 for core 0, CPU => 2 for core 1);
---    * protected interrupt handlers (Ada.Interrupts.Names + Attach_Handler);
---    * peripheral drivers.
+--  Build & run:  ./x run <name>   (or, out of tree, esp32-ada run) -- build,
+--                flash, and open the serial monitor.  Default light-tasking
+--                profile; set ESP32S3_RTS_PROFILE in build.sh if you need more.
+--  Output:       <what the console prints; what success looks like>.
+--  Hardware:     <none (self-contained), or the pins / external parts needed>.
 --
---  See examples/esp32s3_gpio0_blink (a GPIO driver) and
---  examples/esp32s3_smp_skeleton (one task per core) for worked examples.
+--  Fill the header in as you write -- see the SDK's examples/STYLE.md for the
+--  house style, and esp32s3_gpio0_blink / esp32s3_gdma_copy as worked models.
+--
+--  The runtime comes up on both cores (the bare-boot prints "[C] Ada runtime up
+--  on both cores"); this environment task then idles.  Start adding code:
+--  library-level tasks (Jorvik requires them at library level; pin with
+--  CPU => 1 for core 0, CPU => 2 for core 1), protected interrupt handlers
+--  (Ada.Interrupts.Names + Attach_Handler), peripheral drivers.
 procedure Main is
 begin
    loop
       delay until Clock + Seconds (3600);
    end loop;
 end Main;
-EOF
-
-    cat > "$dir/main/glue.c" <<EOF
-/* $name: example-specific C natives go here.  The shared bare-boot (bringing
-   the GNARL runtime up on both cores) lives in ../../common/bare/bare_glue.c,
-   so a new project can leave this file empty.  Add the C functions your Ada
-   imports (a print helper over esp_rom_printf, peripheral pokes, ...) here. */
-typedef int ${name}_no_natives;   /* avoid an empty translation unit */
 EOF
 
     cat > "$dir/build.sh" <<'EOF'
@@ -447,38 +444,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 exec bash "$HERE/../common/bare/bare_flash.sh" "$HERE" "$1"
 EOF
 
-    cat > "$dir/main/build_ada.sh" <<'EOF'
-#!/bin/bash
-# Build this app's Ada (app.gpr) against the pinned crate runtime into a
-# relocatable app_main.o for the bare-boot link.
-set -e
-HERE="$(cd "$(dirname "$0")" && pwd)"        # main/
-EX="$(cd "$HERE/.." && pwd)"                 # the project dir
-REPO="$(cd "$EX/../.." && pwd)"              # repo root
-RTCRATE="$REPO/crates/esp32s3_rts"
-DYNDIR="$REPO/crates/xtensa-dynconfig"
-DYNCFG="$DYNDIR/xtensa-dynconfig/xtensa_esp32s3.so"
-. "$REPO/tools/sdk-env.sh"               # toolchain on PATH, Alire-free
-esp32s3_toolchain_on_path
-esp32s3_build_dynconfig "$DYNDIR" "$DYNCFG"
-export XTENSA_GNU_CONFIG="$(realpath "$DYNCFG")"
-export GPR_PROJECT_PATH="$RTCRATE${GPR_PROJECT_PATH:+:$GPR_PROJECT_PATH}"
-bash "$RTCRATE/gen_runtime.sh"
-( cd "$EX" && gprbuild -p -P app.gpr )
-cp "$EX/obj/ada_app.o" "$HERE/app_main.o"
-echo "[build_ada] done: $HERE/app_main.o"
-EOF
-
     cat > "$dir/.gitignore" <<'EOF'
 /obj/
 /.noidf/
 /app.bin
 /app.elf
 /app.map
-/main/app_main.o
 EOF
 
-    chmod +x "$dir/build.sh" "$dir/flash.sh" "$dir/main/build_ada.sh"
+    chmod +x "$dir/build.sh" "$dir/flash.sh"
     echo "x: created examples/$name"
     echo "   edit your code:           examples/$name/src/main.adb"
     echo "   build + flash + monitor:  ./x run $name"

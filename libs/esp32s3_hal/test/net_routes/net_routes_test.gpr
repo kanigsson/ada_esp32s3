@@ -1,0 +1,19 @@
+--  Native (x86) host test for Net_Routes.  The route table is pure logic over
+--  Net_Devices types with an injected up-state, so it builds and runs natively --
+--  no bare-metal runtime, no hardware.  See run.sh.
+project Net_Routes_Test is
+   for Source_Dirs use (".", "../../src");
+   for Object_Dir use "obj";
+   for Exec_Dir use ".";
+   for Main use ("net_routes_test.adb");
+   for Source_Files use
+     ("net_routes_test.adb",
+      "net_routes_mock.ads",
+      "net_routes_mock.adb",
+      "net_routes.ads",
+      "net_routes.adb",
+      "net_devices.ads");
+   package Compiler is
+      for Default_Switches ("Ada") use ("-g", "-O0", "-gnata", "-gnat2022");
+   end Compiler;
+end Net_Routes_Test;
