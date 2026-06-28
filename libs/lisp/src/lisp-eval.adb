@@ -2,7 +2,6 @@ package body Lisp.Eval is
 
    --  Forward declarations for the mutually-recursive evaluator pieces (Eval
    --  itself is already declared in the spec).
-   function Apply (Fn, Args : Ref) return Ref;
    function Eval_Args (Args, Env : Ref) return Ref;
    function Eval_Seq  (Body_List, Env : Ref) return Ref;
 
@@ -256,69 +255,105 @@ package body Lisp.Eval is
       return Result;
    end Eval_Seq;
 
-   function Apply (Fn, Args : Ref) return Ref is
-   begin
-      if Fn = null then raise Lisp_Error with "cannot apply nil"; end if;
-      case Fn.K is
-         when K_Prim =>
-            return Fn.Fn (Args);
-         when K_Closure =>
-            declare
-               New_Env : constant Ref := Cons (Nil, Fn.Env);
-               P : Ref := Fn.Params;  A : Ref := Args;
-            begin
-               while Is_Cons (P) loop
-                  if not Is_Cons (A) then
-                     raise Lisp_Error with "too few arguments";
-                  end if;
-                  Define (Car (P), Car (A), New_Env);
-                  P := Cdr (P);  A := Cdr (A);
-               end loop;
-               return Eval_Seq (Fn.Code, New_Env);
-            end;
-         when others =>
-            raise Lisp_Error with "not applicable: " & Print (Fn);
-      end case;
-   end Apply;
-
+   --  A trampolining evaluator: tail positions (if/begin branches and a closure
+   --  call's last body form) update the current (expression, environment) and loop
+   --  rather than recursing, so tail-recursive LISP runs in constant Ada stack.
    function Eval (Expr : Ref; Env : Ref) return Ref is
+      Cur_Expr : Ref := Expr;
+      Cur_Env  : Ref := Env;
    begin
-      if Expr = null then return Nil; end if;
-      case Expr.K is
-         when K_Int | K_Bool | K_Nil | K_Prim | K_Closure =>
-            return Expr;
-         when K_Symbol =>
-            return Lookup (Expr, Env);
-         when K_Cons =>
-            declare
-               Op   : constant Ref := Car (Expr);
-               Args : constant Ref := Cdr (Expr);
-            begin
-               if    Op = S_Quote  then return Car (Args);
-               elsif Op = S_Lambda then return Make_Closure (Car (Args), Cdr (Args), Env);
-               elsif Op = S_Define then return Eval_Define (Args, Env);
-               elsif Op = S_Let    then return Eval_Let (Args, Env);
-               elsif Op = S_Cond   then return Eval_Cond (Args, Env);
-               elsif Op = S_Begin  then return Eval_Seq (Args, Env);
-               elsif Op = S_And    then return Eval_And (Args, Env);
-               elsif Op = S_Or     then return Eval_Or (Args, Env);
-               elsif Op = S_Set    then
-                  declare V : constant Ref := Eval (Arg2 (Args), Env); begin
-                     Set_Var (Car (Args), V, Env);  return V;
-                  end;
-               elsif Op = S_If then
-                  if Is_Truthy (Eval (Car (Args), Env)) then
-                     return Eval (Arg2 (Args), Env);
-                  elsif Is_Cons (Cdr (Cdr (Args))) then
-                     return Eval (Car (Cdr (Cdr (Args))), Env);
+      loop
+         if Cur_Expr = null then return Nil; end if;
+         case Cur_Expr.K is
+            when K_Int | K_Bool | K_Nil | K_Prim | K_Closure =>
+               return Cur_Expr;
+            when K_Symbol =>
+               return Lookup (Cur_Expr, Cur_Env);
+            when K_Cons =>
+               declare
+                  Op   : constant Ref := Car (Cur_Expr);
+                  Args : constant Ref := Cdr (Cur_Expr);
+               begin
+                  if    Op = S_Quote  then return Car (Args);
+                  elsif Op = S_Lambda then return Make_Closure (Car (Args), Cdr (Args), Cur_Env);
+                  elsif Op = S_Define then return Eval_Define (Args, Cur_Env);
+                  elsif Op = S_Let    then return Eval_Let (Args, Cur_Env);
+                  elsif Op = S_Cond   then return Eval_Cond (Args, Cur_Env);
+                  elsif Op = S_And    then return Eval_And (Args, Cur_Env);
+                  elsif Op = S_Or     then return Eval_Or (Args, Cur_Env);
+                  elsif Op = S_Set    then
+                     declare
+                        V : constant Ref := Eval (Arg2 (Args), Cur_Env);
+                     begin
+                        Set_Var (Car (Args), V, Cur_Env);  return V;
+                     end;
+                  elsif Op = S_If then
+                     if Is_Truthy (Eval (Car (Args), Cur_Env)) then
+                        Cur_Expr := Arg2 (Args);              --  tail: loop
+                     elsif Is_Cons (Cdr (Cdr (Args))) then
+                        Cur_Expr := Car (Cdr (Cdr (Args)));   --  tail: loop
+                     else
+                        return Nil;
+                     end if;
+                  elsif Op = S_Begin then
+                     if Is_Nil (Args) then return Nil; end if;
+                     declare
+                        P : Ref := Args;
+                     begin
+                        while Is_Cons (Cdr (P)) loop
+                           declare
+                              X : constant Ref := Eval (Car (P), Cur_Env);
+                              pragma Unreferenced (X);
+                           begin null; end;
+                           P := Cdr (P);
+                        end loop;
+                        Cur_Expr := Car (P);                  --  tail: loop
+                     end;
                   else
-                     return Nil;
+                     --  application
+                     declare
+                        Fn : constant Ref := Eval (Op, Cur_Env);
+                        A  : constant Ref := Eval_Args (Args, Cur_Env);
+                     begin
+                        if Fn = null then raise Lisp_Error with "cannot apply nil"; end if;
+                        case Fn.K is
+                           when K_Prim =>
+                              return Fn.Fn (A);
+                           when K_Closure =>
+                              declare
+                                 New_Env : constant Ref := Cons (Nil, Fn.Env);
+                                 P  : Ref := Fn.Params;  AA : Ref := A;
+                              begin
+                                 while Is_Cons (P) loop
+                                    if not Is_Cons (AA) then
+                                       raise Lisp_Error with "too few arguments";
+                                    end if;
+                                    Define (Car (P), Car (AA), New_Env);
+                                    P := Cdr (P);  AA := Cdr (AA);
+                                 end loop;
+                                 if Is_Nil (Fn.Code) then return Nil; end if;
+                                 declare
+                                    B : Ref := Fn.Code;
+                                 begin
+                                    while Is_Cons (Cdr (B)) loop
+                                       declare
+                                          X : constant Ref := Eval (Car (B), New_Env);
+                                          pragma Unreferenced (X);
+                                       begin null; end;
+                                       B := Cdr (B);
+                                    end loop;
+                                    Cur_Env  := New_Env;
+                                    Cur_Expr := Car (B);      --  tail call: loop, no growth
+                                 end;
+                              end;
+                           when others =>
+                              raise Lisp_Error with "not applicable: " & Print (Fn);
+                        end case;
+                     end;
                   end if;
-               else
-                  return Apply (Eval (Op, Env), Eval_Args (Args, Env));
-               end if;
-            end;
-      end case;
+               end;
+         end case;
+      end loop;
    end Eval;
 
    --------------------------------------------------------------------------

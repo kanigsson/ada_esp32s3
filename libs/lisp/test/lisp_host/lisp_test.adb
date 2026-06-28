@@ -117,6 +117,20 @@ begin
    end;
 
    New_Line;
+   Put_Line ("tail calls:");
+   declare
+      procedure Run (Input : String) is
+         R : constant Ref := Lisp.Eval.Eval_Top (Lisp.Reader.Read (Input));
+         pragma Unreferenced (R);
+      begin null; end Run;
+   begin
+      Run ("(define (cnt n) (if (= n 0) 'done (cnt (- n 1))))");
+      Run ("(define (sm n acc) (if (= n 0) acc (sm (- n 1) (+ acc n))))");
+      E ("(cnt 8000)", "done");        --  deep tail recursion -> constant stack
+      E ("(sm 1000 0)", "500500");     --  tail-recursive accumulator
+   end;
+
+   New_Line;
    Put_Line ("Lisp core:" & Natural'Image (Passed) & " passed,"
              & Natural'Image (Failed) & " failed  (cells used:"
              & Natural'Image (Cells_Used) & ")");
