@@ -1,9 +1,9 @@
 package body Lisp is
 
-   --  Singletons -- canonical, outside the resettable arena so they stay valid.
-   Nil_Obj   : aliased Object := (K => K_Nil);
-   True_Obj  : aliased Object := (K => K_Bool, B => True);
-   False_Obj : aliased Object := (K => K_Bool, B => False);
+   --  Singletons -- canonical, outside the arena so they always stay valid.
+   Nil_Obj   : aliased Object := (Mark => False, K => K_Nil);
+   True_Obj  : aliased Object := (Mark => False, K => K_Bool, B => True);
+   False_Obj : aliased Object := (Mark => False, K => K_Bool, B => False);
 
    function Nil        return Ref is (Nil_Obj'Access);
    function Lisp_True  return Ref is (True_Obj'Access);
@@ -12,44 +12,68 @@ package body Lisp is
      (if V then True_Obj'Access else False_Obj'Access);
 
    --------------------------------------------------------------------------
-   --  The cell arena: a uniform pool, bump-allocated.  No GC yet.
+   --  The cell arena: a uniform pool with a free list.  Free cells are linked
+   --  through their Car field; Alloc pops the head; GC rebuilds the list.
    --------------------------------------------------------------------------
-   type Cell_Array is array (Positive range <>) of aliased Object;
-   type Cell_Array_Access is access Cell_Array;
-   Arena      : Cell_Array_Access := null;     --  heap-allocated (PSRAM on the board)
+   --  Cells are aliased (so 'Access yields a Ref), which makes them constrained by
+   --  their discriminant -- a cell's kind cannot be changed through Ref.all.  So
+   --  the free list is a separate array of indices, and a cell is (re)written by
+   --  direct array assignment Arena (I) := Template (which does permit a kind
+   --  change); the sweep only relinks indices, never rewrites a cell.
+   type Cell_Array  is array (Positive range <>) of aliased Object;
+   type Index_Array is array (Positive range <>) of Natural;
+   type Cell_Access  is access Cell_Array;
+   type Index_Access is access Index_Array;
+   Arena      : Cell_Access  := null;          --  heap-allocated (PSRAM on the board)
+   Free_Next  : Index_Access := null;          --  Free_Next (I) = next free index, 0=end
+   Free_Head  : Natural := 0;                  --  head index of the free list (0=empty)
    Arena_Size : Natural := 0;
-   Next       : Natural := 0;
+   In_Use     : Natural := 0;
 
-   function Cells_Used return Natural is (Next);
+   function Cells_Used return Natural is (In_Use);
+
+   procedure Build_Free_List is
+   begin
+      In_Use    := 0;
+      Free_Head := 1;
+      for I in 1 .. Arena_Size loop
+         Free_Next (I) := (if I < Arena_Size then I + 1 else 0);
+      end loop;
+   end Build_Free_List;
 
    procedure Init (Cells : Positive := 200_000) is
    begin
-      Arena      := new Cell_Array (1 .. Cells);
+      Arena      := new Cell_Array  (1 .. Cells);
+      Free_Next  := new Index_Array (1 .. Cells);
       Arena_Size := Cells;
-      Next       := 0;
+      Build_Free_List;
    end Init;
 
    function Alloc (Template : Object) return Ref is
+      I : Natural;
    begin
       if Arena = null then
-         Init;                                 --  lazy default (host convenience)
+         Init;                                  --  lazy default (host convenience)
       end if;
-      if Next >= Arena_Size then
-         raise Lisp_Error with "arena exhausted (no GC yet)";
+      if Free_Head = 0 then
+         raise Lisp_Error with "out of memory (arena full this form)";
       end if;
-      Next := Next + 1;
-      Arena (Next) := Template;
-      return Arena (Next)'Access;
+      I         := Free_Head;
+      Free_Head := Free_Next (I);
+      Arena (I) := Template;                     --  direct assignment: kind may change
+      In_Use    := In_Use + 1;
+      return Arena (I)'Access;
    end Alloc;
 
    function Cons (A, D : Ref) return Ref is
-     (Alloc ((K => K_Cons, Car => A, Cdr => D)));
+     (Alloc ((Mark => False, K => K_Cons, Car => A, Cdr => D)));
 
    function Make_Int (V : Long_Long_Integer) return Ref is
-     (Alloc ((K => K_Int, I => V)));
+     (Alloc ((Mark => False, K => K_Int, I => V)));
 
    function Make_Closure (Params, Code, Env : Ref) return Ref is
-     (Alloc ((K => K_Closure, Params => Params, Code => Code, Env => Env)));
+     (Alloc ((Mark => False, K => K_Closure,
+              Params => Params, Code => Code, Env => Env)));
 
    function Int_Value (O : Ref) return Long_Long_Integer is
    begin
@@ -67,7 +91,7 @@ package body Lisp is
    type Sym_Entry is record
       Name : String (1 .. Max_Name);
       Len  : Natural := 0;
-      Obj  : aliased Object := (K => K_Symbol, Sym => 0);
+      Obj  : aliased Object := (Mark => False, K => K_Symbol, Sym => 0);
    end record;
    Symbols : array (1 .. 1024) of Sym_Entry;   --  static (internal RAM); keep modest
    N_Sym   : Natural := 0;
@@ -88,7 +112,7 @@ package body Lisp is
       N_Sym := N_Sym + 1;
       Symbols (N_Sym).Len := L;
       Symbols (N_Sym).Name (1 .. L) := Name (Name'First .. Name'First + L - 1);
-      Symbols (N_Sym).Obj := (K => K_Symbol, Sym => Symbol_Id (N_Sym));
+      Symbols (N_Sym).Obj := (Mark => False, K => K_Symbol, Sym => Symbol_Id (N_Sym));
       return Symbols (N_Sym).Obj'Access;
    end Intern;
 
@@ -98,7 +122,7 @@ package body Lisp is
    function Make_Prim (Name : String; Fn : Prim_Fn) return Ref is
       Sym : constant Ref := Intern (Name);   --  canonical symbol for the name
    begin
-      return Alloc ((K => K_Prim, Fn => Fn, Fn_Name => Sym.Sym));
+      return Alloc ((Mark => False, K => K_Prim, Fn => Fn, Fn_Name => Sym.Sym));
    end Make_Prim;
 
    function Symbol_Name (O : Ref) return String is (Name_Of (O.Sym));
@@ -160,9 +184,49 @@ package body Lisp is
       end case;
    end Print;
 
+   --------------------------------------------------------------------------
+   --  Garbage collection (mark + sweep)
+   --------------------------------------------------------------------------
+   procedure Mark_Obj (O : Ref) is
+   begin
+      if O = null or else O.Mark then
+         return;                                --  null, or already visited (cycles)
+      end if;
+      O.Mark := True;
+      case O.K is
+         when K_Cons    => Mark_Obj (O.Car);  Mark_Obj (O.Cdr);
+         when K_Closure => Mark_Obj (O.Params);  Mark_Obj (O.Code);  Mark_Obj (O.Env);
+         when others    => null;               --  no outgoing arena references
+      end case;
+   end Mark_Obj;
+
+   function GC (Root : Ref) return Natural is
+      Reclaimed : Natural := 0;
+   begin
+      if Arena = null then
+         return 0;
+      end if;
+      Mark_Obj (Root);
+      Free_Head := 0;
+      In_Use    := 0;
+      for I in Arena'Range loop                 --  sweep
+         if Arena (I).Mark then
+            Arena (I).Mark := False;            --  live: keep, clear the bit
+            In_Use := In_Use + 1;
+         else
+            Free_Next (I) := Free_Head;          --  free: relink index (no rewrite)
+            Free_Head := I;
+            Reclaimed := Reclaimed + 1;
+         end if;
+      end loop;
+      return Reclaimed;
+   end GC;
+
    procedure Reset is
    begin
-      Next := 0;
+      if Arena /= null then
+         Build_Free_List;
+      end if;
    end Reset;
 
 end Lisp;

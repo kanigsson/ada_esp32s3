@@ -98,6 +98,25 @@ begin
    E ("(begin (define (fact n) (if (< n 2) 1 (* n (fact (- n 1))))) (fact 6))", "720");
 
    New_Line;
+   Put_Line ("garbage collection:");
+   declare
+      procedure Run (Input : String) is
+         R : constant Ref := Lisp.Eval.Eval_Top (Lisp.Reader.Read (Input));
+         pragma Unreferenced (R);
+      begin null; end Run;
+      Before, Reclaimed : Natural;
+   begin
+      Run ("(define (dbl x) (* x 2))");               --  survives GC (global env)
+      for I in 1 .. 500 loop Run ("(dbl 21)"); end loop;   --  make garbage
+      Before    := Cells_Used;
+      Reclaimed := GC (Lisp.Eval.Global_Env);
+      Check ("GC reclaims garbage", Reclaimed > 0);
+      Check ("GC shrinks in-use set", Cells_Used < Before);
+      E ("(dbl 21)", "42");                           --  definition survived GC
+      E ("(+ 1 2)", "3");                             --  interpreter still works
+   end;
+
+   New_Line;
    Put_Line ("Lisp core:" & Natural'Image (Passed) & " passed,"
              & Natural'Image (Failed) & " failed  (cells used:"
              & Natural'Image (Cells_Used) & ")");

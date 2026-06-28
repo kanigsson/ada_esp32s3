@@ -46,6 +46,13 @@ package body Lisp_HAL is
       return Make_Int (Long_Long_Integer (ADC.Read (ADC1, Ch)));
    end Prim_Adc_Read;
 
+   --  (room): cells currently in use -- watch GC keep it bounded across forms.
+   function Prim_Room (Args : Ref) return Ref is
+      pragma Unreferenced (Args);
+   begin
+      return Make_Int (Long_Long_Integer (Lisp.Cells_Used));
+   end Prim_Room;
+
    procedure Register is
    begin
       ADC.Claim (ADC1, ADC.ADC1);
@@ -53,6 +60,7 @@ package body Lisp_HAL is
       Lisp.Eval.Register_Primitive ("gpio-toggle", Prim_Gpio_Toggle'Access);
       Lisp.Eval.Register_Primitive ("gpio-in",     Prim_Gpio_In'Access);
       Lisp.Eval.Register_Primitive ("adc-read",    Prim_Adc_Read'Access);
+      Lisp.Eval.Register_Primitive ("room",        Prim_Room'Access);
    end Register;
 
 end Lisp_HAL;

@@ -97,5 +97,14 @@ begin
                Put_Line ("error");
          end;
       end if;
+      --  Reclaim this form's garbage.  Safe here: between forms, the only live
+      --  objects are reachable from the global environment (definitions persist;
+      --  the just-printed result is no longer referenced).
+      declare
+         Reclaimed : constant Natural := Lisp.GC (Lisp.Eval.Global_Env);
+         pragma Unreferenced (Reclaimed);
+      begin
+         null;
+      end;
    end loop;
 end Main;

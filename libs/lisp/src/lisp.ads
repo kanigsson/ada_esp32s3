@@ -20,6 +20,7 @@ package Lisp is
    type Prim_Fn is access function (Args : Ref) return Ref;
 
    type Object (K : Kind := K_Nil) is record
+      Mark : Boolean := False;            --  GC mark bit
       case K is
          when K_Nil     => null;
          when K_Bool    => B : Boolean;
@@ -76,6 +77,12 @@ package Lisp is
    --  so it lands in the PSRAM heap rather than internal SRAM.  Auto-runs with the
    --  default size on first use if not called.
    procedure Init (Cells : Positive := 200_000);
+
+   --  Mark-sweep garbage collection.  Marks everything reachable from Root (and the
+   --  singletons), then returns every other cell to the free list.  Call ONLY when
+   --  no live object is held solely in an Ada local -- i.e. between top-level forms,
+   --  with Root the global environment.  Returns the number of cells reclaimed.
+   function GC (Root : Ref) return Natural;
 
    procedure Reset;                                 --  empty the arena (tests)
    function  Cells_Used return Natural;
