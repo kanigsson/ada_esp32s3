@@ -27,23 +27,40 @@ package body ESP32S3.LCD.Engine is
 
    procedure Open (B : in out Bus; Pclk_Hz : Positive) is
       use ESP32S3_Registers.SYSTEM;
-      --  pclk = Src / (CLKM_DIV_NUM * (CLKCNT_N + 1)).  Split the total divider
-      --  between the module divider (Nm, 2..255) and the pixel divider (Np, 1..64).
+      --  pclk = Src / (CLKM_DIV_NUM * (CLKCNT_N + 1)).  Two-stage divider: the
+      --  module divider (Nm, 2 .. 255) makes LCD_CLK, the pixel prescale
+      --  (P = CLKCNT_N + 1, 1 .. 64) divides that down to the pixel clock.
+      --
+      --  The pixel division MUST go in the prescale, not the module divider.  The
+      --  data bus is updated at LCD_CLK and has to be stable before each pixel-clock
+      --  edge; a prescale > 1 is what provides that setup margin.  Folding the whole
+      --  divider into the module stage and leaving CLKCNT_N = 0 (with EQU_SYSCLK
+      --  off) clocks data out with no setup time, so the attached device samples it
+      --  mid-transition -- e.g. an i80 e-paper source driver latches garbled
+      --  columns.  This matches esp-idf's lcd_ll, which documents that the prescale
+      --  "can't be zero" and that the divide-by-1 case must set LCD_CLK_EQU_SYSCLK.
+      --  (The old code put the division in Nm and set CLKCNT_N = 0 for any
+      --  pclk above ~625 kHz -- i.e. every realistic display clock.)
       Total : constant Natural := Natural'Max (2, Src_Hz / Pclk_Hz);
-      Np    : constant Natural :=
-        Natural'Max (1, Natural'Min (64, (Total + 254) / 255));
-      Nm    : constant Natural := Natural'Max (2, Natural'Min (255, Total / Np));
+      --  Module divider: just large enough to keep the prescale within its 64 max.
+      Nm    : constant Natural :=
+        Natural'Max (2, Natural'Min (255, (Total + 63) / 64));
+      --  Prescale carries the rest of the division (clamped to its 1 .. 64 range).
+      P     : constant Natural := Natural'Max (1, Natural'Min (64, Total / Nm));
+      --  CLKCNT_N can't be 0; the divide-by-1 case is expressed via EQU_SYSCLK.
+      Equ_Sysclk : constant Boolean := P = 1;
+      Clk_Cnt    : constant Natural := (if P = 1 then 1 else P - 1);
    begin
       SYSTEM_Periph.PERIP_CLK_EN1.LCD_CAM_CLK_EN := True;
       SYSTEM_Periph.PERIP_RST_EN1.LCD_CAM_RST    := True;     --  default set; pulse
       SYSTEM_Periph.PERIP_RST_EN1.LCD_CAM_RST    := False;
 
-      --  Clock: source sel 3, module = src/Nm, pixel = module/Np.
+      --  Clock: source sel 3, module = src/Nm, pixel = module/P.
       LCD_CAM_Periph.LCD_CLOCK :=
         (LCD_CLK_SEL => 3, LCD_CLKM_DIV_NUM => LCD_CLOCK_LCD_CLKM_DIV_NUM_Field (Nm),
          LCD_CLKM_DIV_A => 1, LCD_CLKM_DIV_B => 0,
-         LCD_CLKCNT_N => LCD_CLOCK_LCD_CLKCNT_N_Field (Np - 1),
-         LCD_CLK_EQU_SYSCLK => False, LCD_CK_OUT_EDGE => False,
+         LCD_CLKCNT_N => LCD_CLOCK_LCD_CLKCNT_N_Field (Clk_Cnt),
+         LCD_CLK_EQU_SYSCLK => Equ_Sysclk, LCD_CK_OUT_EDGE => False,
          CLK_EN => True, others => <>);
 
       --  8-bit data-out mode (no command/dummy phases).
