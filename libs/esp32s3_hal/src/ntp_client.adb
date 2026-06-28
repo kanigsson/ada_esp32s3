@@ -1,10 +1,8 @@
 with Ada.Streams;  use Ada.Streams;
 with GNAT.Sockets; use GNAT.Sockets;
-with Interfaces;   use Interfaces;
+with NTP_Parse;
 
 package body NTP_Client is
-
-   NTP_Unix : constant := 2_208_988_800;   --  seconds from 1900-01-01 to 1970-01-01
 
    function Query
      (Server     : Inet_Addr_Type;
@@ -19,7 +17,7 @@ package body NTP_Client is
       Last : Stream_Element_Offset;
       To   : aliased Sock_Addr_Type := (Family_Inet, Server, 123);
       From : aliased Sock_Addr_Type;
-      Secs : Unsigned_32;
+      Ok   : Boolean;
    begin
       Unix_Time := 0;
       Create_Socket (Sock, Family_Inet, Socket_Datagram);
@@ -37,18 +35,11 @@ package body NTP_Client is
       end;
       Close_Socket (Sock);
 
-      if Last < 43 then                       --  transmit timestamp is bytes 40..43
-         return False;
-      end if;
-      Secs := Shift_Left (Unsigned_32 (Resp (40)), 24)
-           or Shift_Left (Unsigned_32 (Resp (41)), 16)
-           or Shift_Left (Unsigned_32 (Resp (42)),  8)
-           or            Unsigned_32 (Resp (43));
-      if Secs = 0 then                        --  unsynchronised / kiss-o'-death
-         return False;
-      end if;
-      Unix_Time := Integer_64 (Secs) - NTP_Unix;
-      return True;
+      --  Hand the reply to the proved (AoRTE) parser: the fixed-offset timestamp
+      --  read is bounded against Last there, so a short reply fails closed and the
+      --  epoch conversion cannot overflow.
+      NTP_Parse.Parse_Timestamp (Resp, Last, Unix_Time, Ok);
+      return Ok;
    end Query;
 
    procedure To_UTC
@@ -59,24 +50,6 @@ package body NTP_Client is
       Hour      : out Integer;
       Minute    : out Integer;
       Second    : out Integer)
-   is
-      D_Days : constant Integer_64 := Unix_Time / 86_400;
-      Sod    : constant Integer_64 := Unix_Time mod 86_400;
-      Z      : constant Integer_64 := D_Days + 719_468;
-      Era    : constant Integer_64 := Z / 146_097;
-      DOE    : constant Integer_64 := Z - Era * 146_097;
-      YOE    : constant Integer_64 :=
-        (DOE - DOE / 1460 + DOE / 36524 - DOE / 146096) / 365;
-      Yr     : constant Integer_64 := YOE + Era * 400;
-      DOY    : constant Integer_64 := DOE - (365 * YOE + YOE / 4 - YOE / 100);
-      MP     : constant Integer_64 := (5 * DOY + 2) / 153;
-   begin
-      Day    := Integer (DOY - (153 * MP + 2) / 5 + 1);
-      Month  := Integer (if MP < 10 then MP + 3 else MP - 9);
-      Year   := Integer (if Month <= 2 then Yr + 1 else Yr);
-      Hour   := Integer (Sod / 3600);
-      Minute := Integer ((Sod mod 3600) / 60);
-      Second := Integer (Sod mod 60);
-   end To_UTC;
+      renames NTP_Parse.To_UTC;
 
 end NTP_Client;

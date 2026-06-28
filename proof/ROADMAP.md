@@ -13,7 +13,9 @@ post-merge **networking** triage are proved end-to-end. What landed:
   unguarded accumulator overflows and a GSV message-number `* 4` overflow),
   **`DHCP_Parse`** (DHCP reply option TLV walk — bounds the server-length-driven
   option-value reads against the received count, closing the OOB read the inline
-  parse carried).
+  parse carried), **`NTP_Parse`** (SNTP transmit-timestamp parse + the Hinnant
+  Unix→UTC calendar breakdown — fixed-offset read bounded against the received
+  length, overflow-clean epoch conversion, calendar narrowings proved in range).
   Per-unit VC counts are in `README.md`; the reusable proof techniques
   are in `proof-patterns.md`; Tier-A phase tables and the bugs proof found are in
   `tier-a-results.md`.
@@ -34,7 +36,7 @@ refactor) are all in `proof-patterns.md` — reuse them.
 |--:|--------|------|-------|-------|--------|
 | ✅ | ~~`DNS_Client` reply parse~~ | A (AoRTE) | **done** — `DNS_Parse.Parse_Reply` factored out, proved 41/41 VCs; see §1 | — | — |
 | ✅ | ~~DHCP reply option walk~~ | A (AoRTE) | **done** — `DHCP_Parse.Parse_Reply` factored out, proved 76/76 VCs; see §2 | — | — |
-| 3 | `NTP_Client` timestamp parse | A (AoRTE) | factor / annotate | medium | small |
+| ✅ | ~~`NTP_Client` timestamp parse~~ | A (AoRTE) | **done** — `NTP_Parse` (`Parse_Timestamp` + `To_UTC`) factored out, proved 64/64 VCs; see §3 | — | — |
 | ✅ | ~~`ESP32S3.GPS.NMEA`~~ | A (AoRTE) | **done** — annotated in place, proved 223/223 VCs; see §4 | — | — |
 | 5 | `Modbus` frame `Process` (slave/master PDUs) | A (AoRTE) | factor out of socket `Serve` | medium — bus-facing | medium |
 | 6 | ext4 `crc32c` / `bitmap` / `mkfs`, `Block_Dev.WL` | A (AoRTE) | **already host-tested / pure** | medium (FS + flash integrity) | medium |
@@ -133,13 +135,36 @@ end of the datagram reads past the data.
 
 ---
 
-## 3. `NTP_Client` — server timestamp parse
+## 3. `NTP_Client` — ✅ DONE (`NTP_Parse`, 64/64 VCs)
+
+**Resolved.** Two pure pieces were factored into `NTP_Parse` (`ntp_parse.{ads,adb}`,
+`SPARK_Mode On`) and proved AoRTE at `--level=2` (`proof/ntp_parse_proof.gpr`, 64/64
+VCs, 0 unproved / 0 justified / 0 warnings):
+
+- **`Parse_Timestamp (Resp, Last; Unix_Time, Ok)`** — the fixed-offset transmit
+  timestamp read (seconds, bytes 40..43) and the epoch conversion. The read is
+  guarded by `Last < Resp'First + 43` (a short reply fails closed, `Ok = False`)
+  under the same realistic-window precondition as `DNS_Parse` (`Resp'First >= 0`,
+  `Resp'Last <= 16#FFFF#`, `Last <= Resp'Last`). Because the seconds field is a
+  `Unsigned_32`, `Integer_64 (Secs) - NTP_Unix` lands in `-2_208_988_800 ..
+  2_085_978_495` (years 1900..2036) — the epoch subtraction is overflow-clean.
+- **`To_UTC`** — Hinnant's civil-from-days breakdown, moved verbatim and proved
+  AoRTE. The only narrowing that can leave `Integer` is the year (`YOE + Era*400`
+  grows with the input), so a single wide calendar-window precondition
+  (`Unix_Time in -62_135_596_800 .. 253_402_300_799`, i.e. 0001-01-01 .. 9999-12-31)
+  bounds `Era`; with that, the prover discharges every other field's range via plain
+  interval arithmetic (`DOE ∈ 0..146096` from `Z >= 0`, then `YOE`/`DOY`/`MP` all in
+  small ranges) — no ghost lemmas needed. The window comfortably contains every value
+  `Parse_Timestamp` can produce.
+
+The socket-driving `NTP_Client.Query` stays `SPARK_Mode Off` and calls
+`Parse_Timestamp`; `NTP_Client.To_UTC` is a renaming of `NTP_Parse.To_UTC`, so the
+public API is unchanged and existing callers (the NTP / TLS-weather examples) are
+untouched.
 
 `libs/esp32s3_hal/src/ntp_client.{ads,adb}`, ~120 LOC total. Small. Parses a
 server-supplied 64-bit NTP timestamp out of a fixed-offset packet and converts to a
-`Time`/`Duration`. Factor the fixed-offset field extraction + the seconds/fraction
-arithmetic (watch the `* 1000` / epoch-offset conversions for overflow) into a pure
-helper and prove AoRTE. Low effort; modest but real attacker surface (clock skew).
+`Time`/`Duration`. Modest but real attacker surface (clock skew).
 
 ---
 
@@ -240,7 +265,8 @@ pass.
 
 1. ~~**`DNS_Client`**~~ — ✅ done (`DNS_Parse`, 41/41 VCs); see §1.
 2. ~~**`NMEA`**~~ — ✅ done (annotated in place, 223/223 VCs); see §4.
-3. ~~**DHCP**~~ — ✅ done (`DHCP_Parse`, 76/76 VCs); see §2. Then **NTP** — finish the
-   attacker-facing network-parser sweep. **Start here next** (§3 — the NTP timestamp parse).
+3. ~~**DHCP**~~ — ✅ done (`DHCP_Parse`, 76/76 VCs); see §2. ~~**NTP**~~ — ✅ done
+   (`NTP_Parse`, 64/64 VCs); see §3. The attacker-facing network-parser sweep is complete.
 4. **Modbus PDU** / **ext4 `CRC32C` + bitmap + WL** — integrity targets, incremental.
+   **Start here next** (§5 — the Modbus PDU encode/decode).
 5. **`P256`** — schedule as a dedicated crypto-proof project.

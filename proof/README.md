@@ -47,6 +47,7 @@ You don't set any of this by hand — `prove.sh` does it.
 | `dns_parse_proof.gpr` | `DNS_Parse` (DNS A-record reply parser: `Skip_Name` + answer-RR walk) | **proved** (41/41 VCs, 0 justified, 0 warnings) — AoRTE on the attacker-facing parse; closes the unbounded `Skip_Name` overrun and the A-record OOB read the inline parse carried |
 | `nmea_proof.gpr` | `ESP32S3.GPS.NMEA` (NMEA-0183 sentence decoder: GGA/RMC/ZDA/GLL/VTG/GSV/GSA) | **proved** (223/223 VCs, 0 justified, 0 warnings) — AoRTE annotated in place; caps the unguarded decimal accumulators, computes the coordinate/scale maths in `LLI` with clamping, and closes a GSV message-number `* 4` overflow |
 | `dhcp_parse_proof.gpr` | `DHCP_Parse` (DHCP reply option TLV walk: `Parse_Reply`) | **proved** (76/76 VCs, 0 justified, 0 warnings) — AoRTE on the attacker-facing, server-length-driven option scan; bounds the length byte `RX (P+1)` and the 4-byte option-value reads (reaching `RX (P+5)`) against the received count, closing the OOB read the inline parse carried |
+| `ntp_parse_proof.gpr` | `NTP_Parse` (SNTP timestamp parse `Parse_Timestamp` + `To_UTC` civil-from-days) | **proved** (64/64 VCs, 0 justified, 0 warnings) — AoRTE: the fixed-offset transmit-timestamp read is bounded against `Last` (short reply fails closed), the epoch-offset subtraction is overflow-clean, and the Hinnant calendar breakdown's narrowings prove in range under a wide calendar-window precondition |
 
 Tier-A AoRTE is complete across all five attacker-facing units. The networking
 layer is now AoRTE-complete too — all four networking targets (`Net_Routes`,
@@ -55,9 +56,10 @@ layer is now AoRTE-complete too — all four networking targets (`Net_Routes`,
 security property. The reusable proof patterns and the
 deferred optional functional properties are recorded in `proof-patterns.md`; the
 per-phase VC tables and the AoRTE bugs the proof found are in `tier-a-results.md`.
-The next wave of *un-proved* targets (NTP / Modbus / ext4 / P-256) is
-triaged in `ROADMAP.md`; `DNS_Parse`, `ESP32S3.GPS.NMEA` and `DHCP_Parse` from that
-wave are now proved (the next attacker-facing parser is the NTP timestamp parse).
+The next wave of *un-proved* targets (Modbus / ext4 / P-256) is triaged in
+`ROADMAP.md`; the whole attacker-facing network-parser sweep — `DNS_Parse`,
+`ESP32S3.GPS.NMEA`, `DHCP_Parse` and `NTP_Parse` — is now proved (the next target is
+the Modbus PDU / ext4 integrity primitives).
 
 ## Running
 

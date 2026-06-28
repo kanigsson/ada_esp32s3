@@ -161,6 +161,20 @@ by contract — see "Proving across the hardware boundary" below.
   followed) means there is no resolver pointer-loop to chase. Same shape as the
   `Net_Routes.Prefix_Len` bounded bit-scan.
 
+- **Bound only the one quantity that can actually leave the narrow type; interval
+  arithmetic discharges the rest.** `NTP_Parse.To_UTC` (Hinnant civil-from-days)
+  narrows eight `Integer_64` intermediates to `Integer`. Of those, only the year
+  (`Yr = YOE + Era*400`, where `Era` grows with the input) can exceed `Integer'range`;
+  every other field is structurally small (`DOE ∈ 0..146096` once `Z >= 0`, then
+  `YOE`/`DOY`/`MP` follow by plain interval reasoning). So a *single* wide
+  calendar-window precondition (`Unix_Time in -62_135_596_800 .. 253_402_300_799` =
+  0001-01-01 .. 9999-12-31) that bounds `Era` is enough — gnatprove proves all 44
+  checks with no ghost lemmas or assertions. Don't reach for the civil-algorithm
+  invariants; find the lone operand whose range the narrowing actually depends on and
+  pin *that* (here via the input window), and let the prover's interval domain do the
+  rest. The window is also *honest*: it comfortably contains the whole range the
+  attacker-facing `Parse_Timestamp` can emit (the SNTP seconds field spans 1900..2036).
+
 ## The central design move: an "in-buffer" predicate
 
 Every consumer of a parsed `Certificate` indexes the original `Cert` buffer
